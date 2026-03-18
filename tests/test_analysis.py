@@ -262,16 +262,16 @@ def test_openai_analysis_adapter_returns_raw_json_text(monkeypatch) -> None:
     assert captured["headers"]["Authorization"] == "Bearer secret"
 
 
-def test_build_analysis_adapter_uses_heuristic_in_sample_mode_and_openai_live_mode() -> None:
+def test_build_analysis_adapter_uses_heuristic_in_sample_mode_and_provider_specific_live_modes() -> None:
     sample_adapter = build_analysis_adapter(
         LLMSettings(provider="openai", model="gpt-4.1-mini", api_key="secret"),
         sample_mode=True,
     )
-    live_adapter = build_analysis_adapter(
+    live_openai_adapter = build_analysis_adapter(
         LLMSettings(provider="openai", model="gpt-4.1-mini", api_key="secret"),
         sample_mode=False,
     )
-    fallback_adapter = build_analysis_adapter(
+    live_anthropic_adapter = build_analysis_adapter(
         LLMSettings(provider="anthropic", model="claude-test", api_key="secret"),
         sample_mode=False,
     )
