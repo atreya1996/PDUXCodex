@@ -14,8 +14,8 @@ from payday.upload import UploadService
 class PaydayAppService:
     """Thin backend facade used by the Streamlit UI."""
 
-    def __init__(self, settings: Settings) -> None:
-        self.repository = PaydayRepository()
+    def __init__(self, settings: Settings, repository: PaydayRepository | None = None) -> None:
+        self.repository = repository or PaydayRepository()
         persona_service = PersonaService()
         analysis_service = AnalysisService(
             adapter=HeuristicAnalysisAdapter(settings.llm),
