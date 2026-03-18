@@ -35,6 +35,7 @@ class TranscriptionSettings:
     provider: str = "openai"
     model: str = "gpt-4o-mini-transcribe"
     api_key: str = ""
+    timeout_seconds: float = 60.0
 
 
 @dataclass(frozen=True)
@@ -81,6 +82,7 @@ def get_settings() -> Settings:
             provider=os.getenv("TRANSCRIPTION_PROVIDER", "openai"),
             model=os.getenv("TRANSCRIPTION_MODEL", "gpt-4o-mini-transcribe"),
             api_key=os.getenv("TRANSCRIPTION_API_KEY", ""),
+            timeout_seconds=float(os.getenv("TRANSCRIPTION_TIMEOUT_SECONDS", "60")),
         ),
         features=FeatureFlags(
             use_sample_mode=_as_bool(os.getenv("PAYDAY_USE_SAMPLE_MODE"), True),
