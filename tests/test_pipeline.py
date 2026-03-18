@@ -1,3 +1,4 @@
+from payday.analysis import AnalysisService
 from payday.config import FeatureFlags, LLMSettings, Settings, SupabaseSettings, TranscriptionSettings
 from payday.models import UploadedAsset
 from payday.repository import PaydayRepository
@@ -5,21 +6,43 @@ from payday.service import PaydayAppService
 from payday.storage import StorageService
 
 
-def test_pipeline_process_upload_returns_result() -> None:
-    settings = Settings(
+class FlakyTranscriptionService(TranscriptionService):
+    def __init__(self, settings: TranscriptionSettings) -> None:
+        super().__init__(settings)
+        self.calls: dict[str, int] = {}
+
+    def transcribe(self, asset, sample_mode: bool = False):
+        self.calls.setdefault(asset.file_id, 0)
+        self.calls[asset.file_id] += 1
+        if asset.filename == "retry.wav" and self.calls[asset.file_id] == 1:
+            raise RuntimeError("temporary transcription issue")
+        if asset.filename == "fail.wav":
+            raise RuntimeError("hard transcription failure")
+        return super().transcribe(asset, sample_mode=sample_mode)
+
+
+def build_settings() -> Settings:
+    return Settings(
         app_env="test",
         supabase=SupabaseSettings(),
         llm=LLMSettings(),
         transcription=TranscriptionSettings(),
         features=FeatureFlags(use_sample_mode=True),
     )
-    service = PaydayAppService(settings)
+
+
+def test_pipeline_process_upload_returns_completed_result() -> None:
+    service = PaydayAppService(build_settings())
 
     result = service.process_upload("demo.wav", "audio/wav", b"fake-bytes")
 
+    assert result.asset is not None
     assert result.asset.filename == "demo.wav"
     assert result.persisted is True
+    assert result.analysis is not None
     assert result.analysis.metrics["word_count"] > 0
+    assert result.status is ProcessingStatus.COMPLETED
+    assert result.current_stage is PipelineStage.STORAGE
     assert service.list_results()
 
 

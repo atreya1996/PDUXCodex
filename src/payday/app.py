@@ -54,13 +54,32 @@ def main() -> None:
                 content_type=uploaded_file.type or "application/octet-stream",
                 data=uploaded_file.getvalue(),
             )
-            st.success("Pipeline completed.")
-            st.subheader("Transcript")
-            st.write(result.transcript.text)
-            st.subheader("Analysis")
-            st.write(result.analysis.summary)
-            st.write(result.analysis.metrics)
-            st.write({"personas": result.analysis.persona_matches, "persisted": result.persisted})
+            st.success("Pipeline completed." if result.status.value == "completed" else "Pipeline finished with errors.")
+            if result.transcript is not None:
+                st.subheader("Transcript")
+                st.write(result.transcript.text)
+            if result.analysis is not None:
+                st.subheader("Analysis")
+                st.write(result.analysis.summary)
+                st.write(result.analysis.metrics)
+                st.write(result.analysis.structured_output)
+            st.write(
+                {
+                    "status": result.status.value,
+                    "current_stage": result.current_stage.value,
+                    "persona": (
+                        {
+                            "persona_id": result.persona.persona_id,
+                            "persona_name": result.persona.persona_name,
+                            "is_non_target": result.persona.is_non_target,
+                        }
+                        if result.persona is not None
+                        else None
+                    ),
+                    "persisted": result.persisted,
+                    "errors": result.errors,
+                }
+            )
 
     if settings.features.enable_dashboard:
         dashboard.render(app_service.list_results())

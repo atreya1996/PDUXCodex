@@ -314,8 +314,11 @@ class PaydayRepository:
         )
 
     def save_result(self, result: PipelineResult) -> PipelineResult:
-        self._items.append(result)
+        self._items[result.file_id] = result
         return result
+
+    def get_result(self, file_id: str) -> PipelineResult | None:
+        return self._items.get(file_id)
 
     def list_results(self) -> list[PipelineResult]:
         return list(self._items)
