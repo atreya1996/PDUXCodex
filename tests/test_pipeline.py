@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from payday.config import FeatureFlags, LLMSettings, Settings, SupabaseSettings, TranscriptionSettings
+from payday.config import DatabaseSettings, FeatureFlags, LLMSettings, Settings, SupabaseSettings, TranscriptionSettings
 from payday.models import AnalysisResult, BatchUploadItem, PipelineResult, PipelineStage, ProcessingStatus, Transcript, UploadedAsset
 from payday.personas import PersonaService
 from payday.repository import PaydayRepository
@@ -30,6 +30,7 @@ def build_settings() -> Settings:
         supabase=SupabaseSettings(),
         llm=LLMSettings(),
         transcription=TranscriptionSettings(),
+        database=DatabaseSettings(path=":memory:"),
         features=FeatureFlags(use_sample_mode=True),
     )
 
@@ -59,6 +60,23 @@ def test_pipeline_process_upload_returns_completed_result() -> None:
     assert result.status is ProcessingStatus.COMPLETED
     assert result.current_stage is PipelineStage.STORAGE
     assert service.list_results()
+
+
+def test_app_service_uses_configured_database_path(tmp_path) -> None:
+    database_path = tmp_path / "nested" / "payday.db"
+    settings = Settings(
+        app_env="test",
+        supabase=SupabaseSettings(),
+        llm=LLMSettings(),
+        transcription=TranscriptionSettings(),
+        database=DatabaseSettings(path=str(database_path)),
+        features=FeatureFlags(use_sample_mode=True),
+    )
+
+    service = PaydayAppService(settings)
+
+    assert service.repository.database_path == str(database_path)
+    assert database_path.parent.exists()
 
 
 def test_repository_list_results_returns_pipeline_results_in_insertion_order() -> None:
