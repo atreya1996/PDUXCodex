@@ -19,6 +19,7 @@ FIELD_NAMES = (
     "loan_interest",
     "summary",
 )
+TOP_LEVEL_SCHEMA_KEYS = FIELD_NAMES + ("key_quotes", "confidence_signals")
 ALLOWED_FIELD_STATUSES = {"observed", "unknown", "missing"}
 
 
@@ -75,11 +76,11 @@ class HeuristicAnalysisAdapter:
         expected_schema: dict[str, Any],
         attempt: int,
     ) -> str:
-        del prompt, expected_schema, attempt
+        del prompt, attempt
         text = transcript.text.strip()
         sentences = _split_sentences(text)
         key_quotes = sentences[:2]
-        payload = {
+        payload: dict[str, Any] = {
             "smartphone_usage": self._smartphone_usage(text),
             "bank_account_status": self._bank_account_status(text),
             "income_range": self._income_range(text),
@@ -95,7 +96,12 @@ class HeuristicAnalysisAdapter:
             "key_quotes": key_quotes,
         }
         payload["confidence_signals"] = _build_confidence_signals(payload)
-        return json.dumps(payload)
+        extra_keys = set(payload) - set(expected_schema)
+        if extra_keys:
+            raise AnalysisSchemaError(
+                f"Heuristic adapter produced unexpected keys: {sorted(extra_keys)}"
+            )
+        return json.dumps(payload, ensure_ascii=False)
 
     def _smartphone_usage(self, text: str) -> dict[str, Any]:
         evidence = _matching_phrases(
@@ -340,6 +346,11 @@ class AnalysisService:
 
         if not isinstance(payload, dict):
             raise AnalysisSchemaError("Top-level JSON must be an object.")
+        unexpected_keys = set(payload) - set(TOP_LEVEL_SCHEMA_KEYS)
+        if unexpected_keys:
+            raise AnalysisSchemaError(
+                f"Top-level JSON contains unexpected keys: {sorted(unexpected_keys)}."
+            )
 
         normalized: dict[str, Any] = {}
         for field_name in FIELD_NAMES:
