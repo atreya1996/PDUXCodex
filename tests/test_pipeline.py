@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import sqlite3
 
-from payday.config import FeatureFlags, LLMSettings, Settings, SupabaseSettings, TranscriptionSettings
+from pathlib import Path
+
+from payday.config import DatabaseSettings, FeatureFlags, LLMSettings, Settings, SupabaseSettings, TranscriptionSettings, get_settings
 from payday.models import AnalysisResult, BatchUploadItem, PipelineResult, PipelineStage, ProcessingStatus, Transcript, UploadedAsset
 from payday.personas import PersonaService
 from payday.repository import PaydayRepository
@@ -33,7 +35,6 @@ def build_settings(sqlite_path: str = ":memory:") -> Settings:
         supabase=SupabaseSettings(),
         llm=LLMSettings(),
         transcription=TranscriptionSettings(),
-        database=DatabaseSettings(path=":memory:"),
         features=FeatureFlags(use_sample_mode=True),
     )
 
@@ -243,6 +244,18 @@ def test_repository_crud_supports_interview_related_tables(tmp_path) -> None:
     assert recent[0].filename == "demo.wav"
     assert status_overview.total_interviews == 1
     assert status_overview.status_counts == {"completed": 1}
+
+
+def test_app_service_defaults_to_settings_sqlite_path_for_local_development(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("PAYDAY_SQLITE_PATH", raising=False)
+    get_settings.cache_clear()
+
+    settings = get_settings()
+    service = PaydayAppService(settings)
+
+    assert settings.database.sqlite_path == "data/payday.db"
+    assert service.repository.database_path == str(Path("data/payday.db"))
 
 
 def test_app_service_uses_sqlite_for_durable_dashboard_reads(tmp_path) -> None:
