@@ -91,6 +91,7 @@ class PaydayRepository:
         self.database_path = self._normalize_database_path(database_path)
         self.schema_path = schema_path or str(Path(__file__).resolve().parents[2] / "sql" / "schema.sql")
         self._items: dict[str, PipelineResult] = {}
+        self._ensure_database_directory()
         self._connection = sqlite3.connect(self.database_path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA foreign_keys = ON")
@@ -459,7 +460,6 @@ class PaydayRepository:
         if database_path == ":memory:":
             return database_path
         path = Path(database_path).expanduser()
-        path.parent.mkdir(parents=True, exist_ok=True)
         return str(path)
 
     def _upsert_interview_from_result(self, result: PipelineResult, *, audio_url: str) -> InterviewRecord:
