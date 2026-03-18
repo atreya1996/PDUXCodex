@@ -35,11 +35,6 @@ class TranscriptionSettings:
 
 
 @dataclass(frozen=True)
-class DatabaseSettings:
-    path: str = str(DEFAULT_DATABASE_PATH)
-
-
-@dataclass(frozen=True)
 class FeatureFlags:
     use_sample_mode: bool = True
     enable_uploads: bool = True
@@ -59,7 +54,6 @@ class Settings:
     supabase: SupabaseSettings
     llm: LLMSettings
     transcription: TranscriptionSettings
-    database: DatabaseSettings
     features: FeatureFlags
 
 
@@ -85,7 +79,6 @@ def get_settings() -> Settings:
             model=os.getenv("TRANSCRIPTION_MODEL", "gpt-4o-mini-transcribe"),
             api_key=os.getenv("TRANSCRIPTION_API_KEY", ""),
         ),
-        database=DatabaseSettings(path=database_path),
         features=FeatureFlags(
             use_sample_mode=_as_bool(os.getenv("PAYDAY_USE_SAMPLE_MODE"), True),
             enable_uploads=_as_bool(os.getenv("PAYDAY_ENABLE_UPLOADS"), True),
