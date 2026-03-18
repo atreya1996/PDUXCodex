@@ -35,16 +35,16 @@ class TranscriptionSettings:
 
 
 @dataclass(frozen=True)
+class DatabaseSettings:
+    sqlite_path: str = "data/payday.db"
+
+
+@dataclass(frozen=True)
 class FeatureFlags:
     use_sample_mode: bool = True
     enable_uploads: bool = True
     enable_dashboard: bool = True
     enable_analysis: bool = True
-
-
-@dataclass(frozen=True)
-class DatabaseSettings:
-    sqlite_path: str = "data/payday.db"
 
 
 @dataclass(frozen=True)
