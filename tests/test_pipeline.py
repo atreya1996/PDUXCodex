@@ -24,9 +24,10 @@ class FlakyTranscriptionService(TranscriptionService):
         return super().transcribe(asset, sample_mode=sample_mode)
 
 
-def build_settings() -> Settings:
+def build_settings(sqlite_path: str = ":memory:") -> Settings:
     return Settings(
         app_env="test",
+        database=DatabaseSettings(sqlite_path=sqlite_path),
         supabase=SupabaseSettings(),
         llm=LLMSettings(),
         transcription=TranscriptionSettings(),
@@ -156,6 +157,8 @@ def test_repository_crud_supports_interview_related_tables(tmp_path) -> None:
 
     listing = repository.list_interviews()
     detail = repository.get_interview_detail(interview.id)
+    recent = repository.list_recent_interviews()
+    status_overview = repository.get_status_overview()
 
     assert listing[0].id == interview.id
     assert detail.interview.status == "completed"
@@ -163,6 +166,33 @@ def test_repository_crud_supports_interview_related_tables(tmp_path) -> None:
     assert detail.structured_response.smartphone_user is True
     assert detail.insight is not None
     assert detail.insight.key_quotes == ["I ask my employer first when money is short."]
+    assert recent[0].filename == "demo.wav"
+    assert status_overview.total_interviews == 1
+    assert status_overview.status_counts == {"completed": 1}
+
+
+def test_app_service_uses_sqlite_for_durable_dashboard_reads(tmp_path) -> None:
+    database_path = str(tmp_path / "payday-dashboard.db")
+    first_service = PaydayAppService(build_settings(database_path))
+
+    result = first_service.process_upload(
+        "durable.wav",
+        "audio/wav",
+        b"I use WhatsApp, I have a bank account, and I ask my employer when money is short.",
+    )
+
+    assert result.status is ProcessingStatus.COMPLETED
+    assert first_service.list_recent_interviews()[0].id == result.file_id
+    assert first_service.get_status_overview().status_counts["completed"] == 1
+
+    second_service = PaydayAppService(build_settings(database_path))
+    recent = second_service.list_recent_interviews()
+    detail = second_service.get_interview_detail(result.file_id)
+
+    assert second_service.list_results() == []
+    assert recent[0].id == result.file_id
+    assert detail.summary is not None
+    assert detail.filename == "durable.wav"
 
 
 def test_storage_service_builds_predictable_audio_paths() -> None:

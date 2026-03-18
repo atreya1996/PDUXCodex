@@ -5,9 +5,10 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 from uuid import uuid4
 
-from payday.models import PipelineResult
+from payday.models import AnalysisResult, PersonaClassification, PipelineResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,15 +58,40 @@ class InterviewDetail:
     insight: InsightRecord | None
 
 
+@dataclass(frozen=True, slots=True)
+class DashboardInterviewRecord:
+    id: str
+    audio_url: str
+    filename: str
+    transcript: str | None
+    status: str
+    created_at: str
+    smartphone_user: bool | None
+    has_bank_account: bool | None
+    income_range: str | None
+    borrowing_history: str | None
+    repayment_preference: str | None
+    loan_interest: str | None
+    summary: str | None
+    key_quotes: list[str]
+    persona: str | None
+    confidence_score: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardStatusOverview:
+    total_interviews: int
+    status_counts: dict[str, int]
+
+
 class PaydayRepository:
     """Persistence facade for analysis artifacts and dashboard reads."""
 
     def __init__(self, database_path: str = ":memory:", schema_path: str | None = None) -> None:
-        self.database_path = database_path
+        self.database_path = self._normalize_database_path(database_path)
         self.schema_path = schema_path or str(Path(__file__).resolve().parents[2] / "sql" / "schema.sql")
         self._items: dict[str, PipelineResult] = {}
-        self._ensure_database_directory()
-        self._connection = sqlite3.connect(self.database_path)
+        self._connection = sqlite3.connect(self.database_path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA foreign_keys = ON")
         self._initialize()
@@ -259,11 +285,41 @@ class PaydayRepository:
         if status is not None:
             query += " WHERE interviews.status = ?"
             params.append(status)
-        query += " ORDER BY interviews.created_at DESC LIMIT ?"
+        query += " ORDER BY interviews.created_at DESC, interviews.id DESC LIMIT ?"
         params.append(limit)
         with self._connect() as connection:
             rows = connection.execute(query, params).fetchall()
         return [InterviewListItem(**dict(row)) for row in rows]
+
+    def list_recent_interviews(self, *, limit: int = 100) -> list[DashboardInterviewRecord]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    interviews.id,
+                    interviews.audio_url,
+                    interviews.transcript,
+                    interviews.status,
+                    interviews.created_at,
+                    structured_responses.smartphone_user,
+                    structured_responses.has_bank_account,
+                    structured_responses.income_range,
+                    structured_responses.borrowing_history,
+                    structured_responses.repayment_preference,
+                    structured_responses.loan_interest,
+                    insights.summary,
+                    insights.key_quotes,
+                    insights.persona,
+                    insights.confidence_score
+                FROM interviews
+                LEFT JOIN structured_responses ON structured_responses.interview_id = interviews.id
+                LEFT JOIN insights ON insights.interview_id = interviews.id
+                ORDER BY interviews.created_at DESC, interviews.id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._dashboard_record_from_row(row) for row in rows]
 
     def get_interview_detail(self, interview_id: str) -> InterviewDetail:
         interview = self.get_interview(interview_id)
@@ -321,9 +377,63 @@ class PaydayRepository:
             insight=insight,
         )
 
+    def get_dashboard_interview_detail(self, interview_id: str) -> DashboardInterviewRecord:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    interviews.id,
+                    interviews.audio_url,
+                    interviews.transcript,
+                    interviews.status,
+                    interviews.created_at,
+                    structured_responses.smartphone_user,
+                    structured_responses.has_bank_account,
+                    structured_responses.income_range,
+                    structured_responses.borrowing_history,
+                    structured_responses.repayment_preference,
+                    structured_responses.loan_interest,
+                    insights.summary,
+                    insights.key_quotes,
+                    insights.persona,
+                    insights.confidence_score
+                FROM interviews
+                LEFT JOIN structured_responses ON structured_responses.interview_id = interviews.id
+                LEFT JOIN insights ON insights.interview_id = interviews.id
+                WHERE interviews.id = ?
+                """,
+                (interview_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"Interview {interview_id} was not found.")
+        return self._dashboard_record_from_row(row)
+
+    def get_status_overview(self) -> DashboardStatusOverview:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM interviews
+                GROUP BY status
+                ORDER BY status ASC
+                """
+            ).fetchall()
+        status_counts = {row["status"]: row["count"] for row in rows}
+        return DashboardStatusOverview(
+            total_interviews=sum(status_counts.values()),
+            status_counts=status_counts,
+        )
+
     def save_result(self, result: PipelineResult) -> PipelineResult:
         self._items[result.file_id] = result
         return result
+
+    def sync_pipeline_result(self, result: PipelineResult, *, audio_url: str) -> None:
+        interview = self._upsert_interview_from_result(result, audio_url=audio_url)
+        if result.analysis is not None:
+            self._upsert_structured_response_from_analysis(interview.id, result.analysis)
+        if result.analysis is not None:
+            self._upsert_insight_from_result(interview.id, result.analysis, result.persona)
 
     def get_result(self, file_id: str) -> PipelineResult | None:
         return self._items.get(file_id)
@@ -343,3 +453,116 @@ class PaydayRepository:
         if value is None:
             return None
         return bool(value)
+
+    @staticmethod
+    def _normalize_database_path(database_path: str) -> str:
+        if database_path == ":memory:":
+            return database_path
+        path = Path(database_path).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return str(path)
+
+    def _upsert_interview_from_result(self, result: PipelineResult, *, audio_url: str) -> InterviewRecord:
+        transcript_text = result.transcript.text if result.transcript is not None else None
+        try:
+            return self.update_interview(
+                result.file_id,
+                audio_url=audio_url,
+                transcript=transcript_text,
+                status=result.status.value,
+            )
+        except KeyError:
+            return self.create_interview(
+                interview_id=result.file_id,
+                audio_url=audio_url,
+                transcript=transcript_text,
+                status=result.status.value,
+            )
+
+    def _upsert_structured_response_from_analysis(self, interview_id: str, analysis: AnalysisResult) -> None:
+        structured = analysis.structured_output
+        self.upsert_structured_response(
+            interview_id,
+            smartphone_user=self._extract_bool(structured, "participant_profile", "smartphone_user"),
+            has_bank_account=self._extract_bool(structured, "participant_profile", "has_bank_account"),
+            income_range=self._extract_value(structured, "income_range"),
+            borrowing_history=self._extract_value(structured, "borrowing_history"),
+            repayment_preference=self._extract_value(structured, "repayment_preference"),
+            loan_interest=self._extract_value(structured, "loan_interest"),
+        )
+
+    def _upsert_insight_from_result(
+        self,
+        interview_id: str,
+        analysis: AnalysisResult,
+        persona: PersonaClassification | None,
+    ) -> None:
+        persona_name = persona.persona_name if persona is not None else "Unknown"
+        confidence_score = analysis.metrics.get("confidence_score")
+        normalized_confidence = float(confidence_score) if isinstance(confidence_score, int | float) else 0.0
+        self.upsert_insight(
+            interview_id,
+            summary=analysis.summary,
+            key_quotes=list(analysis.evidence_quotes),
+            persona=persona_name,
+            confidence_score=normalized_confidence,
+        )
+
+    def _dashboard_record_from_row(self, row: sqlite3.Row) -> DashboardInterviewRecord:
+        payload = dict(row)
+        return DashboardInterviewRecord(
+            id=payload["id"],
+            audio_url=payload["audio_url"],
+            filename=self._filename_from_audio_url(payload["audio_url"]),
+            transcript=payload["transcript"],
+            status=payload["status"],
+            created_at=payload["created_at"],
+            smartphone_user=self._int_to_bool(payload["smartphone_user"]),
+            has_bank_account=self._int_to_bool(payload["has_bank_account"]),
+            income_range=payload["income_range"],
+            borrowing_history=payload["borrowing_history"],
+            repayment_preference=payload["repayment_preference"],
+            loan_interest=payload["loan_interest"],
+            summary=payload["summary"],
+            key_quotes=json.loads(payload["key_quotes"]) if payload["key_quotes"] else [],
+            persona=payload["persona"],
+            confidence_score=payload["confidence_score"],
+        )
+
+    @staticmethod
+    def _extract_value(structured: dict[str, object], field_name: str) -> str | None:
+        value = structured.get(field_name)
+        if isinstance(value, dict):
+            raw = value.get("value")
+            return str(raw) if raw is not None else None
+        participant_profile = structured.get("participant_profile")
+        if isinstance(participant_profile, dict):
+            nested = participant_profile.get(field_name)
+            if isinstance(nested, dict):
+                raw = nested.get("value")
+                return str(raw) if raw is not None else None
+        persona_signals = structured.get("persona_signals")
+        if isinstance(persona_signals, dict):
+            nested = persona_signals.get(field_name)
+            if isinstance(nested, dict):
+                raw = nested.get("value")
+                return str(raw) if raw is not None else None
+        return None
+
+    def _extract_bool(self, structured: dict[str, object], section: str, field_name: str) -> bool | None:
+        parent = structured.get(section)
+        if not isinstance(parent, dict):
+            return None
+        nested = parent.get(field_name)
+        if not isinstance(nested, dict):
+            return None
+        value = nested.get("value")
+        if isinstance(value, bool):
+            return value
+        return None
+
+    @staticmethod
+    def _filename_from_audio_url(audio_url: str) -> str:
+        parsed = urlparse(audio_url)
+        path = parsed.path or audio_url
+        return Path(path).name

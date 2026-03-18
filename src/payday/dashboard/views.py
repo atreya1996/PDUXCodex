@@ -6,12 +6,13 @@ import wave
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
-from typing import Any
+from typing import Any, Callable
 
 import streamlit as st
 
 from payday.models import PipelineResult, ProcessingStatus
 from payday.personas import PERSONAS
+from payday.repository import DashboardInterviewRecord, DashboardStatusOverview
 
 PERSONA_LOOKUP = {persona.id: persona.name for persona in PERSONAS.values()}
 FILTER_SESSION_KEYS = {
@@ -53,15 +54,22 @@ class DashboardInterview:
 
 
 class DashboardRenderer:
-    def render(self, results: list[PipelineResult]) -> None:
+    def render(
+        self,
+        *,
+        cached_results: list[PipelineResult],
+        recent_interviews: list[DashboardInterviewRecord],
+        status_overview: DashboardStatusOverview,
+        interview_detail_loader: Callable[[str], DashboardInterviewRecord],
+    ) -> None:
         self._inject_styles()
-        interviews = self._build_dashboard_interviews(results)
+        interviews = self._build_dashboard_interviews(cached_results, recent_interviews)
         self._initialize_session_state(interviews)
         filtered = self._apply_filters(interviews)
 
         tabs = st.tabs(["Overview", "Cohorts", "Personas", "Interviews", "Interview Detail"])
         with tabs[0]:
-            self._render_overview(filtered, interviews)
+            self._render_overview(filtered, interviews, status_overview)
         with tabs[1]:
             self._render_cohorts(filtered)
         with tabs[2]:
@@ -69,7 +77,7 @@ class DashboardRenderer:
         with tabs[3]:
             self._render_interviews(filtered)
         with tabs[4]:
-            self._render_interview_detail(filtered, interviews)
+            self._render_interview_detail(filtered, interviews, interview_detail_loader)
 
     def _initialize_session_state(self, interviews: list[DashboardInterview]) -> None:
         st.session_state.setdefault(FILTER_SESSION_KEYS["income"], [])
@@ -122,10 +130,11 @@ class DashboardRenderer:
         self,
         filtered: list[DashboardInterview],
         all_interviews: list[DashboardInterview],
+        status_overview: DashboardStatusOverview,
     ) -> None:
         st.markdown("### Interview portfolio")
-        self._render_filter_summary(filtered, all_interviews)
-        self._render_kpis(filtered)
+        self._render_filter_summary(filtered, all_interviews, status_overview)
+        self._render_kpis(filtered, status_overview)
 
         if not filtered:
             st.info("No interviews match the current filters.")
@@ -235,6 +244,7 @@ class DashboardRenderer:
         self,
         filtered: list[DashboardInterview],
         all_interviews: list[DashboardInterview],
+        interview_detail_loader: Callable[[str], DashboardInterviewRecord],
     ) -> None:
         st.markdown("### Interview detail")
         if not all_interviews:
@@ -249,6 +259,8 @@ class DashboardRenderer:
 
         if filtered and selected.id not in {item.id for item in filtered}:
             st.warning("The selected interview is outside the current filter set, but remains available for review.")
+
+        selected = self._merge_detail_record(selected, interview_detail_loader)
 
         transcript_edits: dict[str, str] = st.session_state[FILTER_SESSION_KEYS["transcripts"]]
         json_edits: dict[str, str] = st.session_state[FILTER_SESSION_KEYS["json"]]
@@ -272,7 +284,9 @@ class DashboardRenderer:
             if selected.audio_bytes:
                 st.audio(selected.audio_bytes, format=selected.audio_format)
             else:
-                st.info("Audio bytes are unavailable for this interview in the current session.")
+                st.info("Audio bytes are unavailable after restart, but the durable interview record remains available.")
+                if selected.extracted_json.get("audio_url"):
+                    st.caption(f"Stored audio path: {selected.extracted_json['audio_url']}")
         with meta_col:
             st.markdown("##### Extracted flags")
             st.write(
@@ -309,6 +323,7 @@ class DashboardRenderer:
         self,
         filtered: list[DashboardInterview],
         all_interviews: list[DashboardInterview],
+        status_overview: DashboardStatusOverview,
     ) -> None:
         income_options = sorted({item.income_band for item in all_interviews})
         borrowing_options = sorted({item.borrowing_label for item in all_interviews})
@@ -347,11 +362,15 @@ class DashboardRenderer:
             placeholder="Search filename, quote, summary, transcript",
         )
 
-        st.caption(f"Showing {len(filtered)} of {len(all_interviews)} interviews.")
+        st.caption(
+            f"Showing {len(filtered)} of {len(all_interviews)} interviews. Durable interviews in SQLite: {status_overview.total_interviews}."
+        )
 
-    def _render_kpis(self, interviews: list[DashboardInterview]) -> None:
+    def _render_kpis(self, interviews: list[DashboardInterview], status_overview: DashboardStatusOverview) -> None:
+        completed_count = status_overview.status_counts.get(ProcessingStatus.COMPLETED.value, 0)
         metrics = [
-            ("Total interviews", str(len(interviews))),
+            ("Filtered interviews", str(len(interviews))),
+            ("Completed (durable)", str(completed_count)),
             ("Smartphone %", self._percent(sum(1 for item in interviews if item.smartphone_user is True), len(interviews))),
             ("Borrowers %", self._percent(sum(1 for item in interviews if item.is_borrower), len(interviews))),
             (
@@ -359,7 +378,7 @@ class DashboardRenderer:
                 self._percent(sum(1 for item in interviews if item.interested_in_loan), len(interviews)),
             ),
         ]
-        columns = st.columns(4, gap="large")
+        columns = st.columns(5, gap="large")
         for column, (label, value) in zip(columns, metrics, strict=False):
             with column:
                 st.markdown(
@@ -456,10 +475,17 @@ class DashboardRenderer:
             counts[key] = counts.get(key, 0) + 1
         return counts
 
-    def _build_dashboard_interviews(self, results: list[PipelineResult]) -> list[DashboardInterview]:
-        mapped_results = [self._from_pipeline_result(result) for result in results]
+    def _build_dashboard_interviews(
+        self,
+        results: list[PipelineResult],
+        recent_interviews: list[DashboardInterviewRecord],
+    ) -> list[DashboardInterview]:
+        mapped_results = {result.file_id: self._from_pipeline_result(result) for result in results}
+        merged = [self._overlay_cached_result(record, mapped_results.get(record.id)) for record in recent_interviews]
+        if merged:
+            return merged
         if mapped_results:
-            return mapped_results
+            return list(mapped_results.values())
         return self._sample_interviews()
 
     def _from_pipeline_result(self, result: PipelineResult) -> DashboardInterview:
@@ -498,6 +524,114 @@ class DashboardRenderer:
             audio_bytes=result.asset.raw_bytes if result.asset is not None else None,
             audio_format=result.asset.content_type if result.asset is not None else "audio/wav",
         )
+
+    def _from_repository_record(self, record: DashboardInterviewRecord) -> DashboardInterview:
+        summary = record.summary or "Analysis pending."
+        transcript = record.transcript or "Transcript pending."
+        persona_name = record.persona or PERSONA_LOOKUP["persona_4"]
+        persona_id = self._persona_id_from_name(persona_name)
+        borrowing_value = record.borrowing_history or "unknown"
+        loan_interest_value = record.loan_interest or "unknown"
+        extracted_json = {
+            "audio_url": record.audio_url,
+            "participant_profile": {
+                "smartphone_user": {"value": record.smartphone_user},
+                "has_bank_account": {"value": record.has_bank_account},
+            },
+            "income_range": {"value": record.income_range},
+            "borrowing_history": {"value": record.borrowing_history},
+            "repayment_preference": {"value": record.repayment_preference},
+            "loan_interest": {"value": record.loan_interest},
+            "insight": {
+                "summary": record.summary,
+                "persona": record.persona,
+                "confidence_score": record.confidence_score,
+                "key_quotes": record.key_quotes,
+            },
+        }
+        return DashboardInterview(
+            id=record.id,
+            filename=record.filename,
+            created_at=self._format_created_at(record.created_at),
+            status=record.status,
+            summary=summary,
+            transcript=transcript,
+            persona_id=persona_id,
+            persona_name=persona_name,
+            is_non_target=record.smartphone_user is False or record.has_bank_account is False,
+            income_band=record.income_range or "Unknown",
+            borrowing_source=self._borrowing_source_label(transcript, borrowing_value),
+            borrowing_label="Borrower" if self._is_borrower_value(borrowing_value, transcript) else "Non-borrower",
+            is_borrower=self._is_borrower_value(borrowing_value, transcript),
+            loan_interest_label=self._loan_interest_label(loan_interest_value),
+            interested_in_loan=self._is_loan_interest_positive(loan_interest_value),
+            smartphone_user=record.smartphone_user,
+            has_bank_account=record.has_bank_account,
+            digital_access=self._digital_access_label(record.smartphone_user, record.has_bank_account),
+            extracted_json=extracted_json,
+            evidence_quotes=tuple(record.key_quotes),
+        )
+
+    def _overlay_cached_result(
+        self,
+        record: DashboardInterviewRecord,
+        cached_result: DashboardInterview | None,
+    ) -> DashboardInterview:
+        repository_interview = self._from_repository_record(record)
+        if cached_result is None:
+            return repository_interview
+        return DashboardInterview(
+            id=repository_interview.id,
+            filename=cached_result.filename or repository_interview.filename,
+            created_at=repository_interview.created_at,
+            status=cached_result.status,
+            summary=cached_result.summary,
+            transcript=cached_result.transcript,
+            persona_id=cached_result.persona_id,
+            persona_name=cached_result.persona_name,
+            is_non_target=cached_result.is_non_target,
+            income_band=cached_result.income_band,
+            borrowing_source=cached_result.borrowing_source,
+            borrowing_label=cached_result.borrowing_label,
+            is_borrower=cached_result.is_borrower,
+            loan_interest_label=cached_result.loan_interest_label,
+            interested_in_loan=cached_result.interested_in_loan,
+            smartphone_user=cached_result.smartphone_user,
+            has_bank_account=cached_result.has_bank_account,
+            digital_access=cached_result.digital_access,
+            extracted_json={
+                **repository_interview.extracted_json,
+                **cached_result.extracted_json,
+                "audio_url": repository_interview.extracted_json.get("audio_url"),
+            },
+            evidence_quotes=cached_result.evidence_quotes or repository_interview.evidence_quotes,
+            audio_bytes=cached_result.audio_bytes,
+            audio_format=cached_result.audio_format,
+        )
+
+    def _merge_detail_record(
+        self,
+        selected: DashboardInterview,
+        interview_detail_loader: Callable[[str], DashboardInterviewRecord],
+    ) -> DashboardInterview:
+        try:
+            detail = interview_detail_loader(selected.id)
+        except KeyError:
+            return selected
+        return self._overlay_cached_result(detail, selected)
+
+    def _persona_id_from_name(self, persona_name: str) -> str:
+        normalized = persona_name.strip().lower()
+        for persona_id, canonical_name in PERSONA_LOOKUP.items():
+            if canonical_name.lower() == normalized:
+                return persona_id
+        return "persona_4"
+
+    def _format_created_at(self, created_at: str) -> str:
+        try:
+            return datetime.fromisoformat(created_at).date().isoformat()
+        except ValueError:
+            return created_at
 
     def _nested_value(self, structured: dict[str, Any], field_name: str) -> str:
         value = structured.get(field_name)

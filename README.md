@@ -69,6 +69,7 @@ cp .env.example .env
 | `PAYDAY_ENABLE_UPLOADS` | No | `true` | Toggles the upload widget. |
 | `PAYDAY_ENABLE_DASHBOARD` | No | `true` | Toggles dashboard rendering. |
 | `PAYDAY_ENABLE_ANALYSIS` | No | `true` | Toggles the pipeline run button. |
+| `PAYDAY_SQLITE_PATH` | No | `data/payday.db` | Local SQLite path used for durable dashboard reads across app restarts. |
 
 ### Supabase variables
 
@@ -177,6 +178,8 @@ PAYDAY_ENABLE_ANALYSIS=true
 ```
 
 No live API keys are required in this mode.
+
+The dashboard also persists interview metadata, structured fields, and summaries into the local SQLite database at `PAYDAY_SQLITE_PATH`, so restarting Streamlit does not clear previously processed interviews as long as that file still exists.
 
 ### Demo workflow using `sample_data/`
 
