@@ -62,21 +62,56 @@ def test_pipeline_process_upload_returns_completed_result() -> None:
     assert service.list_results()
 
 
-def test_app_service_uses_configured_database_path(tmp_path) -> None:
-    database_path = tmp_path / "nested" / "payday.db"
-    settings = Settings(
-        app_env="test",
-        supabase=SupabaseSettings(),
-        llm=LLMSettings(),
-        transcription=TranscriptionSettings(),
-        database=DatabaseSettings(path=str(database_path)),
-        features=FeatureFlags(use_sample_mode=True),
+
+def test_pipeline_persists_interview_transcript_structured_response_and_insight() -> None:
+    service = PaydayAppService(build_settings())
+
+    result = service.process_upload(
+        "demo.wav",
+        "audio/wav",
+        (
+            b"I use WhatsApp on my smartphone. My bank account is active. "
+            b"I earn \xe2\x82\xb912,000 per month. I borrow from neighbors sometimes. "
+            b"I repay monthly after salary. I am worried about scams."
+        ),
     )
 
-    service = PaydayAppService(settings)
+    detail = service.repository.get_interview_detail(result.file_id)
 
-    assert service.repository.database_path == str(database_path)
-    assert database_path.parent.exists()
+    assert detail.interview.id == result.file_id
+    assert detail.interview.status == ProcessingStatus.COMPLETED.value
+    assert detail.interview.transcript is not None
+    assert "I use WhatsApp on my smartphone" in detail.interview.transcript
+    assert detail.structured_response is not None
+    assert detail.structured_response.smartphone_user is True
+    assert detail.structured_response.has_bank_account is True
+    assert detail.structured_response.income_range == "₹12,000"
+    assert detail.structured_response.borrowing_history == "has_borrowed"
+    assert detail.structured_response.repayment_preference == "monthly"
+    assert detail.structured_response.loan_interest == "fearful_or_uncertain"
+    assert detail.insight is not None
+    assert detail.insight.summary == result.analysis.summary
+    assert detail.insight.key_quotes == result.analysis.evidence_quotes
+    assert detail.insight.persona == result.persona.persona_name
+    assert detail.insight.confidence_score == 1.0
+
+
+def test_pipeline_persists_failed_interview_status_for_failed_runs() -> None:
+    settings = build_settings()
+    service = PaydayAppService(settings)
+    service.pipeline.transcription_service = FlakyTranscriptionService(settings.transcription)
+
+    result = service.process_upload("fail.wav", "audio/wav", b"This upload will fail transcription.")
+
+    detail = service.repository.get_interview_detail(result.file_id)
+
+    assert result.status is ProcessingStatus.FAILED
+    assert detail.interview.id == result.file_id
+    assert detail.interview.status == ProcessingStatus.FAILED.value
+    assert detail.interview.transcript is None
+    assert detail.structured_response is None
+    assert detail.insight is None
+    assert result.errors
 
 
 def test_repository_list_results_returns_pipeline_results_in_insertion_order() -> None:
