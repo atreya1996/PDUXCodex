@@ -96,13 +96,23 @@ class OpenAIAnalysisAdapter:
                 f"LLM_API_KEY is required when sample mode is disabled for provider '{self.settings.provider}'."
             )
 
-        response_payload = self._transport(prompt=prompt, model=self.settings.model, api_key=api_key)
+        response_payload = self._transport(
+            prompt=prompt,
+            model=self.settings.model,
+            api_key=api_key,
+        )
         return self._extract_output_text(response_payload)
 
     def _default_transport(self, *, prompt: str, model: str, api_key: str) -> dict[str, Any]:
-        payload = json.dumps({"model": model, "input": prompt}).encode("utf-8")
+        payload = json.dumps(
+            {
+                "model": model,
+                "input": prompt,
+                "text": {"format": {"type": "json_object"}},
+            }
+        ).encode("utf-8")
         http_request = request.Request(
-            "https://api.openai.com/v1/responses",
+            OPENAI_RESPONSES_URL,
             data=payload,
             headers={
                 "Authorization": f"Bearer {api_key}",
@@ -111,7 +121,7 @@ class OpenAIAnalysisAdapter:
             method="POST",
         )
         try:
-            with request.urlopen(http_request) as response:
+            with request.urlopen(http_request, timeout=OPENAI_REQUEST_TIMEOUT_SECONDS) as response:
                 return json.loads(response.read().decode("utf-8"))
         except error.HTTPError as exc:  # pragma: no cover - depends on live provider
             body = exc.read().decode("utf-8", errors="ignore")
@@ -296,8 +306,8 @@ class HeuristicAnalysisAdapter:
         return " ".join(words[:24]) + ("..." if len(words) > 24 else "")
 
 
-class OpenAIAnalysisAdapter:
-    """Live adapter that sends prompts to the OpenAI Responses API."""
+class AnthropicAnalysisAdapter:
+    """Placeholder adapter reserved for future live Anthropic support."""
 
     def __init__(self, settings: LLMSettings) -> None:
         self.settings = settings
@@ -312,39 +322,10 @@ class OpenAIAnalysisAdapter:
         expected_schema: dict[str, Any],
         attempt: int,
     ) -> str:
-        del transcript, expected_schema, attempt
-        if not self.settings.api_key:
-            raise RuntimeError("LLM_API_KEY is required for live OpenAI analysis.")
-
-        payload = {
-            "model": self.model_name,
-            "input": prompt,
-            "text": {"format": {"type": "json_object"}},
-        }
-        body = json.dumps(payload).encode("utf-8")
-        http_request = request.Request(
-            OPENAI_RESPONSES_URL,
-            data=body,
-            headers={
-                "Authorization": f"Bearer {self.settings.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
+        del prompt, transcript, expected_schema, attempt
+        raise RuntimeError(
+            "Anthropic analysis adapter is reserved for future live provider support and is not implemented yet."
         )
-
-        try:
-            with request.urlopen(http_request, timeout=OPENAI_REQUEST_TIMEOUT_SECONDS) as response:
-                response_payload = json.loads(response.read().decode("utf-8"))
-        except error.HTTPError as exc:
-            details = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"OpenAI analysis request failed with HTTP {exc.code}: {details}") from exc
-        except error.URLError as exc:
-            raise RuntimeError(f"OpenAI analysis request failed: {exc.reason}") from exc
-
-        raw_text = _extract_openai_output_text(response_payload)
-        if not raw_text.strip():
-            raise RuntimeError("OpenAI analysis request succeeded but returned no text output.")
-        return raw_text
 
 
 class AnalysisService:
@@ -588,11 +569,14 @@ class AnalysisService:
 def build_analysis_adapter(settings: LLMSettings, *, sample_mode: bool) -> AnalysisProviderAdapter:
     if sample_mode:
         return HeuristicAnalysisAdapter()
-    if settings.provider.strip().lower() == "openai":
+
+    provider = settings.provider.strip().lower()
+    if provider == "openai":
         return OpenAIAnalysisAdapter(settings)
-    return HeuristicAnalysisAdapter(
-        LLMSettings(provider=f"{settings.provider}-heuristic", model="heuristic-json")
-    )
+    if provider == "anthropic":
+        return AnthropicAnalysisAdapter(settings)
+
+    raise ValueError(f"Unsupported LLM provider '{settings.provider}' for live analysis.")
 
 
 def _field(value: str, evidence_quotes: list[str], notes: str) -> dict[str, Any]:
