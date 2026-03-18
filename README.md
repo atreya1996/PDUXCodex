@@ -49,7 +49,7 @@ sql/                           # Database schema and migrations
 - The pipeline is designed so each interview can succeed or fail independently.
 - Provider settings are injected through environment variables instead of hard-coded in the UI.
 - Sample mode lets developers exercise the end-to-end flow without live APIs.
-- The current implementation is still an MVP scaffold: some provider calls are placeholders, but the boundaries are intentionally explicit so production adapters can replace mock behavior cleanly.
+- The current implementation now includes a live OpenAI analysis adapter plus a heuristic fallback/sample adapter, while keeping provider boundaries explicit so additional production adapters can be added cleanly.
 
 ## Required environment variables
 
@@ -128,7 +128,7 @@ LLM_MODEL=gpt-4.1-mini
 LLM_API_KEY=your-key
 ```
 
-Use sample mode if you do not want a live LLM yet. In the current MVP scaffold, the analysis layer is already abstracted behind a provider adapter, so you can replace the heuristic/mock adapter with a production adapter without changing the dashboard.
+Set `PAYDAY_USE_SAMPLE_MODE=false` to use the live OpenAI analysis adapter. Keep sample mode enabled if you want the heuristic adapter for demos or local development without API keys. Unsupported live providers currently fall back to the heuristic adapter until more provider integrations are added.
 
 ### Transcription provider selection
 
