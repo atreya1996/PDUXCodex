@@ -1,7 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+import json
+import re
+from dataclasses import dataclass
+from typing import Any, Protocol
 
+from payday.config import LLMSettings
+from payday.context_loader import ContextMemory, build_analysis_prompt, load_context_memory
 from payday.models import AnalysisResult, Transcript
 
 DEFAULT_UNKNOWN_VALUE = "unknown"
@@ -72,30 +77,122 @@ class HeuristicAnalysisAdapter:
     ) -> str:
         del prompt, expected_schema, attempt
         text = transcript.text.strip()
-        words = text.split()
-        summary = " ".join(words[:25]) + ("..." if len(words) > 25 else "")
-        evidence_quotes = self._extract_quotes(text)
-        structured_output = {
-            "transcript_summary": summary or "No transcript content available.",
-            "evidence_quotes": evidence_quotes,
-            "participant_profile": {
-                "smartphone_user": self._detect_smartphone_user(text),
-                "has_bank_account": self._detect_bank_account(text),
+        sentences = _split_sentences(text)
+        key_quotes = sentences[:2]
+        payload = {
+            "smartphone_usage": self._smartphone_usage(text),
+            "bank_account_status": self._bank_account_status(text),
+            "income_range": self._income_range(text),
+            "borrowing_history": self._borrowing_history(text),
+            "repayment_preference": self._repayment_preference(text),
+            "loan_interest": self._loan_interest(text),
+            "summary": {
+                "value": self._summary(text),
+                "status": "observed" if text else "missing",
+                "evidence_quotes": key_quotes,
+                "notes": "Heuristic sample-mode summary grounded in transcript text.",
             },
-            "persona_signals": {
-                "employer_dependency": self._detect_employer_dependency(text),
-                "digital_readiness": self._detect_digital_readiness(text),
-                "digital_borrowing": self._detect_digital_borrowing(text),
-                "trust_fear_barrier": self._detect_trust_fear_barrier(text),
-                "self_reliance_non_borrowing": self._detect_self_reliance_non_borrowing(text),
-                "cyclical_borrowing": self._detect_cyclical_borrowing(text),
-                "repayment_stress": self._detect_repayment_stress(text),
-            },
-            "signals": self._extract_signals(text),
+            "key_quotes": key_quotes,
         }
-
         payload["confidence_signals"] = _build_confidence_signals(payload)
         return json.dumps(payload)
+
+    def _smartphone_usage(self, text: str) -> dict[str, Any]:
+        evidence = _matching_phrases(
+            text,
+            ("whatsapp", "smartphone", "upi", "google pay", "phonepe", "paytm"),
+        )
+        negative = _matching_phrases(
+            text,
+            ("basic phone", "feature phone", "no smartphone", "without smartphone"),
+        )
+        if negative:
+            return _field("no_smartphone", negative, "Direct evidence that the participant lacks a smartphone.")
+        if evidence:
+            return _field("has_smartphone", evidence, "Direct evidence of smartphone or digital-app usage.")
+        return AnalysisField(notes="No direct transcript evidence about smartphone access.").as_dict()
+
+    def _bank_account_status(self, text: str) -> dict[str, Any]:
+        positive = _matching_phrases(
+            text,
+            ("bank account", "salary in bank", "account is active", "money goes to bank"),
+        )
+        negative = _matching_phrases(
+            text,
+            ("no bank account", "without bank account", "unbanked", "do not have a bank account"),
+        )
+        if negative:
+            return _field("no_bank_account", negative, "Direct evidence that the participant lacks a bank account.")
+        if positive:
+            return _field("has_bank_account", positive, "Direct evidence of an active or available bank account.")
+        return AnalysisField(notes="No direct transcript evidence about bank-account access.").as_dict()
+
+    def _income_range(self, text: str) -> dict[str, Any]:
+        rupee_match = re.search(r"₹\s?([\d,]+)", text)
+        monthly_match = re.search(r"(\d{1,2}[,\d]{0,4})\s*(?:rupees|rs)\s*(?:per month|monthly)", text, re.IGNORECASE)
+        if rupee_match:
+            amount = rupee_match.group(1)
+            return _field(f"₹{amount}", _evidence_for_match(text, rupee_match.group(0)), "Income amount quoted directly.")
+        if monthly_match:
+            amount = monthly_match.group(1)
+            return _field(f"₹{amount}", _evidence_for_match(text, monthly_match.group(0)), "Income amount quoted directly.")
+        return AnalysisField(notes="No direct transcript evidence about income.").as_dict()
+
+    def _borrowing_history(self, text: str) -> dict[str, Any]:
+        borrowed = _matching_phrases(
+            text,
+            (
+                "borrow",
+                "borrowed",
+                "loan",
+                "employer first",
+                "neighbors",
+                "moneylender",
+                "family",
+            ),
+        )
+        not_borrowing = _matching_phrases(text, ("do not borrow", "don't borrow", "avoid loans", "use my savings"))
+        if not_borrowing:
+            return _field("has_not_borrowed_recently", not_borrowing, "Direct evidence of non-borrowing or self-reliance.")
+        if borrowed:
+            return _field("has_borrowed", borrowed, "Direct evidence that the participant borrows or has borrowed.")
+        return AnalysisField(notes="No direct transcript evidence about borrowing history.").as_dict()
+
+    def _repayment_preference(self, text: str) -> dict[str, Any]:
+        for value, phrases in {
+            "daily": ("daily", "every day"),
+            "weekly": ("weekly", "every week"),
+            "monthly": ("monthly", "after salary", "every month"),
+        }.items():
+            evidence = _matching_phrases(text, phrases)
+            if evidence:
+                return _field(value, evidence, "Repayment timing stated directly in the transcript.")
+        return AnalysisField(notes="No direct transcript evidence about repayment preference.").as_dict()
+
+    def _loan_interest(self, text: str) -> dict[str, Any]:
+        fearful = _matching_phrases(text, ("afraid", "fear", "scam", "worried", "don't trust", "do not trust"))
+        interested = _matching_phrases(text, ("interested", "would take", "want loan", "need a loan"))
+        not_interested = _matching_phrases(text, ("not interested", "don't want a loan", "do not want a loan"))
+        if fearful:
+            return _field(
+                "fearful_or_uncertain",
+                fearful,
+                "Trust or safety concern is explicitly mentioned in the transcript.",
+            )
+        if interested:
+            return _field("interested", interested, "Participant directly expresses interest in borrowing.")
+        if not_interested:
+            return _field("not_interested", not_interested, "Participant directly declines loan interest.")
+        return AnalysisField(notes="No direct transcript evidence about loan interest.").as_dict()
+
+    def _summary(self, text: str) -> str:
+        if not text:
+            return "No transcript content available."
+        sentences = _split_sentences(text)
+        if sentences:
+            return " ".join(sentences[:2])
+        words = text.split()
+        return " ".join(words[:24]) + ("..." if len(words) > 24 else "")
 
 
 class AnalysisService:
@@ -117,7 +214,6 @@ class AnalysisService:
     def analyze(self, transcript: Transcript) -> AnalysisResult:
         prompt = self._build_prompt(transcript)
         last_error: AnalysisSchemaError | None = None
-        raw_response = ""
 
         for attempt in range(1, self.max_json_retries + 2):
             raw_response = self.adapter.generate_analysis(
@@ -128,7 +224,6 @@ class AnalysisService:
             )
             try:
                 structured_output = self._parse_and_validate(raw_response, transcript.text)
-                evidence_quotes = structured_output["key_quotes"]
                 return AnalysisResult(
                     summary=structured_output["summary"]["value"],
                     metrics={
@@ -141,11 +236,16 @@ class AnalysisService:
                         "json_attempts": attempt,
                     },
                     structured_output=structured_output,
-                    evidence_quotes=evidence_quotes,
+                    evidence_quotes=structured_output["key_quotes"],
                 )
             except AnalysisSchemaError as exc:
                 last_error = exc
-                prompt = self._build_retry_prompt(transcript, previous_prompt=prompt, error=exc, raw_response=raw_response)
+                prompt = self._build_retry_prompt(
+                    transcript,
+                    previous_prompt=prompt,
+                    error=exc,
+                    raw_response=raw_response,
+                )
 
         raise AnalysisSchemaError(
             f"Analysis provider returned invalid JSON after {self.max_json_retries + 1} attempts: {last_error}"
@@ -224,6 +324,7 @@ class AnalysisService:
         error: AnalysisSchemaError,
         raw_response: str,
     ) -> str:
+        del transcript
         return (
             f"{previous_prompt}\n\n"
             "The previous response was invalid. Return corrected JSON only.\n"
@@ -242,11 +343,7 @@ class AnalysisService:
 
         normalized: dict[str, Any] = {}
         for field_name in FIELD_NAMES:
-            normalized[field_name] = self._normalize_field(
-                field_name,
-                payload.get(field_name),
-                transcript_text,
-            )
+            normalized[field_name] = self._normalize_field(field_name, payload.get(field_name), transcript_text)
 
         normalized["key_quotes"] = self._normalize_quote_list(payload.get("key_quotes"), transcript_text)
         normalized["confidence_signals"] = self._normalize_confidence_signals(
@@ -271,9 +368,7 @@ class AnalysisService:
         normalized_value = str(value.get("value", DEFAULT_UNKNOWN_VALUE)).strip() or DEFAULT_UNKNOWN_VALUE
         normalized_status = str(value.get("status", "unknown")).strip().lower() or "unknown"
         if normalized_status not in ALLOWED_FIELD_STATUSES:
-            raise AnalysisSchemaError(
-                f"Field '{field_name}' has invalid status '{normalized_status}'."
-            )
+            raise AnalysisSchemaError(f"Field '{field_name}' has invalid status '{normalized_status}'.")
 
         evidence_quotes = self._normalize_quote_list(value.get("evidence_quotes"), transcript_text)
         notes = str(value.get("notes", "")).strip()
@@ -313,8 +408,8 @@ class AnalysisService:
         if value is not None and not isinstance(value, dict):
             raise AnalysisSchemaError("'confidence_signals' must be an object.")
 
-        observed = []
-        missing_or_unknown = []
+        observed: list[str] = []
+        missing_or_unknown: list[str] = []
         for field_name in FIELD_NAMES:
             field = normalized_fields[field_name]
             label = f"{field_name}: {field['value']}"
@@ -332,180 +427,93 @@ class AnalysisService:
             "missing_or_unknown": _dedupe_preserve_order(missing_or_unknown),
         }
 
-    def _build_evidence_field(self, field_name: str, value: bool | None, evidence: Iterable[str]) -> dict[str, object]:
-        return {
-            "value": value,
-            "field": field_name,
-            "evidence": [item for item in evidence if item],
-        }
 
-    def _detect_smartphone_user(self, text: str) -> dict[str, object]:
-        negative_matches = self._matching_phrases(
-            text,
-            (
-                "no smartphone",
-                "do not have a smartphone",
-                "don't have a smartphone",
-                "without smartphone",
-                "basic phone",
-                "feature phone",
-            ),
-        )
-        if negative_matches:
-            return self._build_evidence_field("participant_profile.smartphone_user", False, negative_matches)
+def _field(value: str, evidence_quotes: list[str], notes: str) -> dict[str, Any]:
+    return AnalysisField(
+        value=value,
+        status="observed",
+        evidence_quotes=tuple(evidence_quotes),
+        notes=notes,
+    ).as_dict()
 
-        positive_matches = self._matching_phrases(
-            text,
-            (
-                "smartphone",
-                "whatsapp",
-                "upi",
-                "google pay",
-                "phonepe",
-                "paytm",
-                "online app",
-            ),
-        )
-        if positive_matches:
-            return self._build_evidence_field("participant_profile.smartphone_user", True, positive_matches)
 
-        return self._build_evidence_field("participant_profile.smartphone_user", None, ())
+def _split_sentences(text: str) -> list[str]:
+    if not text.strip():
+        return []
+    return [segment.strip() for segment in re.split(r"(?<=[.!?])\s+", text.strip()) if segment.strip()]
 
-    def _detect_bank_account(self, text: str) -> dict[str, object]:
-        negative_matches = self._matching_phrases(
-            text,
-            (
-                "no bank account",
-                "do not have a bank account",
-                "don't have a bank account",
-                "without bank account",
-                "unbanked",
-            ),
-        )
-        if negative_matches:
-            return self._build_evidence_field("participant_profile.has_bank_account", False, negative_matches)
 
-        positive_matches = self._matching_phrases(
-            text,
-            (
-                "bank account",
-                "my account",
-                "salary in bank",
-                "money goes to bank",
-                "account is active",
-            ),
-        )
-        if positive_matches:
-            return self._build_evidence_field("participant_profile.has_bank_account", True, positive_matches)
+def _matching_phrases(text: str, phrases: tuple[str, ...]) -> list[str]:
+    lowered = text.lower()
+    matches: list[str] = []
+    for phrase in phrases:
+        if phrase in lowered:
+            aligned = _align_quote_to_transcript(phrase, text)
+            matches.append(aligned or phrase)
+    return _dedupe_preserve_order(matches)
 
-        return self._build_evidence_field("participant_profile.has_bank_account", None, ())
 
-    def _detect_employer_dependency(self, text: str) -> dict[str, object]:
-        matches = self._matching_phrases(
-            text,
-            (
-                "employer told me",
-                "employer helped",
-                "madam helped",
-                "sir helped",
-                "madam asked me",
-                "through my employer",
-                "boss helped",
-            ),
-        )
-        return self._build_evidence_field("persona_signals.employer_dependency", bool(matches), matches)
+def _evidence_for_match(text: str, matched_text: str) -> list[str]:
+    aligned = _align_quote_to_transcript(matched_text, text)
+    return [aligned] if aligned else [matched_text]
 
-    def _detect_digital_readiness(self, text: str) -> dict[str, object]:
-        matches = self._matching_phrases(
-            text,
-            (
-                "whatsapp",
-                "upi",
-                "google pay",
-                "phonepe",
-                "paytm",
-                "online",
-                "loan app",
-                "digital",
-            ),
-        )
-        return self._build_evidence_field("persona_signals.digital_readiness", bool(matches), matches)
 
-    def _detect_digital_borrowing(self, text: str) -> dict[str, object]:
-        matches = self._matching_phrases(
-            text,
-            (
-                "loan app",
-                "borrow online",
-                "digital loan",
-                "took loan on app",
-                "upi loan",
-                "whatsapp loan",
-            ),
-        )
-        return self._build_evidence_field("persona_signals.digital_borrowing", bool(matches), matches)
+def _align_quote_to_transcript(candidate: str, transcript_text: str) -> str:
+    candidate = candidate.strip()
+    transcript_text = transcript_text.strip()
+    if not candidate or not transcript_text:
+        return ""
+    if candidate in transcript_text:
+        return candidate
 
-    def _detect_trust_fear_barrier(self, text: str) -> dict[str, object]:
-        matches = self._matching_phrases(
-            text,
-            (
-                "afraid",
-                "fear",
-                "scam",
-                "do not trust",
-                "don't trust",
-                "worried",
-                "nervous",
-                "risk",
-            ),
-        )
-        return self._build_evidence_field("persona_signals.trust_fear_barrier", bool(matches), matches)
+    lowered_candidate = candidate.lower()
+    lowered_transcript = transcript_text.lower()
+    start = lowered_transcript.find(lowered_candidate)
+    if start == -1:
+        for sentence in _split_sentences(transcript_text):
+            if lowered_candidate in sentence.lower():
+                return sentence.strip()
+        return candidate
+    end = start + len(candidate)
+    return transcript_text[start:end]
 
-    def _detect_self_reliance_non_borrowing(self, text: str) -> dict[str, object]:
-        matches = self._matching_phrases(
-            text,
-            (
-                "i avoid loans",
-                "i do not borrow",
-                "i don't borrow",
-                "use my savings",
-                "manage on my own",
-                "self manage",
-                "save first",
-                "borrow only from myself",
-            ),
-        )
-        return self._build_evidence_field("persona_signals.self_reliance_non_borrowing", bool(matches), matches)
 
-    def _detect_cyclical_borrowing(self, text: str) -> dict[str, object]:
-        matches = self._matching_phrases(
-            text,
-            (
-                "every month",
-                "monthly loan",
-                "again and again",
-                "borrow repeatedly",
-                "loan cycle",
-                "take another loan",
-            ),
-        )
-        return self._build_evidence_field("persona_signals.cyclical_borrowing", bool(matches), matches)
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise AnalysisSchemaError("Confidence signal collections must be arrays of strings.")
+    items: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise AnalysisSchemaError("Confidence signal entries must be strings.")
+        normalized = item.strip()
+        if normalized:
+            items.append(normalized)
+    return items
 
-    def _detect_repayment_stress(self, text: str) -> dict[str, object]:
-        matches = self._matching_phrases(
-            text,
-            (
-                "stress",
-                "pressure",
-                "repay",
-                "repayment",
-                "debt",
-                "collection calls",
-                "tension",
-            ),
-        )
-        return self._build_evidence_field("persona_signals.repayment_stress", bool(matches), matches)
 
-    def _matching_phrases(self, text: str, phrases: tuple[str, ...]) -> list[str]:
-        lowered = text.lower()
-        return [phrase for phrase in phrases if phrase in lowered]
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            deduped.append(value)
+            seen.add(value)
+    return deduped
+
+
+def _build_confidence_signals(payload: dict[str, Any]) -> dict[str, list[str]]:
+    observed: list[str] = []
+    missing_or_unknown: list[str] = []
+    for field_name in FIELD_NAMES:
+        field = payload[field_name]
+        label = f"{field_name}: {field['value']}"
+        if field["status"] == "observed":
+            observed.append(label)
+        else:
+            missing_or_unknown.append(label)
+    return {
+        "observed_evidence": observed,
+        "missing_or_unknown": missing_or_unknown,
+    }

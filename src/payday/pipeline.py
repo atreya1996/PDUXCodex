@@ -48,41 +48,12 @@ class PaydayPipeline:
         self.sample_mode = sample_mode
         self.max_retries = max_retries
 
-    def process_upload(self, filename: str, content_type: str, data: bytes) -> PipelineResult:
-        asset = self.upload_service.create_asset(filename=filename, content_type=content_type, data=data)
-        interview = self.repository.create_interview(
-            audio_url=self.storage_service.build_audio_path(interview_id="pending", filename=filename),
-            status="processing",
-        )
-        audio_url = self.storage_service.upload_audio(
-            asset=asset,
-            interview_id=interview.id,
-            sample_mode=self.sample_mode,
-        )
-        self.repository.update_interview(interview.id, audio_url=audio_url)
-
-        transcript = self.transcription_service.transcribe(asset, sample_mode=self.sample_mode)
-        analysis = self.analysis_service.analyze(transcript)
-        persisted = bool(audio_url)
-
-        self.repository.update_interview(
-            interview.id,
-            transcript=transcript.text,
-            status="completed" if persisted else "processed",
-        )
-        self.repository.upsert_insight(
-            interview.id,
-            summary=analysis.summary,
-            key_quotes=[],
-            persona=analysis.persona_matches[0],
-            confidence_score=1.0 if analysis.persona_matches else 0.0,
-        )
-
-        result = PipelineResult(
-            asset=asset,
-            transcript=transcript,
-            analysis=analysis,
-            persisted=persisted,
+    def upload_audio(self, item: BatchUploadItem) -> UploadedAsset:
+        return self.upload_service.create_asset(
+            filename=item.filename,
+            content_type=item.content_type,
+            data=item.data,
+            file_id=item.file_id,
         )
 
     def transcribe_audio(self, asset: UploadedAsset) -> tuple[Transcript, int]:

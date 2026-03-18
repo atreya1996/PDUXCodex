@@ -1,11 +1,12 @@
-from payday.analysis import AnalysisService
+from __future__ import annotations
+
 from payday.config import FeatureFlags, LLMSettings, Settings, SupabaseSettings, TranscriptionSettings
-from payday.models import AnalysisResult, BatchUploadItem, PipelineStage, ProcessingStatus, Transcript
+from payday.models import AnalysisResult, BatchUploadItem, PipelineStage, ProcessingStatus, Transcript, UploadedAsset
 from payday.personas import PersonaService
-from payday.pipeline import PaydayPipeline
 from payday.repository import PaydayRepository
 from payday.service import PaydayAppService
 from payday.storage import StorageService
+from payday.transcription import TranscriptionService
 
 
 class FlakyTranscriptionService(TranscriptionService):
@@ -13,7 +14,7 @@ class FlakyTranscriptionService(TranscriptionService):
         super().__init__(settings)
         self.calls: dict[str, int] = {}
 
-    def transcribe(self, asset, sample_mode: bool = False):
+    def transcribe(self, asset: UploadedAsset, sample_mode: bool = False) -> Transcript:
         self.calls.setdefault(asset.file_id, 0)
         self.calls[asset.file_id] += 1
         if asset.filename == "retry.wav" and self.calls[asset.file_id] == 1:
@@ -44,7 +45,11 @@ def build_analysis(structured_output: dict) -> AnalysisResult:
 def test_pipeline_process_upload_returns_completed_result() -> None:
     service = PaydayAppService(build_settings())
 
-    result = service.process_upload("demo.wav", "audio/wav", b"fake-bytes")
+    result = service.process_upload(
+        "demo.wav",
+        "audio/wav",
+        b"I use WhatsApp and my bank account is active. I earn \\xe2\\x82\\xb912,000 per month.",
+    )
 
     assert result.asset is not None
     assert result.asset.filename == "demo.wav"
@@ -78,11 +83,8 @@ def test_repository_crud_supports_interview_related_tables(tmp_path) -> None:
         confidence_score=0.86,
     )
 
-    assert result.persona is not None
-    assert result.persona.persona_id == "persona_3"
-    assert result.persona.is_non_target is True
-    assert result.persona.explanation_payload["triggered_fields"] == ["participant_profile.has_bank_account"]
-
+    listing = repository.list_interviews()
+    detail = repository.get_interview_detail(interview.id)
 
     assert listing[0].id == interview.id
     assert detail.interview.status == "completed"
@@ -101,10 +103,52 @@ def test_storage_service_builds_predictable_audio_paths() -> None:
         raw_bytes=b"123",
     )
 
-    assert result.persona is not None
-    assert result.persona.persona_id == "persona_3"
-    assert result.persona.is_non_target is True
-    assert result.persona.explanation_payload["triggered_fields"] == ["participant_profile.smartphone_user"]
+    assert storage.build_audio_path("interview-123", asset.filename) == "audio/interview-123/demo_clip.wav"
+    assert storage.store_asset(asset, sample_mode=True) is True
+
+
+def test_persona_classifier_uses_bank_account_override() -> None:
+    persona = PersonaService().classify(
+        build_transcript(),
+        build_analysis(
+            {
+                "participant_profile": {
+                    "smartphone_user": {"value": True, "evidence": ["whatsapp"]},
+                    "has_bank_account": {"value": False, "evidence": ["no bank account"]},
+                },
+                "persona_signals": {
+                    "digital_readiness": {"value": True, "evidence": ["uses apps"]},
+                    "trust_fear_barrier": {"value": True, "evidence": ["worried"]},
+                },
+            }
+        ),
+    )
+
+    assert persona.persona_id == "persona_3"
+    assert persona.is_non_target is True
+    assert persona.explanation_payload["triggered_fields"] == ["participant_profile.has_bank_account"]
+
+
+def test_persona_classifier_uses_smartphone_override() -> None:
+    persona = PersonaService().classify(
+        build_transcript(),
+        build_analysis(
+            {
+                "participant_profile": {
+                    "smartphone_user": {"value": False, "evidence": ["basic phone"]},
+                    "has_bank_account": {"value": True, "evidence": ["bank account"]},
+                },
+                "persona_signals": {
+                    "cyclical_borrowing": {"value": True, "evidence": ["every month"]},
+                    "repayment_stress": {"value": True, "evidence": ["repay pressure"]},
+                },
+            }
+        ),
+    )
+
+    assert persona.persona_id == "persona_3"
+    assert persona.is_non_target is True
+    assert persona.explanation_payload["triggered_fields"] == ["participant_profile.smartphone_user"]
 
 
 def test_persona_classifier_uses_structured_fields_for_persona_one() -> None:
@@ -130,30 +174,6 @@ def test_persona_classifier_uses_structured_fields_for_persona_one() -> None:
         "persona_signals.digital_borrowing",
     ]
     assert persona.evidence_quotes == ("madam helped", "loan app")
-
-
-
-def test_persona_classifier_prioritizes_override_before_other_matches() -> None:
-    persona = PersonaService().classify(
-        build_transcript(),
-        build_analysis(
-            {
-                "participant_profile": {
-                    "smartphone_user": {"value": False, "evidence": ["basic phone"]},
-                    "has_bank_account": {"value": True, "evidence": ["bank account"]},
-                },
-                "persona_signals": {
-                    "cyclical_borrowing": {"value": True, "evidence": ["every month"]},
-                    "repayment_stress": {"value": True, "evidence": ["repay pressure"]},
-                },
-            }
-        ),
-    )
-
-    assert persona.persona_id == "persona_3"
-    assert persona.is_non_target is True
-    assert persona.explanation_payload["decision_type"] == "override"
-
 
 
 def test_persona_classifier_matches_persona_five_before_lower_priority_rules() -> None:
