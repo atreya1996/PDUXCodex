@@ -118,34 +118,45 @@ class OpenAIAnalysisAdapter:
                 return json.loads(response.read().decode("utf-8"))
         except error.HTTPError as exc:  # pragma: no cover - depends on live provider
             body = exc.read().decode("utf-8", errors="ignore")
-            raise ExternalProviderError(f"OpenAI analysis request failed with HTTP {exc.code}: {body}") from exc
+            detail = body.strip() or exc.reason
+            raise ExternalProviderError(
+                f"OpenAI analysis request failed with status {exc.code}: {detail}"
+            ) from exc
         except error.URLError as exc:  # pragma: no cover - depends on live provider
-            raise ExternalProviderError(f"OpenAI analysis request failed: {exc.reason}") from exc
+            raise ExternalProviderError(f"Unable to reach OpenAI Responses API: {exc.reason}") from exc
+        except TimeoutError as exc:  # pragma: no cover - depends on live provider
+            raise ExternalProviderError("Timed out while waiting for the OpenAI Responses API.") from exc
 
-    def _extract_output_text(self, response_payload: Any) -> str:
-        if isinstance(response_payload, str):
-            return response_payload
-        if not isinstance(response_payload, dict):
-            raise ExternalProviderError("OpenAI analysis provider returned an unsupported response shape.")
+    @staticmethod
+    def _extract_output_text(response_payload: dict[str, Any]) -> str:
+        output_items = response_payload.get("output")
+        if not isinstance(output_items, list):
+            return ""
 
-        provider_error = response_payload.get("error")
-        if isinstance(provider_error, dict):
-            message = provider_error.get("message") or provider_error.get("type") or "unknown provider error"
-            raise ExternalProviderError(f"OpenAI analysis provider error: {message}")
-
-        output_text = _extract_openai_output_text(response_payload)
-        if output_text:
-            return output_text
-        raise ExternalProviderError("OpenAI analysis provider response did not include output text.")
+        text_chunks: list[str] = []
+        for item in output_items:
+            if not isinstance(item, dict):
+                continue
+            content_items = item.get("content")
+            if not isinstance(content_items, list):
+                continue
+            for content in content_items:
+                if not isinstance(content, dict):
+                    continue
+                if content.get("type") in {"output_text", "text"}:
+                    text_value = content.get("text")
+                    if isinstance(text_value, str):
+                        text_chunks.append(text_value)
+        return "".join(text_chunks).strip()
 
 
 class AnthropicAnalysisAdapter:
-    """Placeholder adapter reserved for future live Anthropic support."""
+    """Placeholder adapter reserved for future Anthropic live support."""
 
     def __init__(self, settings: LLMSettings) -> None:
         self.settings = settings
-        self.provider_name = f"{settings.provider}-heuristic"
-        self.model_name = "heuristic-json"
+        self.provider_name = "anthropic"
+        self.model_name = settings.model
 
     def generate_analysis(
         self,
@@ -157,8 +168,9 @@ class AnthropicAnalysisAdapter:
     ) -> str:
         del prompt, transcript, expected_schema, attempt
         raise ExternalProviderError(
-            "Anthropic live analysis adapter is reserved for future implementation."
+            "Anthropic live analysis is not implemented yet. Use OpenAI or enable sample mode."
         )
+
 
 
 class HeuristicAnalysisAdapter:
@@ -541,13 +553,15 @@ class AnalysisService:
 
 
 def build_analysis_adapter(settings: LLMSettings, *, sample_mode: bool) -> AnalysisProviderAdapter:
-    provider = settings.provider.strip().lower()
     if sample_mode:
         return HeuristicAnalysisAdapter()
+
+    provider = settings.provider.strip().lower()
     if provider == "openai":
         return OpenAIAnalysisAdapter(settings)
     if provider == "anthropic":
         return AnthropicAnalysisAdapter(settings)
+
     return HeuristicAnalysisAdapter(
         LLMSettings(provider=f"{settings.provider}-heuristic", model="heuristic-json")
     )
