@@ -98,8 +98,8 @@ class PaydayPipeline:
 
     def process_batch_uploads(self, items: Iterable[BatchUploadItem]) -> BatchPipelineResult:
         batch_items = list(items)
-        if not 5 <= len(batch_items) <= 10:
-            raise ValueError("Batch uploads must contain between 5 and 10 files.")
+        if not 1 <= len(batch_items) <= 10:
+            raise ValueError("Batch uploads must contain between 1 and 10 files.")
         results = [self._process_item(item) for item in batch_items]
         return BatchPipelineResult(batch_id=uuid4().hex, results=results)
 

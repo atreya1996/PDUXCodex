@@ -6,7 +6,7 @@ PayDay is an MVP for analyzing interview recordings from domestic workers in Ind
 
 PayDay helps a product or research team:
 
-- upload interview recordings in batches,
+- upload single interviews first and then scale to batches,
 - transcribe each file,
 - turn transcripts into structured evidence,
 - classify interviews into the canonical personas, and
@@ -201,11 +201,12 @@ When `PAYDAY_USE_SAMPLE_MODE=false` and `TRANSCRIPTION_PROVIDER=openai`, the tra
 
 Use the checklist below before considering the local demo ready.
 
-### 1. Upload 10 files
+### 1. Upload 1 file first, then 10 files
 
 - Start Streamlit in sample mode.
-- Upload the ten files from `sample_data/mock_uploads/`.
-- Confirm all ten files are accepted by the uploader.
+- Upload one small file first and confirm it processes end to end.
+- Then upload the ten files from `sample_data/mock_uploads/`.
+- Confirm all selected files are accepted by the uploader.
 
 ### 2. All files process independently
 

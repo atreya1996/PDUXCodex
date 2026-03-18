@@ -13,6 +13,10 @@ class ExternalTranscriptionProviderError(RuntimeError):
     """Raised when an external transcription provider cannot transcribe audio."""
 
 
+class TranscriptionProviderError(ValueError):
+    """Raised when an unsupported transcription provider is configured."""
+
+
 class TranscriptionProviderAdapter(Protocol):
     provider_name: str
     model_name: str
@@ -48,7 +52,14 @@ class OpenAITranscriptionAdapter:
             text=transcript_text,
             provider=self.provider_name,
             model=self.model_name,
-            metadata={"sample_mode": False, "source": asset.filename},
+            metadata={
+                "sample_mode": False,
+                "filename": asset.filename,
+                "file_id": asset.file_id,
+                "content_type": asset.content_type,
+                "size_bytes": asset.size_bytes,
+                "source": asset.filename,
+            },
         )
 
     def _default_transport(self, *, asset: UploadedAsset, model: str, api_key: str) -> dict[str, Any]:
@@ -82,9 +93,7 @@ class OpenAITranscriptionAdapter:
             b"",
             model.encode("utf-8"),
             b"--" + boundary_bytes,
-            (
-                f'Content-Disposition: form-data; name="file"; filename="{asset.filename}"'.encode("utf-8")
-            ),
+            f'Content-Disposition: form-data; name="file"; filename="{asset.filename}"'.encode("utf-8"),
             f"Content-Type: {asset.content_type}".encode("utf-8"),
             b"",
             asset.raw_bytes,
@@ -123,9 +132,11 @@ class TranscriptionService:
         settings: TranscriptionSettings,
         *,
         adapter: TranscriptionProviderAdapter | None = None,
+        client: Any | None = None,
     ) -> None:
         self.settings = settings
         self.adapter = adapter
+        self._client = client
 
     def transcribe(self, asset: UploadedAsset, sample_mode: bool = False) -> Transcript:
         if sample_mode:
@@ -144,30 +155,79 @@ class TranscriptionService:
         provider = self.settings.provider.strip().lower()
         if provider == "openai":
             return self._transcribe_with_openai(asset)
-        raise ValueError(f"Unsupported transcription provider: {self.settings.provider}")
+        raise TranscriptionProviderError(f"Unsupported transcription provider: {self.settings.provider}")
 
     def _transcribe_with_openai(self, asset: UploadedAsset) -> Transcript:
-        from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
+        if not self.settings.api_key.strip():
+            raise ValueError(
+                f"TRANSCRIPTION_API_KEY is required when sample mode is disabled for provider '{self.settings.provider}'."
+            )
 
-        if not self.settings.api_key:
-            raise ValueError("TRANSCRIPTION_API_KEY must be configured when sample mode is disabled.")
+        if self.adapter is not None:
+            return self.adapter.transcribe(asset)
 
-        client = self._client
-        if client is None:
+        if self._client is not None:
+            client = self._client
+        else:  # pragma: no cover - exercised in live/manual validation
+            from openai import OpenAI
+
             client = OpenAI(
                 api_key=self.settings.api_key,
                 max_retries=0,
                 timeout=self.settings.timeout_seconds,
             )
-            return Transcript(
-                text=text,
-                provider=self.settings.provider,
-                model=self.settings.model,
-                metadata={"sample_mode": sample_mode, "source": asset.filename},
-            )
 
-        adapter = self.adapter or self._build_default_adapter()
-        return adapter.transcribe(asset)
+        try:
+            response = client.audio.transcriptions.create(
+                model=self.settings.model,
+                file=(asset.filename, asset.raw_bytes, asset.content_type),
+            )
+        except Exception as exc:  # pragma: no cover - exact types depend on provider/runtime
+            message = str(exc) or exc.__class__.__name__
+            if "timed out" in message.lower() or "timeout" in exc.__class__.__name__.lower():
+                raise TimeoutError(message) from exc
+            raise ExternalTranscriptionProviderError(message) from exc
+
+        text = getattr(response, "text", "")
+        if not isinstance(text, str) or not text.strip():
+            raise ExternalTranscriptionProviderError("OpenAI transcription provider returned an empty transcript.")
+
+        metadata = {
+            "sample_mode": False,
+            "filename": asset.filename,
+            "file_id": asset.file_id,
+            "content_type": asset.content_type,
+            "size_bytes": asset.size_bytes,
+            "source": asset.filename,
+        }
+        language = getattr(response, "language", None)
+        if language:
+            metadata["language"] = language
+        duration = getattr(response, "duration", None)
+        if duration is not None:
+            metadata["duration_seconds"] = duration
+
+        return Transcript(
+            text=text,
+            provider=self.settings.provider,
+            model=self.settings.model,
+            metadata=metadata,
+        )
+
+    def _build_transcript(self, *, asset: UploadedAsset, sample_mode: bool, text: str) -> Transcript:
+        return Transcript(
+            text=text,
+            provider=self.settings.provider,
+            model=self.settings.model,
+            metadata={
+                "sample_mode": sample_mode,
+                "filename": asset.filename,
+                "file_id": asset.file_id,
+                "content_type": asset.content_type,
+                "size_bytes": asset.size_bytes,
+                "source": asset.filename,
+            },
+        )
 
     def _build_default_adapter(self) -> TranscriptionProviderAdapter:
         if self.settings.provider == "openai":
