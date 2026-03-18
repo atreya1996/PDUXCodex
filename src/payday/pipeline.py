@@ -105,19 +105,30 @@ class PaydayPipeline:
 
     def _process_item(self, item: BatchUploadItem) -> PipelineResult:
         result = PipelineResult(file_id=item.file_id, filename=item.filename)
-        self._sync_result(result)
+        self.repository.save_result(result)
+        interview = self.repository.create_interview(
+            interview_id=item.file_id,
+            audio_url=self.storage_service.build_audio_path(item.file_id, item.filename),
+            status=ProcessingStatus.PENDING.value,
+        )
 
         try:
             result.status = ProcessingStatus.PROCESSING
             result.current_stage = PipelineStage.UPLOAD
             self._sync_interview(result, status=ProcessingStatus.PROCESSING)
             result.asset = self.upload_audio(item)
-            self._sync_result(result)
+            self.repository.save_result(result)
+            self.repository.update_interview(interview.id, status=result.status.value)
 
             result.current_stage = PipelineStage.TRANSCRIPTION
             result.transcript, transcription_attempts = self.transcribe_audio(result.asset)
             result.attempts[PipelineStage.TRANSCRIPTION.value] = transcription_attempts
-            self._sync_result(result)
+            self.repository.save_result(result)
+            self.repository.update_interview(
+                interview.id,
+                transcript=result.transcript.text,
+                status=result.status.value,
+            )
 
             result.current_stage = PipelineStage.ANALYSIS
             result.analysis, analysis_attempts = self.analyze_transcript(result.transcript)
@@ -126,13 +137,21 @@ class PaydayPipeline:
 
             result.current_stage = PipelineStage.PERSONA
             result.persona = self.classify_persona(result.transcript, result.analysis)
-            self._sync_result(result)
+            self.repository.save_result(result)
+            self._persist_analysis_outputs(result)
 
-            return self.store_results(result)
+            stored = self.store_results(result)
+            self.repository.update_interview(interview.id, status=stored.status.value)
+            return stored
         except Exception as exc:
             result.status = ProcessingStatus.FAILED
             result.errors.append(str(exc))
-            self._sync_result(result)
+            self.repository.save_result(result)
+            self.repository.update_interview(
+                interview.id,
+                transcript=result.transcript.text if result.transcript is not None else None,
+                status=result.status.value,
+            )
             return result
 
     def _sync_interview(
@@ -279,9 +298,64 @@ class PaydayPipeline:
             f"{stage.value} failed after {self.max_retries + 1} attempts: {last_error}"
         ) from last_error
 
-    def _sync_result(self, result: PipelineResult) -> None:
-        self.repository.save_result(result)
-        self.repository.sync_pipeline_result(
-            result,
-            audio_url=self.storage_service.build_audio_path(result.file_id, result.filename),
+    def _persist_analysis_outputs(self, result: PipelineResult) -> None:
+        if result.analysis is None or result.persona is None:
+            raise ValueError("Cannot persist analysis outputs without both analysis and persona results.")
+
+        structured_output = result.analysis.structured_output
+        self.repository.upsert_structured_response(
+            result.file_id,
+            smartphone_user=self._field_matches(
+                structured_output,
+                "smartphone_usage",
+                positive="has_smartphone",
+                negative="no_smartphone",
+            ),
+            has_bank_account=self._field_matches(
+                structured_output,
+                "bank_account_status",
+                positive="has_bank_account",
+                negative="no_bank_account",
+            ),
+            income_range=self._field_value(structured_output, "income_range"),
+            borrowing_history=self._field_value(structured_output, "borrowing_history"),
+            repayment_preference=self._field_value(structured_output, "repayment_preference"),
+            loan_interest=self._field_value(structured_output, "loan_interest"),
         )
+        self.repository.upsert_insight(
+            result.file_id,
+            summary=result.analysis.summary,
+            key_quotes=result.analysis.evidence_quotes,
+            persona=result.persona.persona_name,
+            confidence_score=self._confidence_score(result),
+        )
+
+    def _field_value(self, structured_output: dict[str, object], field_name: str) -> str | None:
+        field_payload = structured_output.get(field_name)
+        if not isinstance(field_payload, dict):
+            return None
+        value = field_payload.get("value")
+        if value in (None, "", "unknown"):
+            return None
+        return str(value)
+
+    def _field_matches(
+        self,
+        structured_output: dict[str, object],
+        field_name: str,
+        *,
+        positive: str,
+        negative: str,
+    ) -> bool | None:
+        value = self._field_value(structured_output, field_name)
+        if value == positive:
+            return True
+        if value == negative:
+            return False
+        return None
+
+    def _confidence_score(self, result: PipelineResult) -> float:
+        if result.analysis is None:
+            return 0.0
+        json_attempts = int(result.analysis.metrics.get("json_attempts", 1))
+        return max(0.0, 1.0 - 0.1 * (json_attempts - 1))

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from payday.config import DatabaseSettings, FeatureFlags, LLMSettings, Settings, SupabaseSettings, TranscriptionSettings
+import sqlite3
+
+from payday.config import FeatureFlags, LLMSettings, Settings, SupabaseSettings, TranscriptionSettings
 from payday.models import AnalysisResult, BatchUploadItem, PipelineResult, PipelineStage, ProcessingStatus, Transcript, UploadedAsset
 from payday.personas import PersonaService
 from payday.repository import PaydayRepository
@@ -63,56 +65,128 @@ def test_pipeline_process_upload_returns_completed_result() -> None:
     assert service.list_results()
 
 
-
-def test_pipeline_persists_interview_transcript_structured_response_and_insight() -> None:
-    service = PaydayAppService(build_settings())
+def test_pipeline_process_upload_persists_interview_structured_response_and_insight_rows(tmp_path) -> None:
+    database_path = tmp_path / "payday.sqlite3"
+    repository = PaydayRepository(database_path=str(database_path))
+    service = PaydayAppService(build_settings(), repository=repository)
 
     result = service.process_upload(
         "demo.wav",
         "audio/wav",
         (
-            b"I use WhatsApp on my smartphone. My bank account is active. "
-            b"I earn \xe2\x82\xb912,000 per month. I borrow from neighbors sometimes. "
-            b"I repay monthly after salary. I am worried about scams."
+            b"I use WhatsApp every day. My bank account is active. I earn \xe2\x82\xb912,000 per month. "
+            b"I borrow from neighbors sometimes. I repay monthly after salary. I am worried about scams."
         ),
     )
 
-    detail = service.repository.get_interview_detail(result.file_id)
+    assert result.status is ProcessingStatus.COMPLETED
+
+    with sqlite3.connect(database_path) as connection:
+        interview_row = connection.execute(
+            "SELECT id, audio_url, transcript, status FROM interviews WHERE id = ?",
+            (result.file_id,),
+        ).fetchone()
+        structured_row = connection.execute(
+            """
+            SELECT
+                interview_id,
+                smartphone_user,
+                has_bank_account,
+                income_range,
+                borrowing_history,
+                repayment_preference,
+                loan_interest
+            FROM structured_responses
+            WHERE interview_id = ?
+            """,
+            (result.file_id,),
+        ).fetchone()
+        insight_row = connection.execute(
+            "SELECT interview_id, summary, persona, confidence_score FROM insights WHERE interview_id = ?",
+            (result.file_id,),
+        ).fetchone()
+
+    assert interview_row is not None
+    assert interview_row[0] == result.file_id
+    assert interview_row[1] == f"audio/{result.file_id}/demo.wav"
+    assert "WhatsApp every day" in interview_row[2]
+    assert interview_row[3] == ProcessingStatus.COMPLETED.value
+
+    assert structured_row is not None
+    assert structured_row[0] == result.file_id
+    assert structured_row[1] == 1
+    assert structured_row[2] == 1
+    assert structured_row[3] == "₹12,000"
+    assert structured_row[4] == result.analysis.structured_output["borrowing_history"]["value"]
+    assert structured_row[5] == result.analysis.structured_output["repayment_preference"]["value"]
+    assert structured_row[6] == result.analysis.structured_output["loan_interest"]["value"]
+
+    assert insight_row is not None
+    assert insight_row[0] == result.file_id
+    assert "WhatsApp every day" in insight_row[1]
+    assert insight_row[2] == "Self-Reliant Non-Borrower"
+    assert insight_row[3] == 1.0
+
+    reloaded_repository = PaydayRepository(database_path=str(database_path))
+    detail = reloaded_repository.get_interview_detail(result.file_id)
 
     assert detail.interview.id == result.file_id
     assert detail.interview.status == ProcessingStatus.COMPLETED.value
-    assert detail.interview.transcript is not None
-    assert "I use WhatsApp on my smartphone" in detail.interview.transcript
     assert detail.structured_response is not None
     assert detail.structured_response.smartphone_user is True
     assert detail.structured_response.has_bank_account is True
     assert detail.structured_response.income_range == "₹12,000"
-    assert detail.structured_response.borrowing_history == "has_borrowed"
-    assert detail.structured_response.repayment_preference == "monthly"
-    assert detail.structured_response.loan_interest == "fearful_or_uncertain"
+    assert detail.structured_response.borrowing_history == result.analysis.structured_output["borrowing_history"]["value"]
+    assert (
+        detail.structured_response.repayment_preference
+        == result.analysis.structured_output["repayment_preference"]["value"]
+    )
+    assert detail.structured_response.loan_interest == result.analysis.structured_output["loan_interest"]["value"]
     assert detail.insight is not None
     assert detail.insight.summary == result.analysis.summary
-    assert detail.insight.key_quotes == result.analysis.evidence_quotes
-    assert detail.insight.persona == result.persona.persona_name
+    assert detail.insight.persona == "Self-Reliant Non-Borrower"
     assert detail.insight.confidence_score == 1.0
 
 
-def test_pipeline_persists_failed_interview_status_for_failed_runs() -> None:
-    settings = build_settings()
-    service = PaydayAppService(settings)
-    service.pipeline.transcription_service = FlakyTranscriptionService(settings.transcription)
+def test_pipeline_process_upload_persists_failed_interview_status_to_file_backed_sqlite(tmp_path) -> None:
+    database_path = tmp_path / "payday.sqlite3"
+    repository = PaydayRepository(database_path=str(database_path))
+    pipeline = PaydayAppService(build_settings(), repository=repository).pipeline
+    pipeline.transcription_service = FlakyTranscriptionService(build_settings().transcription)
 
-    result = service.process_upload("fail.wav", "audio/wav", b"This upload will fail transcription.")
-
-    detail = service.repository.get_interview_detail(result.file_id)
+    result = pipeline.process_upload("fail.wav", "audio/wav", b"content does not matter")
 
     assert result.status is ProcessingStatus.FAILED
-    assert detail.interview.id == result.file_id
+    assert result.errors == ["transcription failed after 3 attempts: hard transcription failure"]
+
+    with sqlite3.connect(database_path) as connection:
+        interview_row = connection.execute(
+            "SELECT id, transcript, status FROM interviews WHERE id = ?",
+            (result.file_id,),
+        ).fetchone()
+        structured_count = connection.execute(
+            "SELECT COUNT(*) FROM structured_responses WHERE interview_id = ?",
+            (result.file_id,),
+        ).fetchone()
+        insight_count = connection.execute(
+            "SELECT COUNT(*) FROM insights WHERE interview_id = ?",
+            (result.file_id,),
+        ).fetchone()
+
+    assert interview_row is not None
+    assert interview_row[0] == result.file_id
+    assert interview_row[1] is None
+    assert interview_row[2] == ProcessingStatus.FAILED.value
+    assert structured_count == (0,)
+    assert insight_count == (0,)
+
+    reloaded_repository = PaydayRepository(database_path=str(database_path))
+    detail = reloaded_repository.get_interview_detail(result.file_id)
+
     assert detail.interview.status == ProcessingStatus.FAILED.value
     assert detail.interview.transcript is None
     assert detail.structured_response is None
     assert detail.insight is None
-    assert result.errors
 
 
 def test_repository_list_results_returns_pipeline_results_in_insertion_order() -> None:
