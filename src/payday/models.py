@@ -60,6 +60,7 @@ class PersonaClassification:
     persona_name: str
     rationale: str
     evidence_quotes: tuple[str, ...] = ()
+    explanation_payload: dict[str, Any] = field(default_factory=dict)
     is_non_target: bool = False
 
 

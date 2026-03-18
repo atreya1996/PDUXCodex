@@ -1,12 +1,7 @@
 from __future__ import annotations
 
-import json
-import re
-from dataclasses import dataclass
-from typing import Any, Protocol
+from collections.abc import Iterable
 
-from payday.config import LLMSettings
-from payday.context_loader import ContextMemory, build_analysis_prompt, load_context_memory
 from payday.models import AnalysisResult, Transcript
 
 DEFAULT_UNKNOWN_VALUE = "unknown"
@@ -77,101 +72,26 @@ class HeuristicAnalysisAdapter:
     ) -> str:
         del prompt, expected_schema, attempt
         text = transcript.text.strip()
-        lowered = text.lower()
-        quotes = _extract_direct_quotes(text)
-
-        payload = {
-            "smartphone_usage": _field_payload(
-                value=(
-                    "no_smartphone"
-                    if _contains_any(lowered, _NO_SMARTPHONE_PHRASES)
-                    else "has_smartphone"
-                    if _contains_any(lowered, ("smartphone", "whatsapp", "upi", "loan app", "online"))
-                    else DEFAULT_UNKNOWN_VALUE
-                ),
-                status=(
-                    "observed"
-                    if _contains_any(lowered, _NO_SMARTPHONE_PHRASES)
-                    or _contains_any(lowered, ("smartphone", "whatsapp", "upi", "loan app", "online"))
-                    else "unknown"
-                ),
-                evidence_quotes=_matching_quotes(
-                    quotes,
-                    ("smartphone", "whatsapp", "upi", "loan app", "online", "basic phone"),
-                ),
-                notes="Observed from direct mention of device or channel usage." if _contains_any(
-                    lowered,
-                    ("smartphone", "whatsapp", "upi", "loan app", "online", "basic phone"),
-                ) else "No direct smartphone evidence found in transcript.",
-            ),
-            "bank_account_status": _field_payload(
-                value=(
-                    "no_bank_account"
-                    if _contains_any(lowered, _NO_BANK_ACCOUNT_PHRASES)
-                    else "has_bank_account"
-                    if _contains_any(lowered, ("bank account", "account", "passbook", "atm", "upi"))
-                    else DEFAULT_UNKNOWN_VALUE
-                ),
-                status=(
-                    "observed"
-                    if _contains_any(lowered, _NO_BANK_ACCOUNT_PHRASES)
-                    or _contains_any(lowered, ("bank account", "passbook", "atm", "upi"))
-                    else "unknown"
-                ),
-                evidence_quotes=_matching_quotes(quotes, ("bank", "account", "passbook", "atm", "upi", "unbanked")),
-                notes="Observed from a direct banking reference." if _contains_any(
-                    lowered,
-                    ("bank account", "passbook", "atm", "upi", "unbanked"),
-                ) else "No direct banking evidence found in transcript.",
-            ),
-            "income_range": _field_payload(
-                value=_extract_income_range(text),
-                status="observed" if _extract_income_range(text) != DEFAULT_UNKNOWN_VALUE else "unknown",
-                evidence_quotes=_matching_quotes(quotes, ("rupees", "salary", "income", "earn", "month")),
-                notes="Income range captured only when directly stated." if _extract_income_range(
-                    text
-                ) != DEFAULT_UNKNOWN_VALUE else "Transcript does not state a clear income range.",
-            ),
-            "borrowing_history": _field_payload(
-                value=(
-                    "has_borrowed"
-                    if _contains_any(lowered, ("borrow", "loan", "debt", "moneylender", "neighbors"))
-                    else "no_borrowing_mentioned"
-                ),
-                status="observed" if _contains_any(lowered, ("borrow", "loan", "debt", "moneylender", "neighbors")) else "unknown",
-                evidence_quotes=_matching_quotes(quotes, ("borrow", "loan", "debt", "moneylender", "neighbor")),
-                notes="Observed from explicit borrowing references." if _contains_any(
-                    lowered,
-                    ("borrow", "loan", "debt", "moneylender", "neighbors"),
-                ) else "Borrowing history is not directly described.",
-            ),
-            "repayment_preference": _field_payload(
-                value=_extract_repayment_preference(lowered),
-                status="observed" if _extract_repayment_preference(lowered) != DEFAULT_UNKNOWN_VALUE else "unknown",
-                evidence_quotes=_matching_quotes(quotes, ("repay", "monthly", "weekly", "daily", "installment", "flexible")),
-                notes="Preference only recorded when repayment timing or method is stated." if _extract_repayment_preference(
-                    lowered
-                ) != DEFAULT_UNKNOWN_VALUE else "No repayment preference is directly stated.",
-            ),
-            "loan_interest": _field_payload(
-                value=_extract_loan_interest(lowered),
-                status="observed" if _extract_loan_interest(lowered) != DEFAULT_UNKNOWN_VALUE else "unknown",
-                evidence_quotes=_matching_quotes(quotes, ("interest", "loan", "afraid", "fear", "trust", "need money")),
-                notes="Derived from direct statements about willingness or hesitation to borrow." if _extract_loan_interest(
-                    lowered
-                ) != DEFAULT_UNKNOWN_VALUE else "No direct statement about loan interest was found.",
-            ),
-            "summary": _field_payload(
-                value=_build_summary(text),
-                status="observed" if text else "unknown",
-                evidence_quotes=quotes[:2],
-                notes="Summary is grounded in the supplied transcript only.",
-            ),
-            "key_quotes": quotes[:5],
-            "confidence_signals": {
-                "observed_evidence": [],
-                "missing_or_unknown": [],
+        words = text.split()
+        summary = " ".join(words[:25]) + ("..." if len(words) > 25 else "")
+        evidence_quotes = self._extract_quotes(text)
+        structured_output = {
+            "transcript_summary": summary or "No transcript content available.",
+            "evidence_quotes": evidence_quotes,
+            "participant_profile": {
+                "smartphone_user": self._detect_smartphone_user(text),
+                "has_bank_account": self._detect_bank_account(text),
             },
+            "persona_signals": {
+                "employer_dependency": self._detect_employer_dependency(text),
+                "digital_readiness": self._detect_digital_readiness(text),
+                "digital_borrowing": self._detect_digital_borrowing(text),
+                "trust_fear_barrier": self._detect_trust_fear_barrier(text),
+                "self_reliance_non_borrowing": self._detect_self_reliance_non_borrowing(text),
+                "cyclical_borrowing": self._detect_cyclical_borrowing(text),
+                "repayment_stress": self._detect_repayment_stress(text),
+            },
+            "signals": self._extract_signals(text),
         }
 
         payload["confidence_signals"] = _build_confidence_signals(payload)
@@ -412,143 +332,180 @@ class AnalysisService:
             "missing_or_unknown": _dedupe_preserve_order(missing_or_unknown),
         }
 
+    def _build_evidence_field(self, field_name: str, value: bool | None, evidence: Iterable[str]) -> dict[str, object]:
+        return {
+            "value": value,
+            "field": field_name,
+            "evidence": [item for item in evidence if item],
+        }
 
-_NO_SMARTPHONE_PHRASES = (
-    "no smartphone",
-    "do not have a smartphone",
-    "don't have a smartphone",
-    "without smartphone",
-    "i use a basic phone",
-)
+    def _detect_smartphone_user(self, text: str) -> dict[str, object]:
+        negative_matches = self._matching_phrases(
+            text,
+            (
+                "no smartphone",
+                "do not have a smartphone",
+                "don't have a smartphone",
+                "without smartphone",
+                "basic phone",
+                "feature phone",
+            ),
+        )
+        if negative_matches:
+            return self._build_evidence_field("participant_profile.smartphone_user", False, negative_matches)
 
-_NO_BANK_ACCOUNT_PHRASES = (
-    "no bank account",
-    "do not have a bank account",
-    "don't have a bank account",
-    "without bank account",
-    "i am unbanked",
-)
+        positive_matches = self._matching_phrases(
+            text,
+            (
+                "smartphone",
+                "whatsapp",
+                "upi",
+                "google pay",
+                "phonepe",
+                "paytm",
+                "online app",
+            ),
+        )
+        if positive_matches:
+            return self._build_evidence_field("participant_profile.smartphone_user", True, positive_matches)
 
+        return self._build_evidence_field("participant_profile.smartphone_user", None, ())
 
-def _field_payload(
-    *,
-    value: str,
-    status: str,
-    evidence_quotes: list[str],
-    notes: str,
-) -> dict[str, Any]:
-    return {
-        "value": value,
-        "status": status,
-        "evidence_quotes": evidence_quotes,
-        "notes": notes,
-    }
+    def _detect_bank_account(self, text: str) -> dict[str, object]:
+        negative_matches = self._matching_phrases(
+            text,
+            (
+                "no bank account",
+                "do not have a bank account",
+                "don't have a bank account",
+                "without bank account",
+                "unbanked",
+            ),
+        )
+        if negative_matches:
+            return self._build_evidence_field("participant_profile.has_bank_account", False, negative_matches)
 
+        positive_matches = self._matching_phrases(
+            text,
+            (
+                "bank account",
+                "my account",
+                "salary in bank",
+                "money goes to bank",
+                "account is active",
+            ),
+        )
+        if positive_matches:
+            return self._build_evidence_field("participant_profile.has_bank_account", True, positive_matches)
 
-def _contains_any(text: str, phrases: tuple[str, ...]) -> bool:
-    return any(phrase in text for phrase in phrases)
+        return self._build_evidence_field("participant_profile.has_bank_account", None, ())
 
+    def _detect_employer_dependency(self, text: str) -> dict[str, object]:
+        matches = self._matching_phrases(
+            text,
+            (
+                "employer told me",
+                "employer helped",
+                "madam helped",
+                "sir helped",
+                "madam asked me",
+                "through my employer",
+                "boss helped",
+            ),
+        )
+        return self._build_evidence_field("persona_signals.employer_dependency", bool(matches), matches)
 
-def _extract_direct_quotes(text: str) -> list[str]:
-    if not text:
-        return []
-    segments = [segment.strip() for segment in re.split(r"[.?!\n]+", text) if segment.strip()]
-    return segments[:5]
+    def _detect_digital_readiness(self, text: str) -> dict[str, object]:
+        matches = self._matching_phrases(
+            text,
+            (
+                "whatsapp",
+                "upi",
+                "google pay",
+                "phonepe",
+                "paytm",
+                "online",
+                "loan app",
+                "digital",
+            ),
+        )
+        return self._build_evidence_field("persona_signals.digital_readiness", bool(matches), matches)
 
+    def _detect_digital_borrowing(self, text: str) -> dict[str, object]:
+        matches = self._matching_phrases(
+            text,
+            (
+                "loan app",
+                "borrow online",
+                "digital loan",
+                "took loan on app",
+                "upi loan",
+                "whatsapp loan",
+            ),
+        )
+        return self._build_evidence_field("persona_signals.digital_borrowing", bool(matches), matches)
 
-def _matching_quotes(quotes: list[str], keywords: tuple[str, ...]) -> list[str]:
-    return [quote for quote in quotes if any(keyword in quote.lower() for keyword in keywords)][:3]
+    def _detect_trust_fear_barrier(self, text: str) -> dict[str, object]:
+        matches = self._matching_phrases(
+            text,
+            (
+                "afraid",
+                "fear",
+                "scam",
+                "do not trust",
+                "don't trust",
+                "worried",
+                "nervous",
+                "risk",
+            ),
+        )
+        return self._build_evidence_field("persona_signals.trust_fear_barrier", bool(matches), matches)
 
+    def _detect_self_reliance_non_borrowing(self, text: str) -> dict[str, object]:
+        matches = self._matching_phrases(
+            text,
+            (
+                "i avoid loans",
+                "i do not borrow",
+                "i don't borrow",
+                "use my savings",
+                "manage on my own",
+                "self manage",
+                "save first",
+                "borrow only from myself",
+            ),
+        )
+        return self._build_evidence_field("persona_signals.self_reliance_non_borrowing", bool(matches), matches)
 
-def _extract_income_range(text: str) -> str:
-    lowered = text.lower()
-    if not any(term in lowered for term in ("salary", "income", "earn", "rupees", "month")):
-        return DEFAULT_UNKNOWN_VALUE
-    match = re.search(r"(?:₹|rs\.?|rupees?)\s*([\d,]+(?:\s*(?:to|-|–)\s*[\d,]+)?)", text, flags=re.IGNORECASE)
-    if match:
-        return match.group(0).strip()
-    return DEFAULT_UNKNOWN_VALUE
+    def _detect_cyclical_borrowing(self, text: str) -> dict[str, object]:
+        matches = self._matching_phrases(
+            text,
+            (
+                "every month",
+                "monthly loan",
+                "again and again",
+                "borrow repeatedly",
+                "loan cycle",
+                "take another loan",
+            ),
+        )
+        return self._build_evidence_field("persona_signals.cyclical_borrowing", bool(matches), matches)
 
+    def _detect_repayment_stress(self, text: str) -> dict[str, object]:
+        matches = self._matching_phrases(
+            text,
+            (
+                "stress",
+                "pressure",
+                "repay",
+                "repayment",
+                "debt",
+                "collection calls",
+                "tension",
+            ),
+        )
+        return self._build_evidence_field("persona_signals.repayment_stress", bool(matches), matches)
 
-def _extract_repayment_preference(lowered: str) -> str:
-    if "monthly" in lowered or "month end" in lowered:
-        return "monthly"
-    if "weekly" in lowered:
-        return "weekly"
-    if "daily" in lowered:
-        return "daily"
-    if "flexible" in lowered or "when i can" in lowered:
-        return "flexible"
-    return DEFAULT_UNKNOWN_VALUE
-
-
-def _extract_loan_interest(lowered: str) -> str:
-    if any(term in lowered for term in ("want a loan", "need a loan", "interested in loan", "need money")):
-        return "interested"
-    if any(term in lowered for term in ("not interested", "do not want loan", "don't want loan", "avoid loan")):
-        return "not_interested"
-    if any(term in lowered for term in ("afraid", "fear", "scam", "trust", "worried")):
-        return "fearful_or_uncertain"
-    return DEFAULT_UNKNOWN_VALUE
-
-
-def _build_summary(text: str) -> str:
-    words = text.split()
-    if not words:
-        return "No transcript content available."
-    summary = " ".join(words[:30])
-    if len(words) > 30:
-        summary += "..."
-    return summary
-
-
-def _build_confidence_signals(payload: dict[str, Any]) -> dict[str, list[str]]:
-    observed = []
-    missing_or_unknown = []
-    for field_name in FIELD_NAMES:
-        field = payload[field_name]
-        entry = f"{field_name}: {field['value']}"
-        if field["status"] == "observed":
-            observed.append(entry)
-        else:
-            missing_or_unknown.append(entry)
-    return {
-        "observed_evidence": observed,
-        "missing_or_unknown": missing_or_unknown,
-    }
-
-
-def _align_quote_to_transcript(quote: str, transcript_text: str) -> str:
-    candidate = quote.strip().strip('"')
-    if not candidate:
-        return ""
-    if candidate in transcript_text:
-        return candidate
-
-    lowered_transcript = transcript_text.lower()
-    lowered_candidate = candidate.lower()
-    start = lowered_transcript.find(lowered_candidate)
-    if start == -1:
-        return ""
-    end = start + len(candidate)
-    return transcript_text[start:end].strip()
-
-
-def _string_list(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if not isinstance(value, list):
-        raise AnalysisSchemaError("Confidence signal collections must be arrays of strings.")
-    if any(not isinstance(item, str) for item in value):
-        raise AnalysisSchemaError("Confidence signal collections must contain strings only.")
-    return [item.strip() for item in value if item.strip()]
-
-
-def _dedupe_preserve_order(items: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            result.append(item)
-    return result
+    def _matching_phrases(self, text: str, phrases: tuple[str, ...]) -> list[str]:
+        lowered = text.lower()
+        return [phrase for phrase in phrases if phrase in lowered]
