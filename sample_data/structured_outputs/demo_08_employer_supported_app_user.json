@@ -1,0 +1,68 @@
+{
+  "interview_id": "demo_08",
+  "filename": "demo_08_employer_supported_app_user.txt",
+  "title": "Employer-guided app user",
+  "expected_persona": {
+    "persona_id": "persona_1",
+    "persona_name": "Employer-Dependent Digital Borrower"
+  },
+  "structured_output": {
+    "summary": "The participant is an in-scope digital borrower who depends on employer guidance.",
+    "key_quotes": [
+      "I have a smartphone, and my wages are in my bank account.",
+      "Sir showed me how to use an app for an emergency advance.",
+      "With his help I borrowed and repaid after salary."
+    ],
+    "participant_profile": {
+      "smartphone_user": {
+        "value": true,
+        "evidence": [
+          "I have a smartphone, and my wages are in my bank account."
+        ]
+      },
+      "has_bank_account": {
+        "value": true,
+        "evidence": [
+          "I have a smartphone, and my wages are in my bank account."
+        ]
+      }
+    },
+    "persona_signals": {
+      "employer_dependency": {
+        "value": true,
+        "evidence": [
+          "Sir showed me how to use an app for an emergency advance."
+        ]
+      },
+      "digital_readiness": {
+        "value": true,
+        "evidence": [
+          "I have a smartphone, and my wages are in my bank account."
+        ]
+      },
+      "digital_borrowing": {
+        "value": true,
+        "evidence": [
+          "With his help I borrowed and repaid after salary."
+        ]
+      },
+      "trust_fear_barrier": {
+        "value": false,
+        "evidence": []
+      },
+      "self_reliance_non_borrowing": {
+        "value": false,
+        "evidence": []
+      },
+      "cyclical_borrowing": {
+        "value": false,
+        "evidence": []
+      },
+      "repayment_stress": {
+        "value": false,
+        "evidence": []
+      }
+    },
+    "expected_persona": "persona_1"
+  }
+}

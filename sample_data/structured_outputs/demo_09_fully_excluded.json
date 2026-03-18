@@ -1,0 +1,63 @@
+{
+  "interview_id": "demo_09",
+  "filename": "demo_09_fully_excluded.txt",
+  "title": "No smartphone and no bank account",
+  "expected_persona": {
+    "persona_id": "persona_3",
+    "persona_name": "Offline / Excluded"
+  },
+  "structured_output": {
+    "summary": "The participant is clearly non-target because both prerequisites are absent.",
+    "key_quotes": [
+      "I do not have a smartphone and I do not have a bank account.",
+      "I borrow from my sister or from the shop when something urgent happens."
+    ],
+    "participant_profile": {
+      "smartphone_user": {
+        "value": false,
+        "evidence": [
+          "I do not have a smartphone and I do not have a bank account."
+        ]
+      },
+      "has_bank_account": {
+        "value": false,
+        "evidence": [
+          "I do not have a smartphone and I do not have a bank account."
+        ]
+      }
+    },
+    "persona_signals": {
+      "employer_dependency": {
+        "value": false,
+        "evidence": []
+      },
+      "digital_readiness": {
+        "value": false,
+        "evidence": []
+      },
+      "digital_borrowing": {
+        "value": false,
+        "evidence": []
+      },
+      "trust_fear_barrier": {
+        "value": false,
+        "evidence": []
+      },
+      "self_reliance_non_borrowing": {
+        "value": false,
+        "evidence": []
+      },
+      "cyclical_borrowing": {
+        "value": true,
+        "evidence": [
+          "I borrow from my sister or from the shop when something urgent happens."
+        ]
+      },
+      "repayment_stress": {
+        "value": false,
+        "evidence": []
+      }
+    },
+    "expected_persona": "persona_3"
+  }
+}

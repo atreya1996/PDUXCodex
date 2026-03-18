@@ -1,0 +1,66 @@
+{
+  "interview_id": "demo_07",
+  "filename": "demo_07_whatsapp_but_fearful.txt",
+  "title": "WhatsApp user with trust barrier",
+  "expected_persona": {
+    "persona_id": "persona_2",
+    "persona_name": "Digitally Ready but Fearful"
+  },
+  "structured_output": {
+    "summary": "The participant is digitally ready but blocked by trust concerns.",
+    "key_quotes": [
+      "I use WhatsApp video and PhonePe on my smartphone.",
+      "My bank account is linked there.",
+      "I do not trust unknown lenders."
+    ],
+    "participant_profile": {
+      "smartphone_user": {
+        "value": true,
+        "evidence": [
+          "I use WhatsApp video and PhonePe on my smartphone."
+        ]
+      },
+      "has_bank_account": {
+        "value": true,
+        "evidence": [
+          "My bank account is linked there."
+        ]
+      }
+    },
+    "persona_signals": {
+      "employer_dependency": {
+        "value": false,
+        "evidence": []
+      },
+      "digital_readiness": {
+        "value": true,
+        "evidence": [
+          "I use WhatsApp video and PhonePe on my smartphone."
+        ]
+      },
+      "digital_borrowing": {
+        "value": false,
+        "evidence": []
+      },
+      "trust_fear_barrier": {
+        "value": true,
+        "evidence": [
+          "I do not trust unknown lenders, and I worry someone will cheat me if I borrow online."
+        ]
+      },
+      "self_reliance_non_borrowing": {
+        "value": false,
+        "evidence": []
+      },
+      "cyclical_borrowing": {
+        "value": false,
+        "evidence": []
+      },
+      "repayment_stress": {
+        "value": false,
+        "evidence": []
+      }
+    },
+    "expected_persona": "persona_2"
+  }
+}
