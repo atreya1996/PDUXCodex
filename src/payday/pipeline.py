@@ -154,6 +154,9 @@ class PaydayPipeline:
             )
             return result
 
+    def _sync_result(self, result: PipelineResult) -> None:
+        self.repository.save_result(result)
+
     def _sync_interview(
         self,
         result: PipelineResult,
