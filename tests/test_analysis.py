@@ -278,8 +278,8 @@ def test_build_analysis_adapter_uses_heuristic_in_sample_mode_and_provider_speci
 
     assert sample_adapter.provider_name == "heuristic"
     assert sample_adapter.model_name == "heuristic-json"
-    assert live_adapter.provider_name == "openai"
-    assert live_adapter.model_name == "gpt-4.1-mini"
-    assert isinstance(fallback_adapter, AnthropicAnalysisAdapter)
-    assert fallback_adapter.provider_name == "anthropic"
-    assert fallback_adapter.model_name == "claude-test"
+    assert live_openai_adapter.provider_name == "openai"
+    assert live_openai_adapter.model_name == "gpt-4.1-mini"
+    assert isinstance(live_anthropic_adapter, AnthropicAnalysisAdapter)
+    assert live_anthropic_adapter.provider_name == "anthropic-heuristic"
+    assert live_anthropic_adapter.model_name == "heuristic-json"
