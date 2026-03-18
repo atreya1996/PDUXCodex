@@ -321,6 +321,7 @@ class PaydayRepository:
         return self._items.get(file_id)
 
     def list_results(self) -> list[PipelineResult]:
+        """Return stored pipeline results in stable insertion order for the dashboard."""
         return list(self._items.values())
 
     @staticmethod
