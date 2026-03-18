@@ -4,7 +4,13 @@ import json
 
 import pytest
 
-from payday.analysis import AnalysisService, ExternalProviderError, OpenAIAnalysisAdapter
+from payday.analysis import (
+    AnalysisService,
+    AnthropicAnalysisAdapter,
+    ExternalProviderError,
+    OpenAIAnalysisAdapter,
+    build_analysis_adapter,
+)
 from payday.config import LLMSettings
 from payday.models import Transcript
 
@@ -256,16 +262,16 @@ def test_openai_analysis_adapter_returns_raw_json_text(monkeypatch) -> None:
     assert captured["headers"]["Authorization"] == "Bearer secret"
 
 
-def test_build_analysis_adapter_uses_heuristic_in_sample_mode_and_openai_live_mode() -> None:
+def test_build_analysis_adapter_uses_heuristic_in_sample_mode_and_provider_specific_live_modes() -> None:
     sample_adapter = build_analysis_adapter(
         LLMSettings(provider="openai", model="gpt-4.1-mini", api_key="secret"),
         sample_mode=True,
     )
-    live_adapter = build_analysis_adapter(
+    live_openai_adapter = build_analysis_adapter(
         LLMSettings(provider="openai", model="gpt-4.1-mini", api_key="secret"),
         sample_mode=False,
     )
-    fallback_adapter = build_analysis_adapter(
+    live_anthropic_adapter = build_analysis_adapter(
         LLMSettings(provider="anthropic", model="claude-test", api_key="secret"),
         sample_mode=False,
     )
@@ -274,5 +280,6 @@ def test_build_analysis_adapter_uses_heuristic_in_sample_mode_and_openai_live_mo
     assert sample_adapter.model_name == "heuristic-json"
     assert live_adapter.provider_name == "openai"
     assert live_adapter.model_name == "gpt-4.1-mini"
-    assert fallback_adapter.provider_name == "anthropic-heuristic"
-    assert fallback_adapter.model_name == "heuristic-json"
+    assert isinstance(fallback_adapter, AnthropicAnalysisAdapter)
+    assert fallback_adapter.provider_name == "anthropic"
+    assert fallback_adapter.model_name == "claude-test"
