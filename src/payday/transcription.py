@@ -12,7 +12,8 @@ class TranscriptionService:
 
     def transcribe(self, asset: UploadedAsset, sample_mode: bool = False) -> Transcript:
         if sample_mode:
-            text = (
+            decoded_text = asset.raw_bytes.decode("utf-8", errors="ignore").strip()
+            text = decoded_text or (
                 "Sample transcript for MVP mode. Replace this stub with a real provider call "
                 "when credentials are configured."
             )
