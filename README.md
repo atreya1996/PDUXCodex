@@ -95,6 +95,7 @@ cp .env.example .env
 | `TRANSCRIPTION_PROVIDER` | No | `openai` | Logical provider name used by the transcription service. |
 | `TRANSCRIPTION_MODEL` | No | `gpt-4o-mini-transcribe` | Model identifier for transcription. |
 | `TRANSCRIPTION_API_KEY` | Yes for live transcription | `""` | API key for the selected transcription provider. |
+| `TRANSCRIPTION_TIMEOUT_SECONDS` | No | `60` | Request timeout used for provider-backed transcription calls. |
 
 ## How to configure Supabase
 
@@ -193,6 +194,8 @@ The repository now includes ten mock uploads and matching metadata/expected outp
 ### Why the mock uploads work
 
 In sample mode, the current transcription service decodes uploaded bytes as text. Because the mock uploads are text files, each file acts as both the uploaded asset and the transcript source. This makes it possible to run the upload → transcription → analysis → persona flow locally with no external providers.
+
+When `PAYDAY_USE_SAMPLE_MODE=false` and `TRANSCRIPTION_PROVIDER=openai`, the transcription service now sends the uploaded audio bytes to OpenAI using the configured model, returns the provider transcript text, and attaches useful metadata such as the filename, content type, byte size, and sample-mode flag. Timeouts are configurable through `TRANSCRIPTION_TIMEOUT_SECONDS`, and provider errors are allowed to bubble so the pipeline retry logic can re-attempt failed transcription jobs.
 
 ## Verification checklist
 
