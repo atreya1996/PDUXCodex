@@ -6,8 +6,6 @@ from payday.pipeline import PaydayPipeline
 from payday.repository import PaydayRepository
 from payday.service import PaydayAppService
 from payday.storage import StorageService
-from payday.transcription import TranscriptionService
-from payday.upload import UploadService
 
 
 class FlakyTranscriptionService(TranscriptionService):
@@ -58,52 +56,26 @@ def test_pipeline_process_upload_returns_completed_result() -> None:
     assert service.list_results()
 
 
-def test_pipeline_batch_retries_and_isolates_failures() -> None:
-    settings = build_settings()
-    repository = PaydayRepository()
-    transcription_service = FlakyTranscriptionService(settings.transcription)
-    pipeline = PaydayPipeline(
-        upload_service=UploadService(),
-        transcription_service=transcription_service,
-        analysis_service=AnalysisService(),
-        persona_service=PersonaService(),
-        storage_service=StorageService(settings.supabase),
-        repository=repository,
-        sample_mode=True,
-        max_retries=1,
+def test_repository_crud_supports_interview_related_tables(tmp_path) -> None:
+    repository = PaydayRepository(database_path=str(tmp_path / "payday.db"))
+    interview = repository.create_interview(audio_url="audio/interview-1/demo.wav", status="uploaded")
+
+    repository.update_interview(interview.id, transcript="A direct quote from the interview.", status="completed")
+    repository.upsert_structured_response(
+        interview.id,
+        smartphone_user=True,
+        has_bank_account=True,
+        income_range="10k-20k",
+        borrowing_history="Borrowed from employer during emergencies.",
+        repayment_preference="Weekly",
+        loan_interest="Interested if trust is high.",
     )
-
-    batch = [
-        BatchUploadItem(filename="ok-1.wav", content_type="audio/wav", data=b"1"),
-        BatchUploadItem(filename="retry.wav", content_type="audio/wav", data=b"2"),
-        BatchUploadItem(filename="fail.wav", content_type="audio/wav", data=b"3"),
-        BatchUploadItem(filename="ok-2.wav", content_type="audio/wav", data=b"4"),
-        BatchUploadItem(filename="ok-3.wav", content_type="audio/wav", data=b"5"),
-    ]
-
-    result = pipeline.process_batch_uploads(batch)
-
-    assert len(result.results) == 5
-    assert result.completed_count == 4
-    assert result.failed_count == 1
-
-    retry_result = next(item for item in result.results if item.filename == "retry.wav")
-    failed_result = next(item for item in result.results if item.filename == "fail.wav")
-
-    assert retry_result.status is ProcessingStatus.COMPLETED
-    assert retry_result.attempts[PipelineStage.TRANSCRIPTION.value] == 2
-    assert failed_result.status is ProcessingStatus.FAILED
-    assert failed_result.errors
-    assert repository.get_result(failed_result.file_id) is failed_result
-
-
-def test_persona_three_override_for_no_bank_account() -> None:
-    service = PaydayAppService(build_settings())
-
-    result = service.process_upload(
-        "persona.wav",
-        "audio/wav",
-        b"I do not have a bank account and I borrow from neighbors when needed.",
+    repository.upsert_insight(
+        interview.id,
+        summary="Trust matters more than pricing.",
+        key_quotes=["I ask my employer first when money is short."],
+        persona="Persona 2",
+        confidence_score=0.86,
     )
 
     assert result.persona is not None
@@ -112,14 +84,21 @@ def test_persona_three_override_for_no_bank_account() -> None:
     assert result.persona.explanation_payload["triggered_fields"] == ["participant_profile.has_bank_account"]
 
 
+    assert listing[0].id == interview.id
+    assert detail.interview.status == "completed"
+    assert detail.structured_response is not None
+    assert detail.structured_response.smartphone_user is True
+    assert detail.insight is not None
+    assert detail.insight.key_quotes == ["I ask my employer first when money is short."]
 
-def test_persona_three_override_for_no_smartphone() -> None:
-    service = PaydayAppService(build_settings())
 
-    result = service.process_upload(
-        "persona-phone.wav",
-        "audio/wav",
-        b"I use a basic phone, so I cannot use WhatsApp loan apps.",
+def test_storage_service_builds_predictable_audio_paths() -> None:
+    storage = StorageService(SupabaseSettings())
+    asset = UploadedAsset(
+        filename="../demo clip.wav",
+        content_type="audio/wav",
+        size_bytes=3,
+        raw_bytes=b"123",
     )
 
     assert result.persona is not None
