@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from payday.analysis import AnalysisService
+from payday.analysis import AnalysisService, HeuristicAnalysisAdapter
 from payday.config import Settings
 from payday.models import BatchPipelineResult, BatchUploadItem, PipelineResult
 from payday.personas import PersonaService
@@ -17,10 +17,14 @@ class PaydayAppService:
     def __init__(self, settings: Settings) -> None:
         self.repository = PaydayRepository()
         persona_service = PersonaService()
+        analysis_service = AnalysisService(
+            adapter=HeuristicAnalysisAdapter(settings.llm),
+            settings=settings.llm,
+        )
         self.pipeline = PaydayPipeline(
             upload_service=UploadService(),
             transcription_service=TranscriptionService(settings.transcription),
-            analysis_service=AnalysisService(),
+            analysis_service=analysis_service,
             persona_service=persona_service,
             storage_service=StorageService(settings.supabase),
             repository=self.repository,
