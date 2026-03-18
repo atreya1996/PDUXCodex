@@ -144,8 +144,8 @@ class AnthropicAnalysisAdapter:
 
     def __init__(self, settings: LLMSettings) -> None:
         self.settings = settings
-        self.provider_name = settings.provider
-        self.model_name = settings.model
+        self.provider_name = f"{settings.provider}-heuristic"
+        self.model_name = "heuristic-json"
 
     def generate_analysis(
         self,
@@ -300,14 +300,6 @@ class HeuristicAnalysisAdapter:
             return " ".join(sentences[:2])
         words = text.split()
         return " ".join(words[:24]) + ("..." if len(words) > 24 else "")
-
-
-class AnthropicAnalysisAdapter(HeuristicAnalysisAdapter):
-    """Reserved provider branch for Anthropic while live structured output is pending."""
-
-    def __init__(self, settings: LLMSettings) -> None:
-        super().__init__(LLMSettings(provider=f"{settings.provider}-heuristic", model="heuristic-json"))
-        self.settings = settings
 
 
 class AnalysisService:
