@@ -7,12 +7,25 @@ from pathlib import Path
 
 
 DEFAULT_DATABASE_PATH = Path("data/payday.db")
+SUPPORTED_LLM_PROVIDERS = frozenset({"openai", "anthropic"})
+SUPPORTED_TRANSCRIPTION_PROVIDERS = frozenset({"openai"})
+
+
+class SettingsConfigurationError(ValueError):
+    """Raised when the runtime provider configuration is invalid."""
+
 
 
 def _as_bool(value: str | None, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+
+def _normalized_provider(value: str | None, *, default: str) -> str:
+    normalized = (value or default).strip().lower()
+    return normalized or default
 
 
 @dataclass(frozen=True)
@@ -73,12 +86,12 @@ def get_settings() -> Settings:
             storage_bucket=os.getenv("SUPABASE_STORAGE_BUCKET", "payday-assets"),
         ),
         llm=LLMSettings(
-            provider=os.getenv("LLM_PROVIDER", "openai"),
+            provider=_normalized_provider(os.getenv("LLM_PROVIDER"), default="openai"),
             model=os.getenv("LLM_MODEL", "gpt-4.1-mini"),
             api_key=os.getenv("LLM_API_KEY", ""),
         ),
         transcription=TranscriptionSettings(
-            provider=os.getenv("TRANSCRIPTION_PROVIDER", "openai"),
+            provider=_normalized_provider(os.getenv("TRANSCRIPTION_PROVIDER"), default="openai"),
             model=os.getenv("TRANSCRIPTION_MODEL", "gpt-4o-mini-transcribe"),
             api_key=os.getenv("TRANSCRIPTION_API_KEY", ""),
         ),
@@ -89,3 +102,43 @@ def get_settings() -> Settings:
             enable_analysis=_as_bool(os.getenv("PAYDAY_ENABLE_ANALYSIS"), True),
         ),
     )
+
+
+
+def validate_runtime_settings(settings: Settings) -> None:
+    """Validate supported providers and required credentials for the current mode."""
+
+    errors: list[str] = []
+
+    if settings.llm.provider not in SUPPORTED_LLM_PROVIDERS:
+        errors.append(
+            "LLM_PROVIDER must be one of: "
+            f"{', '.join(sorted(SUPPORTED_LLM_PROVIDERS))}. Got '{settings.llm.provider}'."
+        )
+
+    if settings.transcription.provider not in SUPPORTED_TRANSCRIPTION_PROVIDERS:
+        errors.append(
+            "TRANSCRIPTION_PROVIDER must be one of: "
+            f"{', '.join(sorted(SUPPORTED_TRANSCRIPTION_PROVIDERS))}. "
+            f"Got '{settings.transcription.provider}'."
+        )
+
+    if settings.features.use_sample_mode:
+        if errors:
+            raise SettingsConfigurationError("Invalid provider configuration:\n- " + "\n- ".join(errors))
+        return
+
+    if not settings.llm.api_key.strip():
+        errors.append(
+            "LLM_API_KEY is required when PAYDAY_USE_SAMPLE_MODE=false so analysis can use "
+            f"the configured '{settings.llm.provider}' provider."
+        )
+
+    if not settings.transcription.api_key.strip():
+        errors.append(
+            "TRANSCRIPTION_API_KEY is required when PAYDAY_USE_SAMPLE_MODE=false so transcription can use "
+            f"the configured '{settings.transcription.provider}' provider."
+        )
+
+    if errors:
+        raise SettingsConfigurationError("Invalid provider configuration:\n- " + "\n- ".join(errors))
