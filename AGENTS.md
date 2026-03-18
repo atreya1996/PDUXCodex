@@ -82,6 +82,31 @@ Once implementation exists, likely paths include:
 * Main view should use tabs for Overview, Cohorts, Personas, Interviews, and Interview Detail.
 * UI should be clean, card-based, spacious, and fast.
 
+
+## Skills
+
+Before implementation, read all files under `skills/`.
+
+Apply repo-local skills in this order:
+
+1. `skills/architecture.md`
+2. `skills/system_reliability.md`
+3. `skills/product_research.md`
+4. `skills/streamlit_dashboard.md`
+5. `skills/code_quality.md`
+6. `skills/testing.md`
+
+Treat these skill files as build-quality constraints for architecture, UX, reliability, validation, and testing.
+Keep them aligned with:
+
+* `context/product.md`
+* `context/research_rules.md`
+* `prompts/analysis_prompt.md`
+
+If a skill file conflicts with product targeting rules, the targeting rules win.
+Persona 3 override is strict for no smartphone or no bank account.
+Implementation should remain modular, queue-based, and non-blocking for batch uploads.
+
 ## Developer workflow
 
 * Update `README.md` whenever setup steps change.
