@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from urllib import error, request
 
 from payday.config import LLMSettings
@@ -63,17 +63,23 @@ class AnalysisSchemaError(ValueError):
     """Raised when an analysis response is not valid JSON or violates the schema."""
 
 
-class AnalysisProviderError(RuntimeError):
-    """Raised when a configured analysis provider is unavailable or unsupported."""
+class ExternalProviderError(RuntimeError):
+    """Raised when an external provider cannot complete an analysis request."""
 
 
 class OpenAIAnalysisAdapter:
-    """Placeholder for a live OpenAI-backed analysis adapter."""
+    """Concrete adapter for OpenAI-compatible structured-analysis calls."""
 
-    def __init__(self, settings: LLMSettings) -> None:
+    def __init__(
+        self,
+        settings: LLMSettings,
+        *,
+        transport: Callable[..., Any] | None = None,
+    ) -> None:
+        self.settings = settings
         self.provider_name = settings.provider
         self.model_name = settings.model
-        self.api_key = settings.api_key
+        self._transport = transport or self._default_transport
 
     def generate_analysis(
         self,
@@ -83,48 +89,70 @@ class OpenAIAnalysisAdapter:
         expected_schema: dict[str, Any],
         attempt: int,
     ) -> str:
-        del prompt, transcript, expected_schema, attempt
-        raise AnalysisProviderError(
-            "OpenAI analysis is not implemented yet. Keep PAYDAY_USE_SAMPLE_MODE=true to use the "
-            "heuristic JSON adapter, or add the OpenAI analysis adapter implementation."
+        del transcript, expected_schema, attempt
+        api_key = self.settings.api_key.strip()
+        if not api_key:
+            raise ExternalProviderError(
+                f"LLM_API_KEY is required when sample mode is disabled for provider '{self.settings.provider}'."
+            )
+
+        response_payload = self._transport(prompt=prompt, model=self.settings.model, api_key=api_key)
+        return self._extract_output_text(response_payload)
+
+    def _default_transport(self, *, prompt: str, model: str, api_key: str) -> dict[str, Any]:
+        payload = json.dumps({"model": model, "input": prompt}).encode("utf-8")
+        http_request = request.Request(
+            "https://api.openai.com/v1/responses",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
         )
+        try:
+            with request.urlopen(http_request) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except error.HTTPError as exc:  # pragma: no cover - depends on live provider
+            body = exc.read().decode("utf-8", errors="ignore")
+            raise ExternalProviderError(f"OpenAI analysis request failed with HTTP {exc.code}: {body}") from exc
+        except error.URLError as exc:  # pragma: no cover - depends on live provider
+            raise ExternalProviderError(f"OpenAI analysis request failed: {exc.reason}") from exc
 
+    def _extract_output_text(self, response_payload: Any) -> str:
+        if isinstance(response_payload, str):
+            return response_payload
+        if not isinstance(response_payload, dict):
+            raise ExternalProviderError("OpenAI analysis provider returned an unsupported response shape.")
 
-class AnthropicAnalysisAdapter:
-    """Reserved analysis adapter branch so Anthropic can be added later without changing callers."""
+        provider_error = response_payload.get("error")
+        if isinstance(provider_error, dict):
+            message = provider_error.get("message") or provider_error.get("type") or "unknown provider error"
+            raise ExternalProviderError(f"OpenAI analysis provider error: {message}")
 
-    def __init__(self, settings: LLMSettings) -> None:
-        self.provider_name = settings.provider
-        self.model_name = settings.model
-        self.api_key = settings.api_key
+        output_text = response_payload.get("output_text")
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text
 
-    def generate_analysis(
-        self,
-        *,
-        prompt: str,
-        transcript: Transcript,
-        expected_schema: dict[str, Any],
-        attempt: int,
-    ) -> str:
-        del prompt, transcript, expected_schema, attempt
-        raise AnalysisProviderError(
-            "Anthropic analysis is not implemented yet. Add an Anthropic adapter in this branch, or use "
-            "LLM_PROVIDER=openai / sample mode for now."
-        )
+        output = response_payload.get("output")
+        if isinstance(output, list):
+            collected: list[str] = []
+            for item in output:
+                if not isinstance(item, dict):
+                    continue
+                content = item.get("content")
+                if not isinstance(content, list):
+                    continue
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    text_value = part.get("text")
+                    if isinstance(text_value, str) and text_value.strip():
+                        collected.append(text_value)
+            if collected:
+                return "\n".join(collected)
 
-
-def build_analysis_adapter(settings: LLMSettings, *, sample_mode: bool) -> AnalysisProviderAdapter:
-    """Select the analysis adapter from environment-controlled provider settings."""
-
-    if sample_mode:
-        return HeuristicAnalysisAdapter(settings)
-    if settings.provider == "openai":
-        return OpenAIAnalysisAdapter(settings)
-    if settings.provider == "anthropic":
-        return AnthropicAnalysisAdapter(settings)
-    raise AnalysisProviderError(
-        f"Unsupported analysis provider '{settings.provider}'. Use one of: anthropic, openai."
-    )
+        raise ExternalProviderError("OpenAI analysis provider response did not include output text.")
 
 
 class HeuristicAnalysisAdapter:

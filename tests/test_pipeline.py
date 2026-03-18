@@ -5,13 +5,14 @@ import types
 
 import pytest
 
+from payday.analysis import AnalysisService, OpenAIAnalysisAdapter
 from payday.config import DatabaseSettings, FeatureFlags, LLMSettings, Settings, SupabaseSettings, TranscriptionSettings
-from payday.models import AnalysisResult, BatchUploadItem, PipelineResult, PipelineStage, ProcessingStatus, Transcript, UploadedAsset
+from payday.models import AnalysisResult, PipelineResult, PipelineStage, ProcessingStatus, Transcript, UploadedAsset
 from payday.personas import PersonaService
 from payday.repository import PaydayRepository
 from payday.service import PaydayAppService
 from payday.storage import StorageService
-from payday.transcription import TranscriptionService
+from payday.transcription import OpenAITranscriptionAdapter, TranscriptionService
 
 
 class FlakyTranscriptionService(TranscriptionService):
@@ -29,69 +30,51 @@ class FlakyTranscriptionService(TranscriptionService):
         return super().transcribe(asset, sample_mode=sample_mode)
 
 
-class StubOpenAITranscriptions:
-    def __init__(self, response: object | None = None, error: Exception | None = None) -> None:
-        self.response = response
-        self.error = error
-        self.calls: list[dict[str, object]] = []
+class ErroringTranscriptionTransport:
+    def __init__(self, message: str) -> None:
+        self.message = message
+        self.calls = 0
 
-    def create(self, **kwargs):
-        self.calls.append(kwargs)
-        if self.error is not None:
-            raise self.error
+    def __call__(self, *, asset: UploadedAsset, model: str, api_key: str) -> dict[str, object]:
+        del asset, model, api_key
+        self.calls += 1
+        return {"error": {"message": self.message}}
+
+
+class StaticAnalysisTransport:
+    def __init__(self, response: object) -> None:
+        self.response = response
+        self.calls = 0
+
+    def __call__(self, *, prompt: str, model: str, api_key: str) -> object:
+        del prompt, model, api_key
+        self.calls += 1
         return self.response
 
 
-class StubOpenAIAudio:
-    def __init__(self, transcriptions: StubOpenAITranscriptions) -> None:
-        self.transcriptions = transcriptions
+VALID_ANALYSIS_JSON = """
+{
+  "smartphone_usage": {"value": "has_smartphone", "status": "observed", "evidence_quotes": ["I use WhatsApp every day"], "notes": "Directly stated."},
+  "bank_account_status": {"value": "has_bank_account", "status": "observed", "evidence_quotes": ["My bank account is active"], "notes": "Directly stated."},
+  "income_range": {"value": "₹12,000", "status": "observed", "evidence_quotes": ["I earn ₹12,000 per month"], "notes": "Directly stated."},
+  "borrowing_history": {"value": "has_borrowed", "status": "observed", "evidence_quotes": ["I borrow from neighbors sometimes"], "notes": "Directly stated."},
+  "repayment_preference": {"value": "monthly", "status": "observed", "evidence_quotes": ["I repay monthly after salary"], "notes": "Directly stated."},
+  "loan_interest": {"value": "fearful_or_uncertain", "status": "observed", "evidence_quotes": ["I am worried about scams"], "notes": "Trust barrier present."},
+  "summary": {"value": "The participant uses WhatsApp, has a bank account, earns ₹12,000, and worries about scams.", "status": "observed", "evidence_quotes": ["I use WhatsApp every day", "I am worried about scams"], "notes": "Grounded in transcript."},
+  "key_quotes": ["I use WhatsApp every day", "I am worried about scams"],
+  "confidence_signals": {"observed_evidence": ["trust barrier mentioned"], "missing_or_unknown": []}
+}
+""".strip()
 
 
-class StubOpenAIClient:
-    def __init__(self, transcriptions: StubOpenAITranscriptions) -> None:
-        self.audio = StubOpenAIAudio(transcriptions)
-
-
-class StubTranscriptionResponse:
-    def __init__(self, text: str, *, language: str = "en", duration: float = 12.5) -> None:
-        self.text = text
-        self.language = language
-        self.duration = duration
-
-
-class FakeOpenAIConnectionError(Exception):
-    pass
-
-
-class FakeOpenAIStatusError(Exception):
-    def __init__(self, message: str = "status error", *, status_code: int = 500, request_id: str | None = None) -> None:
-        super().__init__(message)
-        self.status_code = status_code
-        self.request_id = request_id
-
-
-class FakeOpenAITimeoutError(Exception):
-    pass
-
-
-def install_fake_openai_module(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_module = types.SimpleNamespace(
-        APIConnectionError=FakeOpenAIConnectionError,
-        APIStatusError=FakeOpenAIStatusError,
-        APITimeoutError=FakeOpenAITimeoutError,
-        OpenAI=object,
-    )
-    monkeypatch.setitem(__import__("sys").modules, "openai", fake_module)
-
-
-def build_settings(sqlite_path: str = ":memory:") -> Settings:
+def build_settings(sqlite_path: str = ":memory:", *, sample_mode: bool = True) -> Settings:
     return Settings(
         app_env="test",
         database=DatabaseSettings(sqlite_path=sqlite_path),
         supabase=SupabaseSettings(),
         llm=LLMSettings(),
-        transcription=TranscriptionSettings(api_key="test-key"),
-        features=FeatureFlags(use_sample_mode=True),
+        transcription=TranscriptionSettings(),
+        features=FeatureFlags(use_sample_mode=sample_mode),
     )
 
 
@@ -325,6 +308,104 @@ def test_pipeline_process_upload_persists_failed_interview_status_to_file_backed
     assert detail.interview.transcript is None
     assert detail.structured_response is None
     assert detail.insight is None
+
+
+def test_pipeline_marks_external_analysis_provider_errors_as_failed_results() -> None:
+    pipeline = PaydayAppService(build_settings()).pipeline
+    pipeline.sample_mode = False
+    pipeline.transcription_service = TranscriptionService(
+        TranscriptionSettings(provider="openai", model="whisper-test", api_key="transcription-key"),
+        adapter=OpenAITranscriptionAdapter(
+            TranscriptionSettings(provider="openai", model="whisper-test", api_key="transcription-key"),
+            transport=lambda *, asset, model, api_key: {"text": "I use WhatsApp every day. My bank account is active."},
+        ),
+    )
+    pipeline.analysis_service = AnalysisService(
+        adapter=OpenAIAnalysisAdapter(
+            LLMSettings(provider="openai", model="gpt-test", api_key="analysis-key"),
+            transport=StaticAnalysisTransport({"error": {"message": "provider outage"}}),
+        ),
+        settings=LLMSettings(provider="openai", model="gpt-test", api_key="analysis-key"),
+    )
+
+    result = pipeline.process_upload("provider-error.wav", "audio/wav", b"audio payload")
+
+    assert result.status is ProcessingStatus.FAILED
+    assert result.current_stage is PipelineStage.ANALYSIS
+    assert result.errors == [
+        "analysis failed after 3 attempts: OpenAI analysis provider error: provider outage"
+    ]
+
+
+def test_pipeline_fails_cleanly_when_live_transcription_api_key_is_missing() -> None:
+    settings = Settings(
+        app_env="test",
+        database=DatabaseSettings(sqlite_path=":memory:"),
+        supabase=SupabaseSettings(),
+        llm=LLMSettings(provider="openai", model="gpt-test", api_key="analysis-key"),
+        transcription=TranscriptionSettings(provider="openai", model="whisper-test", api_key=""),
+        features=FeatureFlags(use_sample_mode=False),
+    )
+    pipeline = PaydayAppService(settings).pipeline
+    pipeline.analysis_service = AnalysisService(
+        adapter=OpenAIAnalysisAdapter(
+            LLMSettings(provider="openai", model="gpt-test", api_key="analysis-key"),
+            transport=StaticAnalysisTransport({"output_text": VALID_ANALYSIS_JSON}),
+        ),
+        settings=settings.llm,
+    )
+
+    result = pipeline.process_upload("missing-key.wav", "audio/wav", b"audio payload")
+
+    assert result.status is ProcessingStatus.FAILED
+    assert result.current_stage is PipelineStage.TRANSCRIPTION
+    assert result.errors == [
+        "transcription failed after 3 attempts: TRANSCRIPTION_API_KEY is required when sample mode is disabled for provider 'openai'."
+    ]
+
+
+def test_openai_transcription_adapter_uses_mocked_provider_response() -> None:
+    transport = ErroringTranscriptionTransport("provider timeout")
+    adapter = OpenAITranscriptionAdapter(
+        TranscriptionSettings(provider="openai", model="whisper-test", api_key="secret-key"),
+        transport=lambda *, asset, model, api_key: {"text": "I use WhatsApp every day."},
+    )
+
+    transcript = adapter.transcribe(
+        UploadedAsset(
+            filename="sample.wav",
+            content_type="audio/wav",
+            size_bytes=4,
+            raw_bytes=b"demo",
+            file_id="file-123",
+        )
+    )
+
+    assert transcript.text == "I use WhatsApp every day."
+    assert transcript.provider == "openai"
+    assert transcript.model == "whisper-test"
+
+    failing_adapter = OpenAITranscriptionAdapter(
+        TranscriptionSettings(provider="openai", model="whisper-test", api_key="secret-key"),
+        transport=transport,
+    )
+
+    try:
+        failing_adapter.transcribe(
+            UploadedAsset(
+                filename="sample.wav",
+                content_type="audio/wav",
+                size_bytes=4,
+                raw_bytes=b"demo",
+                file_id="file-124",
+            )
+        )
+    except RuntimeError as exc:
+        assert "provider timeout" in str(exc)
+    else:  # pragma: no cover - defensive guard for the test itself
+        raise AssertionError("Expected provider error was not raised.")
+
+    assert transport.calls == 1
 
 
 def test_repository_list_results_returns_pipeline_results_in_insertion_order() -> None:

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 
-from payday.analysis import AnalysisService, OpenAIAnalysisAdapter, build_analysis_adapter
+import pytest
+
+from payday.analysis import AnalysisService, ExternalProviderError, OpenAIAnalysisAdapter
 from payday.config import LLMSettings
 from payday.models import Transcript
 
@@ -21,68 +23,84 @@ class SequenceAdapter:
         return response
 
 
-def test_analysis_service_retries_invalid_json_and_returns_validated_output() -> None:
-    adapter = SequenceAdapter(
-        responses=[
-            "not-json",
-            json.dumps(
-                {
-                    "smartphone_usage": {
-                        "value": "has_smartphone",
-                        "status": "observed",
-                        "evidence_quotes": ["I use WhatsApp every day"],
-                        "notes": "Directly stated.",
-                    },
-                    "bank_account_status": {
-                        "value": "has_bank_account",
-                        "status": "observed",
-                        "evidence_quotes": ["My bank account is active"],
-                        "notes": "Directly stated.",
-                    },
-                    "income_range": {
-                        "value": "₹12,000",
-                        "status": "observed",
-                        "evidence_quotes": ["I earn ₹12,000 per month"],
-                        "notes": "Directly stated.",
-                    },
-                    "borrowing_history": {
-                        "value": "has_borrowed",
-                        "status": "observed",
-                        "evidence_quotes": ["I borrow from neighbors sometimes"],
-                        "notes": "Directly stated.",
-                    },
-                    "repayment_preference": {
-                        "value": "monthly",
-                        "status": "observed",
-                        "evidence_quotes": ["I repay monthly after salary"],
-                        "notes": "Directly stated.",
-                    },
-                    "loan_interest": {
-                        "value": "fearful_or_uncertain",
-                        "status": "observed",
-                        "evidence_quotes": ["I am worried about scams"],
-                        "notes": "Trust barrier present.",
-                    },
-                    "summary": {
-                        "value": "The participant uses WhatsApp, has a bank account, earns ₹12,000, and worries about scams.",
-                        "status": "observed",
-                        "evidence_quotes": ["I use WhatsApp every day", "I am worried about scams"],
-                        "notes": "Grounded in transcript.",
-                    },
-                    "key_quotes": [
-                        "I use WhatsApp every day",
-                        "I am worried about scams",
-                    ],
-                    "confidence_signals": {
-                        "observed_evidence": ["trust barrier mentioned"],
-                        "missing_or_unknown": [],
-                    },
-                }
-            ),
-        ]
-    )
-    service = AnalysisService(adapter=adapter, settings=LLMSettings(), max_json_retries=2)
-    transcript = Transcript(
+class SequenceTransport:
+    def __init__(self, responses: list[object]) -> None:
+        self.responses = responses
+        self.calls: list[dict[str, str]] = []
+
+    def __call__(self, *, prompt: str, model: str, api_key: str) -> object:
+        self.calls.append({"prompt": prompt, "model": model, "api_key": api_key})
+        index = min(len(self.calls) - 1, len(self.responses) - 1)
+        return self.responses[index]
+
+
+class ErrorTransport:
+    def __init__(self, message: str) -> None:
+        self.message = message
+        self.calls = 0
+
+    def __call__(self, *, prompt: str, model: str, api_key: str) -> object:
+        del prompt, model, api_key
+        self.calls += 1
+        return {"error": {"message": self.message}}
+
+
+VALID_ANALYSIS_PAYLOAD = {
+    "smartphone_usage": {
+        "value": "has_smartphone",
+        "status": "observed",
+        "evidence_quotes": ["I use WhatsApp every day"],
+        "notes": "Directly stated.",
+    },
+    "bank_account_status": {
+        "value": "has_bank_account",
+        "status": "observed",
+        "evidence_quotes": ["My bank account is active"],
+        "notes": "Directly stated.",
+    },
+    "income_range": {
+        "value": "₹12,000",
+        "status": "observed",
+        "evidence_quotes": ["I earn ₹12,000 per month"],
+        "notes": "Directly stated.",
+    },
+    "borrowing_history": {
+        "value": "has_borrowed",
+        "status": "observed",
+        "evidence_quotes": ["I borrow from neighbors sometimes"],
+        "notes": "Directly stated.",
+    },
+    "repayment_preference": {
+        "value": "monthly",
+        "status": "observed",
+        "evidence_quotes": ["I repay monthly after salary"],
+        "notes": "Directly stated.",
+    },
+    "loan_interest": {
+        "value": "fearful_or_uncertain",
+        "status": "observed",
+        "evidence_quotes": ["I am worried about scams"],
+        "notes": "Trust barrier present.",
+    },
+    "summary": {
+        "value": "The participant uses WhatsApp, has a bank account, earns ₹12,000, and worries about scams.",
+        "status": "observed",
+        "evidence_quotes": ["I use WhatsApp every day", "I am worried about scams"],
+        "notes": "Grounded in transcript.",
+    },
+    "key_quotes": [
+        "I use WhatsApp every day",
+        "I am worried about scams",
+    ],
+    "confidence_signals": {
+        "observed_evidence": ["trust barrier mentioned"],
+        "missing_or_unknown": [],
+    },
+}
+
+
+def build_transcript() -> Transcript:
+    return Transcript(
         text=(
             "I use WhatsApp every day. My bank account is active. I earn ₹12,000 per month. "
             "I borrow from neighbors sometimes. I repay monthly after salary. I am worried about scams."
@@ -91,13 +109,59 @@ def test_analysis_service_retries_invalid_json_and_returns_validated_output() ->
         model="test-model",
     )
 
-    result = service.analyze(transcript)
+
+def test_analysis_service_retries_invalid_json_and_returns_validated_output() -> None:
+    adapter = SequenceAdapter(
+        responses=[
+            "not-json",
+            json.dumps(VALID_ANALYSIS_PAYLOAD),
+        ]
+    )
+    service = AnalysisService(adapter=adapter, settings=LLMSettings(), max_json_retries=2)
+
+    result = service.analyze(build_transcript())
 
     assert adapter.calls == 2
     assert result.metrics["json_attempts"] == 2
     assert result.structured_output["smartphone_usage"]["value"] == "has_smartphone"
     assert result.structured_output["bank_account_status"]["value"] == "has_bank_account"
     assert result.evidence_quotes == ["I use WhatsApp every day", "I am worried about scams"]
+
+
+def test_openai_analysis_adapter_retries_invalid_json_until_valid_payload() -> None:
+    transport = SequenceTransport(
+        responses=[
+            {"output_text": "not-json"},
+            {"output": [{"content": [{"text": json.dumps(VALID_ANALYSIS_PAYLOAD)}]}]},
+        ]
+    )
+    adapter = OpenAIAnalysisAdapter(
+        LLMSettings(provider="openai", model="gpt-test", api_key="test-key"),
+        transport=transport,
+    )
+    service = AnalysisService(adapter=adapter, settings=LLMSettings(), max_json_retries=2)
+
+    result = service.analyze(build_transcript())
+
+    assert len(transport.calls) == 2
+    assert transport.calls[0]["api_key"] == "test-key"
+    assert "The previous response was invalid" in transport.calls[1]["prompt"]
+    assert result.metrics["json_attempts"] == 2
+    assert result.structured_output["summary"]["status"] == "observed"
+
+
+def test_openai_analysis_adapter_surfaces_provider_errors() -> None:
+    transport = ErrorTransport("provider unavailable")
+    adapter = OpenAIAnalysisAdapter(
+        LLMSettings(provider="openai", model="gpt-test", api_key="test-key"),
+        transport=transport,
+    )
+    service = AnalysisService(adapter=adapter, settings=LLMSettings(), max_json_retries=2)
+
+    with pytest.raises(ExternalProviderError, match="provider unavailable"):
+        service.analyze(build_transcript())
+
+    assert transport.calls == 1
 
 
 def test_analysis_service_applies_defaults_and_tracks_missing_values() -> None:
