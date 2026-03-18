@@ -1,0 +1,66 @@
+{
+  "interview_id": "demo_10",
+  "filename": "demo_10_savings_first.txt",
+  "title": "Savings-first household planner",
+  "expected_persona": {
+    "persona_id": "persona_4",
+    "persona_name": "Self-Reliant Non-Borrower"
+  },
+  "structured_output": {
+    "summary": "The participant is in-scope but prefers savings and self-help support over borrowing.",
+    "key_quotes": [
+      "I use a smartphone and my bank account for wages and UPI.",
+      "I save a little every month for emergencies.",
+      "I first use savings and help from my self-help group, not a loan."
+    ],
+    "participant_profile": {
+      "smartphone_user": {
+        "value": true,
+        "evidence": [
+          "I use a smartphone and my bank account for wages and UPI."
+        ]
+      },
+      "has_bank_account": {
+        "value": true,
+        "evidence": [
+          "I use a smartphone and my bank account for wages and UPI."
+        ]
+      }
+    },
+    "persona_signals": {
+      "employer_dependency": {
+        "value": false,
+        "evidence": []
+      },
+      "digital_readiness": {
+        "value": true,
+        "evidence": [
+          "I use a smartphone and my bank account for wages and UPI."
+        ]
+      },
+      "digital_borrowing": {
+        "value": false,
+        "evidence": []
+      },
+      "trust_fear_barrier": {
+        "value": false,
+        "evidence": []
+      },
+      "self_reliance_non_borrowing": {
+        "value": true,
+        "evidence": [
+          "I first use savings and help from my self-help group, not a loan."
+        ]
+      },
+      "cyclical_borrowing": {
+        "value": false,
+        "evidence": []
+      },
+      "repayment_stress": {
+        "value": false,
+        "evidence": []
+      }
+    },
+    "expected_persona": "persona_4"
+  }
+}

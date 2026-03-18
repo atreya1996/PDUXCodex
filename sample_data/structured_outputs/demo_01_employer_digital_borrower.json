@@ -1,0 +1,68 @@
+{
+  "interview_id": "demo_01",
+  "filename": "demo_01_employer_digital_borrower.txt",
+  "title": "Employer-supported digital borrower",
+  "expected_persona": {
+    "persona_id": "persona_1",
+    "persona_name": "Employer-Dependent Digital Borrower"
+  },
+  "structured_output": {
+    "summary": "The participant has a smartphone, receives salary in a bank account, and borrows digitally with employer support.",
+    "key_quotes": [
+      "I have a smartphone and I use WhatsApp every day for work.",
+      "My salary comes to my bank account.",
+      "Madam helps me apply on a loan app."
+    ],
+    "participant_profile": {
+      "smartphone_user": {
+        "value": true,
+        "evidence": [
+          "I have a smartphone and I use WhatsApp every day for work."
+        ]
+      },
+      "has_bank_account": {
+        "value": true,
+        "evidence": [
+          "My salary comes to my bank account."
+        ]
+      }
+    },
+    "persona_signals": {
+      "employer_dependency": {
+        "value": true,
+        "evidence": [
+          "Madam helps me apply on a loan app."
+        ]
+      },
+      "digital_readiness": {
+        "value": true,
+        "evidence": [
+          "I use WhatsApp every day for work."
+        ]
+      },
+      "digital_borrowing": {
+        "value": true,
+        "evidence": [
+          "Madam helps me apply on a loan app."
+        ]
+      },
+      "trust_fear_barrier": {
+        "value": false,
+        "evidence": []
+      },
+      "self_reliance_non_borrowing": {
+        "value": false,
+        "evidence": []
+      },
+      "cyclical_borrowing": {
+        "value": false,
+        "evidence": []
+      },
+      "repayment_stress": {
+        "value": false,
+        "evidence": []
+      }
+    },
+    "expected_persona": "persona_1"
+  }
+}

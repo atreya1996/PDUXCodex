@@ -1,0 +1,62 @@
+{
+  "interview_id": "demo_03",
+  "filename": "demo_03_no_smartphone.txt",
+  "title": "No smartphone override",
+  "expected_persona": {
+    "persona_id": "persona_3",
+    "persona_name": "Offline / Excluded"
+  },
+  "structured_output": {
+    "summary": "The participant is excluded by the no-smartphone rule.",
+    "key_quotes": [
+      "I do not have a smartphone.",
+      "I only use a basic phone for calls."
+    ],
+    "participant_profile": {
+      "smartphone_user": {
+        "value": false,
+        "evidence": [
+          "I do not have a smartphone.",
+          "I only use a basic phone for calls."
+        ]
+      },
+      "has_bank_account": {
+        "value": null,
+        "evidence": []
+      }
+    },
+    "persona_signals": {
+      "employer_dependency": {
+        "value": false,
+        "evidence": []
+      },
+      "digital_readiness": {
+        "value": false,
+        "evidence": [
+          "I cannot use WhatsApp."
+        ]
+      },
+      "digital_borrowing": {
+        "value": false,
+        "evidence": []
+      },
+      "trust_fear_barrier": {
+        "value": false,
+        "evidence": []
+      },
+      "self_reliance_non_borrowing": {
+        "value": false,
+        "evidence": []
+      },
+      "cyclical_borrowing": {
+        "value": false,
+        "evidence": []
+      },
+      "repayment_stress": {
+        "value": false,
+        "evidence": []
+      }
+    },
+    "expected_persona": "persona_3"
+  }
+}

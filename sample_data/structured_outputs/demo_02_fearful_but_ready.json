@@ -1,0 +1,66 @@
+{
+  "interview_id": "demo_02",
+  "filename": "demo_02_fearful_but_ready.txt",
+  "title": "Digitally ready but fearful",
+  "expected_persona": {
+    "persona_id": "persona_2",
+    "persona_name": "Digitally Ready but Fearful"
+  },
+  "structured_output": {
+    "summary": "The participant is digitally ready but hesitates because of scam and trust concerns.",
+    "key_quotes": [
+      "I use WhatsApp and Google Pay on my smartphone.",
+      "I have my own bank account.",
+      "I am scared to borrow from an app."
+    ],
+    "participant_profile": {
+      "smartphone_user": {
+        "value": true,
+        "evidence": [
+          "I use WhatsApp and Google Pay on my smartphone."
+        ]
+      },
+      "has_bank_account": {
+        "value": true,
+        "evidence": [
+          "I have my own bank account."
+        ]
+      }
+    },
+    "persona_signals": {
+      "employer_dependency": {
+        "value": false,
+        "evidence": []
+      },
+      "digital_readiness": {
+        "value": true,
+        "evidence": [
+          "I use WhatsApp and Google Pay on my smartphone."
+        ]
+      },
+      "digital_borrowing": {
+        "value": false,
+        "evidence": []
+      },
+      "trust_fear_barrier": {
+        "value": true,
+        "evidence": [
+          "I saw many fraud messages, so I am scared to borrow from an app even when money is short."
+        ]
+      },
+      "self_reliance_non_borrowing": {
+        "value": false,
+        "evidence": []
+      },
+      "cyclical_borrowing": {
+        "value": false,
+        "evidence": []
+      },
+      "repayment_stress": {
+        "value": false,
+        "evidence": []
+      }
+    },
+    "expected_persona": "persona_2"
+  }
+}

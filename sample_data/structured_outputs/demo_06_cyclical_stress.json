@@ -1,0 +1,68 @@
+{
+  "interview_id": "demo_06",
+  "filename": "demo_06_cyclical_stress.txt",
+  "title": "High-stress cyclical borrower",
+  "expected_persona": {
+    "persona_id": "persona_5",
+    "persona_name": "High-Stress Cyclical Borrower"
+  },
+  "structured_output": {
+    "summary": "The participant is in-scope and shows repeated borrowing plus repayment stress.",
+    "key_quotes": [
+      "I have a smartphone and my salary goes to my bank account.",
+      "Almost every month I borrow for rent and school costs.",
+      "I worry all week about repayment because two loans overlap."
+    ],
+    "participant_profile": {
+      "smartphone_user": {
+        "value": true,
+        "evidence": [
+          "I have a smartphone and my salary goes to my bank account."
+        ]
+      },
+      "has_bank_account": {
+        "value": true,
+        "evidence": [
+          "I have a smartphone and my salary goes to my bank account."
+        ]
+      }
+    },
+    "persona_signals": {
+      "employer_dependency": {
+        "value": false,
+        "evidence": []
+      },
+      "digital_readiness": {
+        "value": true,
+        "evidence": [
+          "I have a smartphone and my salary goes to my bank account."
+        ]
+      },
+      "digital_borrowing": {
+        "value": false,
+        "evidence": []
+      },
+      "trust_fear_barrier": {
+        "value": false,
+        "evidence": []
+      },
+      "self_reliance_non_borrowing": {
+        "value": false,
+        "evidence": []
+      },
+      "cyclical_borrowing": {
+        "value": true,
+        "evidence": [
+          "Almost every month I borrow for rent and school costs."
+        ]
+      },
+      "repayment_stress": {
+        "value": true,
+        "evidence": [
+          "I worry all week about repayment because two loans overlap."
+        ]
+      }
+    },
+    "expected_persona": "persona_5"
+  }
+}

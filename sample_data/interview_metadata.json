@@ -1,0 +1,132 @@
+[
+  {
+    "interview_id": "demo_01",
+    "filename": "demo_01_employer_digital_borrower.txt",
+    "title": "Employer-supported digital borrower",
+    "duration_seconds": 278,
+    "city": "Bengaluru",
+    "language": "Hindi",
+    "processing_notes": "In-scope participant with smartphone, bank account, employer support, and digital borrowing behavior.",
+    "expected_persona": {
+      "persona_id": "persona_1",
+      "persona_name": "Employer-Dependent Digital Borrower"
+    }
+  },
+  {
+    "interview_id": "demo_02",
+    "filename": "demo_02_fearful_but_ready.txt",
+    "title": "Digitally ready but fearful",
+    "duration_seconds": 243,
+    "city": "Delhi",
+    "language": "Hindi",
+    "processing_notes": "In-scope participant who uses WhatsApp and bank account but distrusts loan apps because of scams.",
+    "expected_persona": {
+      "persona_id": "persona_2",
+      "persona_name": "Digitally Ready but Fearful"
+    }
+  },
+  {
+    "interview_id": "demo_03",
+    "filename": "demo_03_no_smartphone.txt",
+    "title": "No smartphone override",
+    "duration_seconds": 201,
+    "city": "Kolkata",
+    "language": "Bengali",
+    "processing_notes": "Non-target because the participant explicitly says they use a basic phone.",
+    "expected_persona": {
+      "persona_id": "persona_3",
+      "persona_name": "Offline / Excluded"
+    }
+  },
+  {
+    "interview_id": "demo_04",
+    "filename": "demo_04_no_bank_account.txt",
+    "title": "No bank account override",
+    "duration_seconds": 224,
+    "city": "Lucknow",
+    "language": "Hindi",
+    "processing_notes": "Non-target because the participant explicitly states they do not have a bank account.",
+    "expected_persona": {
+      "persona_id": "persona_3",
+      "persona_name": "Offline / Excluded"
+    }
+  },
+  {
+    "interview_id": "demo_05",
+    "filename": "demo_05_self_reliant.txt",
+    "title": "Self-reliant non-borrower",
+    "duration_seconds": 258,
+    "city": "Pune",
+    "language": "Marathi",
+    "processing_notes": "In-scope participant who prefers savings and avoids borrowing.",
+    "expected_persona": {
+      "persona_id": "persona_4",
+      "persona_name": "Self-Reliant Non-Borrower"
+    }
+  },
+  {
+    "interview_id": "demo_06",
+    "filename": "demo_06_cyclical_stress.txt",
+    "title": "High-stress cyclical borrower",
+    "duration_seconds": 312,
+    "city": "Chennai",
+    "language": "Tamil",
+    "processing_notes": "In-scope participant with repeated borrowing and repayment stress.",
+    "expected_persona": {
+      "persona_id": "persona_5",
+      "persona_name": "High-Stress Cyclical Borrower"
+    }
+  },
+  {
+    "interview_id": "demo_07",
+    "filename": "demo_07_whatsapp_but_fearful.txt",
+    "title": "WhatsApp user with trust barrier",
+    "duration_seconds": 236,
+    "city": "Hyderabad",
+    "language": "Telugu",
+    "processing_notes": "In-scope participant uses WhatsApp and UPI but distrusts unfamiliar lenders.",
+    "expected_persona": {
+      "persona_id": "persona_2",
+      "persona_name": "Digitally Ready but Fearful"
+    }
+  },
+  {
+    "interview_id": "demo_08",
+    "filename": "demo_08_employer_supported_app_user.txt",
+    "title": "Employer-guided app user",
+    "duration_seconds": 287,
+    "city": "Mumbai",
+    "language": "Hindi",
+    "processing_notes": "In-scope participant has both prerequisites and relies on employer guidance for digital borrowing.",
+    "expected_persona": {
+      "persona_id": "persona_1",
+      "persona_name": "Employer-Dependent Digital Borrower"
+    }
+  },
+  {
+    "interview_id": "demo_09",
+    "filename": "demo_09_fully_excluded.txt",
+    "title": "No smartphone and no bank account",
+    "duration_seconds": 190,
+    "city": "Patna",
+    "language": "Hindi",
+    "processing_notes": "Non-target because both prerequisites are absent.",
+    "expected_persona": {
+      "persona_id": "persona_3",
+      "persona_name": "Offline / Excluded"
+    }
+  },
+  {
+    "interview_id": "demo_10",
+    "filename": "demo_10_savings_first.txt",
+    "title": "Savings-first household planner",
+    "duration_seconds": 267,
+    "city": "Jaipur",
+    "language": "Hindi",
+    "processing_notes": "In-scope participant uses digital tools but still avoids borrowing because she prefers savings discipline.",
+    "expected_persona": {
+      "persona_id": "persona_4",
+      "persona_name": "Self-Reliant Non-Borrower"
+    }
+  }
+]
