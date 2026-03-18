@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
+import types
+
+import pytest
 
 from payday.analysis import AnalysisService, OpenAIAnalysisAdapter
 from payday.config import DatabaseSettings, FeatureFlags, LLMSettings, Settings, SupabaseSettings, TranscriptionSettings
@@ -81,6 +84,87 @@ def build_transcript(text: str = "test transcript") -> Transcript:
 
 def build_analysis(structured_output: dict) -> AnalysisResult:
     return AnalysisResult(summary="summary", structured_output=structured_output)
+
+
+def test_transcription_service_sample_mode_preserves_demo_behavior() -> None:
+    service = TranscriptionService(TranscriptionSettings())
+    asset = UploadedAsset(
+        filename="demo.txt",
+        content_type="text/plain",
+        size_bytes=11,
+        raw_bytes=b"hello world",
+        file_id="file-123",
+    )
+
+    transcript = service.transcribe(asset, sample_mode=True)
+
+    assert transcript.text == "hello world"
+    assert transcript.provider == "openai"
+    assert transcript.model == "gpt-4o-mini-transcribe"
+    assert transcript.metadata == {
+        "sample_mode": True,
+        "filename": "demo.txt",
+        "file_id": "file-123",
+        "content_type": "text/plain",
+        "size_bytes": 11,
+        "source": "demo.txt",
+    }
+
+
+def test_transcription_service_non_sample_mode_uses_openai_client_and_returns_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_fake_openai_module(monkeypatch)
+    transcriptions = StubOpenAITranscriptions(response=StubTranscriptionResponse("Real transcript", language="hi", duration=8.25))
+    client = StubOpenAIClient(transcriptions)
+    settings = TranscriptionSettings(api_key="test-key", timeout_seconds=42.0)
+    service = TranscriptionService(settings, client=client)
+    asset = UploadedAsset(
+        filename="call.wav",
+        content_type="audio/wav",
+        size_bytes=4,
+        raw_bytes=b"RIFF",
+        file_id="file-456",
+    )
+
+    transcript = service.transcribe(asset, sample_mode=False)
+
+    assert len(transcriptions.calls) == 1
+    call = transcriptions.calls[0]
+    assert call["model"] == "gpt-4o-mini-transcribe"
+    assert call["file"] == ("call.wav", b"RIFF", "audio/wav")
+    assert transcript.text == "Real transcript"
+    assert transcript.provider == "openai"
+    assert transcript.model == "gpt-4o-mini-transcribe"
+    assert transcript.metadata == {
+        "sample_mode": False,
+        "filename": "call.wav",
+        "file_id": "file-456",
+        "content_type": "audio/wav",
+        "size_bytes": 4,
+        "source": "call.wav",
+        "language": "hi",
+        "duration_seconds": 8.25,
+    }
+
+
+def test_transcription_service_non_sample_mode_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_fake_openai_module(monkeypatch)
+    service = TranscriptionService(TranscriptionSettings(api_key=""), client=StubOpenAIClient(StubOpenAITranscriptions()))
+    asset = UploadedAsset(filename="call.wav", content_type="audio/wav", size_bytes=4, raw_bytes=b"RIFF")
+
+    with pytest.raises(ValueError, match="TRANSCRIPTION_API_KEY"):
+        service.transcribe(asset, sample_mode=False)
+
+
+def test_transcription_service_timeout_propagates_for_pipeline_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_fake_openai_module(monkeypatch)
+    service = TranscriptionService(
+        TranscriptionSettings(api_key="test-key", timeout_seconds=7.0),
+        client=StubOpenAIClient(StubOpenAITranscriptions(error=FakeOpenAITimeoutError("request timed out"))),
+    )
+    asset = UploadedAsset(filename="call.wav", content_type="audio/wav", size_bytes=4, raw_bytes=b"RIFF")
+
+    with pytest.raises(TimeoutError, match="timed out"):
+        service.transcribe(asset, sample_mode=False)
 
 
 def test_pipeline_process_upload_returns_completed_result() -> None:
@@ -519,3 +603,35 @@ def test_persona_classifier_matches_persona_five_before_lower_priority_rules() -
         "persona_signals.cyclical_borrowing",
         "persona_signals.repayment_stress",
     ]
+
+
+def test_app_service_uses_live_openai_analysis_adapter_when_sample_mode_disabled() -> None:
+    settings = Settings(
+        app_env="test",
+        database=DatabaseSettings(sqlite_path=":memory:"),
+        supabase=SupabaseSettings(),
+        llm=LLMSettings(provider="openai", model="gpt-4.1-mini", api_key="live-key"),
+        transcription=TranscriptionSettings(),
+        features=FeatureFlags(use_sample_mode=False),
+    )
+
+    service = PaydayAppService(settings)
+
+    assert service.pipeline.analysis_service.adapter.provider_name == "openai"
+    assert service.pipeline.analysis_service.adapter.model_name == "gpt-4.1-mini"
+
+
+def test_app_service_keeps_heuristic_analysis_adapter_in_sample_mode() -> None:
+    settings = Settings(
+        app_env="test",
+        database=DatabaseSettings(sqlite_path=":memory:"),
+        supabase=SupabaseSettings(),
+        llm=LLMSettings(provider="openai", model="gpt-4.1-mini", api_key=""),
+        transcription=TranscriptionSettings(),
+        features=FeatureFlags(use_sample_mode=True),
+    )
+
+    service = PaydayAppService(settings)
+
+    assert service.pipeline.analysis_service.adapter.provider_name == "heuristic"
+    assert service.pipeline.analysis_service.adapter.model_name == "heuristic-json"

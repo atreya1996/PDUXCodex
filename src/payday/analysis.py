@@ -22,6 +22,8 @@ FIELD_NAMES = (
 )
 TOP_LEVEL_SCHEMA_KEYS = FIELD_NAMES + ("key_quotes", "confidence_signals")
 ALLOWED_FIELD_STATUSES = {"observed", "unknown", "missing"}
+OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
+OPENAI_REQUEST_TIMEOUT_SECONDS = 60
 
 
 class AnalysisProviderAdapter(Protocol):
@@ -157,7 +159,7 @@ class HeuristicAnalysisAdapter:
     """Local adapter that emits schema-compliant JSON for development and tests."""
 
     def __init__(self, settings: LLMSettings | None = None) -> None:
-        resolved = settings or LLMSettings(provider="mock-llm", model="heuristic-json")
+        resolved = settings or LLMSettings(provider="heuristic", model="heuristic-json")
         self.provider_name = resolved.provider
         self.model_name = resolved.model
 
@@ -294,6 +296,57 @@ class HeuristicAnalysisAdapter:
         return " ".join(words[:24]) + ("..." if len(words) > 24 else "")
 
 
+class OpenAIAnalysisAdapter:
+    """Live adapter that sends prompts to the OpenAI Responses API."""
+
+    def __init__(self, settings: LLMSettings) -> None:
+        self.settings = settings
+        self.provider_name = settings.provider
+        self.model_name = settings.model
+
+    def generate_analysis(
+        self,
+        *,
+        prompt: str,
+        transcript: Transcript,
+        expected_schema: dict[str, Any],
+        attempt: int,
+    ) -> str:
+        del transcript, expected_schema, attempt
+        if not self.settings.api_key:
+            raise RuntimeError("LLM_API_KEY is required for live OpenAI analysis.")
+
+        payload = {
+            "model": self.model_name,
+            "input": prompt,
+            "text": {"format": {"type": "json_object"}},
+        }
+        body = json.dumps(payload).encode("utf-8")
+        http_request = request.Request(
+            OPENAI_RESPONSES_URL,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {self.settings.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+
+        try:
+            with request.urlopen(http_request, timeout=OPENAI_REQUEST_TIMEOUT_SECONDS) as response:
+                response_payload = json.loads(response.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            details = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"OpenAI analysis request failed with HTTP {exc.code}: {details}") from exc
+        except error.URLError as exc:
+            raise RuntimeError(f"OpenAI analysis request failed: {exc.reason}") from exc
+
+        raw_text = _extract_openai_output_text(response_payload)
+        if not raw_text.strip():
+            raise RuntimeError("OpenAI analysis request succeeded but returned no text output.")
+        return raw_text
+
+
 class AnalysisService:
     """Transforms transcripts into validated, evidence-aware structured JSON."""
 
@@ -306,7 +359,7 @@ class AnalysisService:
         max_json_retries: int = 2,
     ) -> None:
         self.settings = settings or LLMSettings()
-        self.adapter = adapter or HeuristicAnalysisAdapter(self.settings)
+        self.adapter = adapter or HeuristicAnalysisAdapter()
         self.memory = memory or load_context_memory()
         self.max_json_retries = max_json_retries
 
@@ -532,6 +585,16 @@ class AnalysisService:
         }
 
 
+def build_analysis_adapter(settings: LLMSettings, *, sample_mode: bool) -> AnalysisProviderAdapter:
+    if sample_mode:
+        return HeuristicAnalysisAdapter()
+    if settings.provider.strip().lower() == "openai":
+        return OpenAIAnalysisAdapter(settings)
+    return HeuristicAnalysisAdapter(
+        LLMSettings(provider=f"{settings.provider}-heuristic", model="heuristic-json")
+    )
+
+
 def _field(value: str, evidence_quotes: list[str], notes: str) -> dict[str, Any]:
     return AnalysisField(
         value=value,
@@ -621,3 +684,22 @@ def _build_confidence_signals(payload: dict[str, Any]) -> dict[str, list[str]]:
         "observed_evidence": observed,
         "missing_or_unknown": missing_or_unknown,
     }
+
+
+def _extract_openai_output_text(payload: dict[str, Any]) -> str:
+    direct_output = payload.get("output_text")
+    if isinstance(direct_output, str) and direct_output.strip():
+        return direct_output
+
+    collected: list[str] = []
+    for item in payload.get("output", []):
+        if not isinstance(item, dict):
+            continue
+        for content_item in item.get("content", []):
+            if not isinstance(content_item, dict):
+                continue
+            if content_item.get("type") == "output_text":
+                text = content_item.get("text")
+                if isinstance(text, str) and text.strip():
+                    collected.append(text)
+    return "\n".join(collected)

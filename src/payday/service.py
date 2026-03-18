@@ -7,7 +7,7 @@ from payday.personas import PersonaService
 from payday.pipeline import PaydayPipeline
 from payday.repository import DashboardInterviewRecord, DashboardStatusOverview, PaydayRepository
 from payday.storage import StorageService
-from payday.transcription import TranscriptionService
+from payday.transcription import build_transcription_service
 from payday.upload import UploadService
 
 
@@ -15,6 +15,7 @@ class PaydayAppService:
     """Thin backend facade used by the Streamlit UI."""
 
     def __init__(self, settings: Settings, repository: PaydayRepository | None = None) -> None:
+        validate_runtime_settings(settings)
         self.repository = repository or PaydayRepository(database_path=settings.database.sqlite_path)
         persona_service = PersonaService()
         analysis_service = AnalysisService(
@@ -23,7 +24,10 @@ class PaydayAppService:
         )
         self.pipeline = PaydayPipeline(
             upload_service=UploadService(),
-            transcription_service=TranscriptionService(settings.transcription),
+            transcription_service=build_transcription_service(
+                settings.transcription,
+                sample_mode=settings.features.use_sample_mode,
+            ),
             analysis_service=analysis_service,
             persona_service=persona_service,
             storage_service=StorageService(settings.supabase),
