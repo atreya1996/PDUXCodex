@@ -499,7 +499,11 @@ class PaydayRepository:
     ) -> None:
         persona_name = persona.persona_name if persona is not None else "Unknown"
         confidence_score = analysis.metrics.get("confidence_score")
-        normalized_confidence = float(confidence_score) if isinstance(confidence_score, int | float) else 0.0
+        if isinstance(confidence_score, int | float):
+            normalized_confidence = float(confidence_score)
+        else:
+            json_attempts = int(analysis.metrics.get("json_attempts", 1))
+            normalized_confidence = max(0.0, 1.0 - 0.1 * (json_attempts - 1))
         self.upsert_insight(
             interview_id,
             summary=analysis.summary,
@@ -551,14 +555,44 @@ class PaydayRepository:
 
     def _extract_bool(self, structured: dict[str, object], section: str, field_name: str) -> bool | None:
         parent = structured.get(section)
-        if not isinstance(parent, dict):
-            return None
-        nested = parent.get(field_name)
-        if not isinstance(nested, dict):
-            return None
-        value = nested.get("value")
-        if isinstance(value, bool):
-            return value
+        if isinstance(parent, dict):
+            nested = parent.get(field_name)
+            if isinstance(nested, dict):
+                value = nested.get("value")
+                if isinstance(value, bool):
+                    return value
+
+        if section == "participant_profile" and field_name == "smartphone_user":
+            return self._extract_bool_from_flat_field(
+                structured,
+                field_name="smartphone_usage",
+                positive="has_smartphone",
+                negative="no_smartphone",
+            )
+
+        if section == "participant_profile" and field_name == "has_bank_account":
+            return self._extract_bool_from_flat_field(
+                structured,
+                field_name="bank_account_status",
+                positive="has_bank_account",
+                negative="no_bank_account",
+            )
+
+        return None
+
+    @staticmethod
+    def _extract_bool_from_flat_field(
+        structured: dict[str, object],
+        *,
+        field_name: str,
+        positive: str,
+        negative: str,
+    ) -> bool | None:
+        value = PaydayRepository._extract_value(structured, field_name)
+        if value == positive:
+            return True
+        if value == negative:
+            return False
         return None
 
     @staticmethod
