@@ -63,7 +63,7 @@ class PaydayRepository:
     def __init__(self, database_path: str = ":memory:", schema_path: str | None = None) -> None:
         self.database_path = database_path
         self.schema_path = schema_path or str(Path(__file__).resolve().parents[2] / "sql" / "schema.sql")
-        self._items: list[PipelineResult] = []
+        self._items: dict[str, PipelineResult] = {}
         self._connection = sqlite3.connect(self.database_path)
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA foreign_keys = ON")
@@ -321,7 +321,7 @@ class PaydayRepository:
         return self._items.get(file_id)
 
     def list_results(self) -> list[PipelineResult]:
-        return list(self._items)
+        return list(self._items.values())
 
     @staticmethod
     def _bool_to_int(value: bool | None) -> int | None:

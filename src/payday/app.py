@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 
 from payday.config import Settings, get_settings
 from payday.dashboard.views import DashboardRenderer
+from payday.models import BatchUploadItem
 from payday.service import PaydayAppService
 
 
@@ -17,69 +18,60 @@ def build_app_service() -> tuple[PaydayAppService, Settings]:
 
 
 def main() -> None:
+    st.set_page_config(page_title="PayDay Interview Review", layout="wide")
+
     app_service, settings = build_app_service()
     dashboard = DashboardRenderer()
 
-    st.set_page_config(page_title="Payday MVP", layout="wide")
-    st.title("Payday MVP")
+    st.title("PayDay interview review")
     st.caption(
-        f"Environment: {settings.app_env} · Sample mode: {'on' if settings.features.use_sample_mode else 'off'}"
+        "Batch uploads, evidence-grounded analysis, persona review, and interview QA in one workspace."
     )
 
-    st.sidebar.header("Providers")
+    st.sidebar.header("Upload interviews")
+    st.sidebar.caption("Upload 5–10 audio files at a time for fast review. Filters stay in session state for instant iteration.")
+    uploaded_files = st.sidebar.file_uploader(
+        "Audio batch",
+        type=["mp3", "wav", "m4a", "aac", "ogg"],
+        accept_multiple_files=True,
+        help="Choose between 5 and 10 interview recordings.",
+    )
+
+    upload_count = len(uploaded_files) if uploaded_files else 0
     st.sidebar.write(
         {
-            "supabase_configured": bool(settings.supabase.url),
+            "files_selected": upload_count,
+            "sample_mode": settings.features.use_sample_mode,
+            "analysis_enabled": settings.features.enable_analysis,
             "llm_provider": settings.llm.provider,
             "transcription_provider": settings.transcription.provider,
-            "analysis_enabled": settings.features.enable_analysis,
         }
     )
 
-    uploaded_file = None
-    if settings.features.enable_uploads:
-        uploaded_file = st.file_uploader(
-            "Upload a call recording or document",
-            type=["mp3", "wav", "m4a", "mp4", "txt"],
-        )
-    else:
-        st.info("Uploads are currently disabled by feature flag.")
-
-    if st.button("Run pipeline", type="primary", disabled=not settings.features.enable_analysis):
-        if uploaded_file is None:
-            st.warning("Upload a file to run the pipeline.")
+    process_disabled = not settings.features.enable_analysis or upload_count == 0
+    if st.sidebar.button("Process batch", type="primary", use_container_width=True, disabled=process_disabled):
+        if upload_count < 5 or upload_count > 10:
+            st.sidebar.warning("Please upload between 5 and 10 audio files.")
         else:
-            result = app_service.process_upload(
-                filename=uploaded_file.name,
-                content_type=uploaded_file.type or "application/octet-stream",
-                data=uploaded_file.getvalue(),
-            )
-            st.success("Pipeline completed." if result.status.value == "completed" else "Pipeline finished with errors.")
-            if result.transcript is not None:
-                st.subheader("Transcript")
-                st.write(result.transcript.text)
-            if result.analysis is not None:
-                st.subheader("Analysis")
-                st.write(result.analysis.summary)
-                st.write(result.analysis.metrics)
-                st.write(result.analysis.structured_output)
-            st.write(
-                {
-                    "status": result.status.value,
-                    "current_stage": result.current_stage.value,
-                    "persona": (
-                        {
-                            "persona_id": result.persona.persona_id,
-                            "persona_name": result.persona.persona_name,
-                            "is_non_target": result.persona.is_non_target,
-                        }
-                        if result.persona is not None
-                        else None
-                    ),
-                    "persisted": result.persisted,
-                    "errors": result.errors,
-                }
+            items = [
+                BatchUploadItem(
+                    filename=file.name,
+                    content_type=file.type or "application/octet-stream",
+                    data=file.getvalue(),
+                )
+                for file in uploaded_files
+            ]
+            with st.spinner("Processing uploaded interviews..."):
+                batch_result = app_service.process_batch_uploads(items)
+            st.sidebar.success(
+                f"Processed batch {batch_result.batch_id[:8]} with {batch_result.completed_count} completed and {batch_result.failed_count} failed."
             )
 
-    if settings.features.enable_dashboard:
-        dashboard.render(app_service.list_results())
+    if not settings.features.enable_analysis:
+        st.warning("Analysis is disabled by feature flag. The dashboard below is showing the current in-memory dataset.")
+
+    dashboard.render(app_service.list_results())
+
+
+if __name__ == "__main__":
+    main()
