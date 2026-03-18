@@ -5,7 +5,7 @@ from payday.config import Settings
 from payday.models import BatchPipelineResult, BatchUploadItem, PipelineResult
 from payday.personas import PersonaService
 from payday.pipeline import PaydayPipeline
-from payday.repository import PaydayRepository
+from payday.repository import DashboardInterviewRecord, DashboardStatusOverview, PaydayRepository
 from payday.storage import StorageService
 from payday.transcription import TranscriptionService
 from payday.upload import UploadService
@@ -39,3 +39,12 @@ class PaydayAppService:
 
     def list_results(self) -> list[PipelineResult]:
         return self.repository.list_results()
+
+    def list_recent_interviews(self, *, limit: int = 100) -> list[DashboardInterviewRecord]:
+        return self.repository.list_recent_interviews(limit=limit)
+
+    def get_interview_detail(self, interview_id: str) -> DashboardInterviewRecord:
+        return self.repository.get_dashboard_interview_detail(interview_id)
+
+    def get_status_overview(self) -> DashboardStatusOverview:
+        return self.repository.get_status_overview()

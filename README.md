@@ -64,10 +64,12 @@ cp .env.example .env
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
 | `PAYDAY_APP_ENV` | No | `development` | Labels the runtime environment in the UI. |
+| `PAYDAY_DATABASE_PATH` | No | `data/payday.db` | Local SQLite file used for repository persistence and dashboard reads. |
 | `PAYDAY_USE_SAMPLE_MODE` | No | `true` | Enables mock/demo processing without live APIs. |
 | `PAYDAY_ENABLE_UPLOADS` | No | `true` | Toggles the upload widget. |
 | `PAYDAY_ENABLE_DASHBOARD` | No | `true` | Toggles dashboard rendering. |
 | `PAYDAY_ENABLE_ANALYSIS` | No | `true` | Toggles the pipeline run button. |
+| `PAYDAY_SQLITE_PATH` | No | `data/payday.db` | Local SQLite path used for durable dashboard reads across app restarts. |
 
 ### Supabase variables
 
@@ -144,7 +146,7 @@ When `PAYDAY_USE_SAMPLE_MODE=true`, the mock transcription flow reads uploaded f
 
 1. Create and activate a Python 3.11+ virtual environment.
 2. Install the package in editable mode.
-3. Copy `.env.example` to `.env` and adjust settings.
+3. Copy `.env.example` to `.env` and adjust settings, including `PAYDAY_DATABASE_PATH` if you want a custom local SQLite location.
 4. Start Streamlit.
 
 ```bash
@@ -176,6 +178,8 @@ PAYDAY_ENABLE_ANALYSIS=true
 ```
 
 No live API keys are required in this mode.
+
+The dashboard also persists interview metadata, structured fields, and summaries into the local SQLite database at `PAYDAY_SQLITE_PATH`, so restarting Streamlit does not clear previously processed interviews as long as that file still exists.
 
 ### Demo workflow using `sample_data/`
 

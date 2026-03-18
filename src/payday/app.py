@@ -43,6 +43,7 @@ def main() -> None:
             "files_selected": upload_count,
             "sample_mode": settings.features.use_sample_mode,
             "analysis_enabled": settings.features.enable_analysis,
+            "sqlite_path": settings.database.sqlite_path,
             "llm_provider": settings.llm.provider,
             "transcription_provider": settings.transcription.provider,
         }
@@ -68,9 +69,16 @@ def main() -> None:
             )
 
     if not settings.features.enable_analysis:
-        st.warning("Analysis is disabled by feature flag. The dashboard below is showing the current in-memory dataset.")
+        st.warning(
+            "Analysis is disabled by feature flag. The dashboard continues to show durable SQLite-backed interviews plus any current-session cache."
+        )
 
-    dashboard.render(app_service.list_results())
+    dashboard.render(
+        cached_results=app_service.list_results(),
+        recent_interviews=app_service.list_recent_interviews(),
+        status_overview=app_service.get_status_overview(),
+        interview_detail_loader=app_service.get_interview_detail,
+    )
 
 
 if __name__ == "__main__":
