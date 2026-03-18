@@ -383,3 +383,35 @@ def test_persona_classifier_matches_persona_five_before_lower_priority_rules() -
         "persona_signals.cyclical_borrowing",
         "persona_signals.repayment_stress",
     ]
+
+
+def test_app_service_uses_live_openai_analysis_adapter_when_sample_mode_disabled() -> None:
+    settings = Settings(
+        app_env="test",
+        database=DatabaseSettings(sqlite_path=":memory:"),
+        supabase=SupabaseSettings(),
+        llm=LLMSettings(provider="openai", model="gpt-4.1-mini", api_key="live-key"),
+        transcription=TranscriptionSettings(),
+        features=FeatureFlags(use_sample_mode=False),
+    )
+
+    service = PaydayAppService(settings)
+
+    assert service.pipeline.analysis_service.adapter.provider_name == "openai"
+    assert service.pipeline.analysis_service.adapter.model_name == "gpt-4.1-mini"
+
+
+def test_app_service_keeps_heuristic_analysis_adapter_in_sample_mode() -> None:
+    settings = Settings(
+        app_env="test",
+        database=DatabaseSettings(sqlite_path=":memory:"),
+        supabase=SupabaseSettings(),
+        llm=LLMSettings(provider="openai", model="gpt-4.1-mini", api_key=""),
+        transcription=TranscriptionSettings(),
+        features=FeatureFlags(use_sample_mode=True),
+    )
+
+    service = PaydayAppService(settings)
+
+    assert service.pipeline.analysis_service.adapter.provider_name == "heuristic"
+    assert service.pipeline.analysis_service.adapter.model_name == "heuristic-json"

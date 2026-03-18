@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from payday.analysis import AnalysisService
+from payday.analysis import AnalysisService, OpenAIAnalysisAdapter, build_analysis_adapter
 from payday.config import LLMSettings
 from payday.models import Transcript
 
@@ -130,3 +130,85 @@ def test_analysis_service_applies_defaults_and_tracks_missing_values() -> None:
     assert result.structured_output["smartphone_usage"]["status"] == "missing"
     assert result.structured_output["bank_account_status"]["status"] == "missing"
     assert "smartphone_usage: unknown" in result.structured_output["confidence_signals"]["missing_or_unknown"]
+
+
+class FakeHTTPResponse:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.payload = payload
+
+    def read(self) -> bytes:
+        return json.dumps(self.payload).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+
+def test_openai_analysis_adapter_returns_raw_json_text(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(request_obj, timeout):
+        captured["url"] = request_obj.full_url
+        captured["timeout"] = timeout
+        captured["headers"] = dict(request_obj.header_items())
+        captured["body"] = json.loads(request_obj.data.decode("utf-8"))
+        return FakeHTTPResponse(
+            {
+                "output": [
+                    {
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": '{"summary": {"value": "ok", "status": "observed", "evidence_quotes": [], "notes": ""}, "key_quotes": []}',
+                            }
+                        ]
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("payday.analysis.request.urlopen", fake_urlopen)
+
+    adapter = OpenAIAnalysisAdapter(LLMSettings(provider="openai", model="gpt-test", api_key="secret"))
+    transcript = Transcript(text="I use WhatsApp.", provider="test", model="test")
+
+    raw = adapter.generate_analysis(
+        prompt="Return JSON",
+        transcript=transcript,
+        expected_schema={},
+        attempt=1,
+    )
+
+    assert raw.startswith('{"summary"')
+    assert captured["url"] == "https://api.openai.com/v1/responses"
+    assert captured["timeout"] == 60
+    assert captured["body"] == {
+        "model": "gpt-test",
+        "input": "Return JSON",
+        "text": {"format": {"type": "json_object"}},
+    }
+    assert captured["headers"]["Authorization"] == "Bearer secret"
+
+
+def test_build_analysis_adapter_uses_heuristic_in_sample_mode_and_openai_live_mode() -> None:
+    sample_adapter = build_analysis_adapter(
+        LLMSettings(provider="openai", model="gpt-4.1-mini", api_key="secret"),
+        sample_mode=True,
+    )
+    live_adapter = build_analysis_adapter(
+        LLMSettings(provider="openai", model="gpt-4.1-mini", api_key="secret"),
+        sample_mode=False,
+    )
+    fallback_adapter = build_analysis_adapter(
+        LLMSettings(provider="anthropic", model="claude-test", api_key="secret"),
+        sample_mode=False,
+    )
+
+    assert sample_adapter.provider_name == "heuristic"
+    assert sample_adapter.model_name == "heuristic-json"
+    assert live_adapter.provider_name == "openai"
+    assert live_adapter.model_name == "gpt-4.1-mini"
+    assert fallback_adapter.provider_name == "anthropic-heuristic"
+    assert fallback_adapter.model_name == "heuristic-json"
