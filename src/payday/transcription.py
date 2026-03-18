@@ -6,6 +6,10 @@ from payday.config import TranscriptionSettings
 from payday.models import Transcript, UploadedAsset
 
 
+class TranscriptionProviderError(RuntimeError):
+    """Raised when a configured transcription provider is unavailable or unsupported."""
+
+
 class TranscriptionService:
     """Provider facade for audio/video transcription."""
 
@@ -45,63 +49,36 @@ class TranscriptionService:
                 max_retries=0,
                 timeout=self.settings.timeout_seconds,
             )
-            self._client = client
-
-        try:
-            response = client.audio.transcriptions.create(
-                file=(asset.filename, asset.raw_bytes, asset.content_type),
+            return Transcript(
+                text=text,
+                provider=self.settings.provider,
                 model=self.settings.model,
+                metadata={"sample_mode": sample_mode, "source": asset.filename},
             )
-        except APITimeoutError as exc:
-            raise TimeoutError(
-                f"OpenAI transcription timed out for {asset.filename} after {self.settings.timeout_seconds} seconds."
-            ) from exc
-        except APIConnectionError as exc:
-            raise ConnectionError(f"OpenAI transcription connection failed for {asset.filename}.") from exc
-        except APIStatusError as exc:
-            request_id = getattr(exc, "request_id", None) or getattr(exc, "_request_id", None)
-            status_code = getattr(exc, "status_code", "unknown")
-            request_details = f" request_id={request_id}" if request_id else ""
-            raise RuntimeError(
-                f"OpenAI transcription failed for {asset.filename} with status {status_code}.{request_details}"
-            ) from exc
 
-        text = getattr(response, "text", "")
-        if not isinstance(text, str) or not text.strip():
-            raise RuntimeError(f"OpenAI transcription returned empty text for {asset.filename}.")
-
-        return self._build_transcript(
-            asset=asset,
-            sample_mode=False,
-            text=text.strip(),
-            extra_metadata={
-                "response_format": getattr(response, "response_format", None),
-                "language": getattr(response, "language", None),
-                "duration_seconds": getattr(response, "duration", None),
-            },
+        raise TranscriptionProviderError(
+            f"{self.settings.provider} transcription is not implemented yet. Keep "
+            "PAYDAY_USE_SAMPLE_MODE=true to use sample transcripts, or add the live provider "
+            "implementation for this branch."
         )
 
-    def _build_transcript(
-        self,
-        *,
-        asset: UploadedAsset,
-        sample_mode: bool,
-        text: str,
-        extra_metadata: dict[str, Any] | None = None,
-    ) -> Transcript:
-        metadata: dict[str, Any] = {
-            "sample_mode": sample_mode,
-            "filename": asset.filename,
-            "file_id": asset.file_id,
-            "content_type": asset.content_type,
-            "size_bytes": asset.size_bytes,
-            "source": asset.filename,
-        }
-        if extra_metadata:
-            metadata.update({key: value for key, value in extra_metadata.items() if value is not None})
-        return Transcript(
-            text=text,
-            provider=self.settings.provider,
-            model=self.settings.model,
-            metadata=metadata,
-        )
+
+class OpenAITranscriptionService(TranscriptionService):
+    """Reserved provider branch so OpenAI transcription can be implemented without changing callers."""
+
+
+
+def build_transcription_service(
+    settings: TranscriptionSettings,
+    *,
+    sample_mode: bool,
+) -> TranscriptionService:
+    """Select the transcription service from environment-controlled provider settings."""
+
+    if sample_mode:
+        return TranscriptionService(settings)
+    if settings.provider == "openai":
+        return OpenAITranscriptionService(settings)
+    raise TranscriptionProviderError(
+        f"Unsupported transcription provider '{settings.provider}'. Use TRANSCRIPTION_PROVIDER=openai."
+    )

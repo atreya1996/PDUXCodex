@@ -47,9 +47,10 @@ sql/                           # Database schema and migrations
 
 - The dashboard layer should remain presentation-focused.
 - The pipeline is designed so each interview can succeed or fail independently.
-- Provider settings are injected through environment variables instead of hard-coded in the UI.
-- Sample mode lets developers exercise the end-to-end flow without live APIs.
-- The current implementation now includes a live OpenAI analysis adapter plus a heuristic fallback/sample adapter, while keeping provider boundaries explicit so additional production adapters can be added cleanly.
+- Provider settings are injected through `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`, `TRANSCRIPTION_PROVIDER`, `TRANSCRIPTION_MODEL`, and `TRANSCRIPTION_API_KEY` instead of being hard-coded in the UI.
+- Sample mode lets developers exercise the end-to-end flow without live APIs or external credentials.
+- Live mode now validates provider selection at startup and fails fast with a clear error if required analysis or transcription credentials are missing.
+- The current implementation is still an MVP scaffold: provider factories are in place for OpenAI-first live integrations, and the analysis branch already reserves a clean extension point for Anthropic later.
 
 ## Required environment variables
 
@@ -86,7 +87,7 @@ cp .env.example .env
 | --- | --- | --- | --- |
 | `LLM_PROVIDER` | No | `openai` | Logical provider name shown in app metadata. |
 | `LLM_MODEL` | No | `gpt-4.1-mini` | Model identifier for structured analysis. |
-| `LLM_API_KEY` | Yes for live analysis | `""` | API key for the selected LLM provider. |
+| `LLM_API_KEY` | Yes for live analysis (`PAYDAY_USE_SAMPLE_MODE=false`) | `""` | API key for the selected LLM provider. The app fails fast at startup if it is missing in live mode. |
 
 ### Transcription variables
 
@@ -94,8 +95,7 @@ cp .env.example .env
 | --- | --- | --- | --- |
 | `TRANSCRIPTION_PROVIDER` | No | `openai` | Logical provider name used by the transcription service. |
 | `TRANSCRIPTION_MODEL` | No | `gpt-4o-mini-transcribe` | Model identifier for transcription. |
-| `TRANSCRIPTION_API_KEY` | Yes for live transcription | `""` | API key for the selected transcription provider. |
-| `TRANSCRIPTION_TIMEOUT_SECONDS` | No | `60` | Request timeout used for provider-backed transcription calls. |
+| `TRANSCRIPTION_API_KEY` | Yes for live transcription (`PAYDAY_USE_SAMPLE_MODE=false`) | `""` | API key for the selected transcription provider. The app fails fast at startup if it is missing in live mode. |
 
 ## How to configure Supabase
 
@@ -117,7 +117,7 @@ Supabase is optional in sample mode and recommended for live uploads.
 
 ## How to choose LLM and transcription providers
 
-The code is provider-configured through environment variables.
+The code is provider-configured only through environment variables: `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`, `TRANSCRIPTION_PROVIDER`, `TRANSCRIPTION_MODEL`, and `TRANSCRIPTION_API_KEY`.
 
 ### LLM provider selection
 
@@ -129,7 +129,7 @@ LLM_MODEL=gpt-4.1-mini
 LLM_API_KEY=your-key
 ```
 
-Set `PAYDAY_USE_SAMPLE_MODE=false` to use the live OpenAI analysis adapter. Keep sample mode enabled if you want the heuristic adapter for demos or local development without API keys. Unsupported live providers currently fall back to the heuristic adapter until more provider integrations are added.
+Use sample mode if you do not want a live LLM yet. In sample mode, no external credentials are required. In live mode, the app validates `LLM_API_KEY` during startup. The analysis layer is abstracted behind a provider factory so OpenAI can be implemented first and Anthropic can be added later without changing the dashboard or pipeline call sites.
 
 ### Transcription provider selection
 
@@ -141,7 +141,7 @@ TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe
 TRANSCRIPTION_API_KEY=your-key
 ```
 
-When `PAYDAY_USE_SAMPLE_MODE=true`, the mock transcription flow reads uploaded file bytes as text when possible. That means the `.txt` files in `sample_data/mock_uploads/` can be uploaded directly to demonstrate the dashboard without any live transcription integration.
+When `PAYDAY_USE_SAMPLE_MODE=true`, the mock transcription flow reads uploaded file bytes as text when possible and does not require `TRANSCRIPTION_API_KEY`. That means the `.txt` files in `sample_data/mock_uploads/` can be uploaded directly to demonstrate the dashboard without any live transcription integration. When `PAYDAY_USE_SAMPLE_MODE=false`, the app validates `TRANSCRIPTION_API_KEY` during startup.
 
 ## How to run Streamlit locally
 

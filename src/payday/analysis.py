@@ -63,6 +63,70 @@ class AnalysisSchemaError(ValueError):
     """Raised when an analysis response is not valid JSON or violates the schema."""
 
 
+class AnalysisProviderError(RuntimeError):
+    """Raised when a configured analysis provider is unavailable or unsupported."""
+
+
+class OpenAIAnalysisAdapter:
+    """Placeholder for a live OpenAI-backed analysis adapter."""
+
+    def __init__(self, settings: LLMSettings) -> None:
+        self.provider_name = settings.provider
+        self.model_name = settings.model
+        self.api_key = settings.api_key
+
+    def generate_analysis(
+        self,
+        *,
+        prompt: str,
+        transcript: Transcript,
+        expected_schema: dict[str, Any],
+        attempt: int,
+    ) -> str:
+        del prompt, transcript, expected_schema, attempt
+        raise AnalysisProviderError(
+            "OpenAI analysis is not implemented yet. Keep PAYDAY_USE_SAMPLE_MODE=true to use the "
+            "heuristic JSON adapter, or add the OpenAI analysis adapter implementation."
+        )
+
+
+class AnthropicAnalysisAdapter:
+    """Reserved analysis adapter branch so Anthropic can be added later without changing callers."""
+
+    def __init__(self, settings: LLMSettings) -> None:
+        self.provider_name = settings.provider
+        self.model_name = settings.model
+        self.api_key = settings.api_key
+
+    def generate_analysis(
+        self,
+        *,
+        prompt: str,
+        transcript: Transcript,
+        expected_schema: dict[str, Any],
+        attempt: int,
+    ) -> str:
+        del prompt, transcript, expected_schema, attempt
+        raise AnalysisProviderError(
+            "Anthropic analysis is not implemented yet. Add an Anthropic adapter in this branch, or use "
+            "LLM_PROVIDER=openai / sample mode for now."
+        )
+
+
+def build_analysis_adapter(settings: LLMSettings, *, sample_mode: bool) -> AnalysisProviderAdapter:
+    """Select the analysis adapter from environment-controlled provider settings."""
+
+    if sample_mode:
+        return HeuristicAnalysisAdapter(settings)
+    if settings.provider == "openai":
+        return OpenAIAnalysisAdapter(settings)
+    if settings.provider == "anthropic":
+        return AnthropicAnalysisAdapter(settings)
+    raise AnalysisProviderError(
+        f"Unsupported analysis provider '{settings.provider}'. Use one of: anthropic, openai."
+    )
+
+
 class HeuristicAnalysisAdapter:
     """Local adapter that emits schema-compliant JSON for development and tests."""
 
