@@ -103,13 +103,7 @@ class OpenAIAnalysisAdapter:
         return raw_text
 
     def _default_transport(self, *, prompt: str, model: str, api_key: str) -> dict[str, Any]:
-        payload = json.dumps(
-            {
-                "model": model,
-                "input": prompt,
-                "text": {"format": {"type": "json_object"}},
-            }
-        ).encode("utf-8")
+        payload = json.dumps({"model": model, "input": prompt, "text": {"format": {"type": "json_object"}}}).encode("utf-8")
         http_request = request.Request(
             OPENAI_RESPONSES_URL,
             data=payload,
@@ -306,6 +300,14 @@ class HeuristicAnalysisAdapter:
             return " ".join(sentences[:2])
         words = text.split()
         return " ".join(words[:24]) + ("..." if len(words) > 24 else "")
+
+
+class AnthropicAnalysisAdapter(HeuristicAnalysisAdapter):
+    """Reserved provider branch for Anthropic while live structured output is pending."""
+
+    def __init__(self, settings: LLMSettings) -> None:
+        super().__init__(LLMSettings(provider=f"{settings.provider}-heuristic", model="heuristic-json"))
+        self.settings = settings
 
 
 class AnalysisService:
@@ -547,14 +549,16 @@ class AnalysisService:
 
 
 def build_analysis_adapter(settings: LLMSettings, *, sample_mode: bool) -> AnalysisProviderAdapter:
+    provider = settings.provider.strip().lower()
     if sample_mode:
         return HeuristicAnalysisAdapter()
-    provider = settings.provider.strip().lower()
     if provider == "openai":
         return OpenAIAnalysisAdapter(settings)
     if provider == "anthropic":
         return AnthropicAnalysisAdapter(settings)
-    raise ValueError(f"Unsupported LLM provider '{settings.provider}'.")
+    return HeuristicAnalysisAdapter(
+        LLMSettings(provider=f"{settings.provider}-heuristic", model="heuristic-json")
+    )
 
 
 def _field(value: str, evidence_quotes: list[str], notes: str) -> dict[str, Any]:

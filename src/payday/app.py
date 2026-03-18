@@ -29,12 +29,12 @@ def main() -> None:
     )
 
     st.sidebar.header("Upload interviews")
-    st.sidebar.caption("Upload 5–10 audio files at a time for fast review. Filters stay in session state for instant iteration.")
+    st.sidebar.caption("Start with one small audio file to validate live processing, then scale up to a full batch. Filters stay in session state for instant iteration.")
     uploaded_files = st.sidebar.file_uploader(
         "Audio batch",
         type=["mp3", "wav", "m4a", "aac", "ogg"],
         accept_multiple_files=True,
-        help="Choose between 5 and 10 interview recordings.",
+        help="Choose 1 to 10 interview recordings. Start with one file for a live smoke test, then try a full batch.",
     )
 
     upload_count = len(uploaded_files) if uploaded_files else 0
@@ -51,8 +51,8 @@ def main() -> None:
 
     process_disabled = not settings.features.enable_analysis or upload_count == 0
     if st.sidebar.button("Process batch", type="primary", use_container_width=True, disabled=process_disabled):
-        if upload_count < 5 or upload_count > 10:
-            st.sidebar.warning("Please upload between 5 and 10 audio files.")
+        if upload_count < 1 or upload_count > 10:
+            st.sidebar.warning("Please upload between 1 and 10 audio files.")
         else:
             items = [
                 BatchUploadItem(

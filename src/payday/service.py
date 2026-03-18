@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from payday.analysis import AnalysisService, build_analysis_adapter
-from payday.config import Settings, validate_runtime_settings
+from payday.config import Settings, SettingsConfigurationError, validate_runtime_settings
 from payday.models import BatchPipelineResult, BatchUploadItem, PipelineResult
 from payday.personas import PersonaService
 from payday.pipeline import PaydayPipeline
@@ -15,11 +15,23 @@ class PaydayAppService:
     """Thin backend facade used by the Streamlit UI."""
 
     def __init__(self, settings: Settings, repository: PaydayRepository | None = None) -> None:
-        validate_runtime_settings(settings)
+        try:
+            validate_runtime_settings(settings)
+        except SettingsConfigurationError as exc:
+            message = str(exc)
+            transcription_only_error = (
+                not settings.features.use_sample_mode
+                and settings.llm.api_key.strip()
+                and not settings.transcription.api_key.strip()
+                and "TRANSCRIPTION_API_KEY is required" in message
+                and "LLM_API_KEY is required" not in message
+            )
+            if not transcription_only_error:
+                raise
         self.repository = repository or PaydayRepository(database_path=settings.database.sqlite_path)
         persona_service = PersonaService()
         analysis_service = AnalysisService(
-            adapter=self._build_analysis_adapter(settings),
+            adapter=build_analysis_adapter(settings.llm, sample_mode=settings.features.use_sample_mode),
             settings=settings.llm,
         )
         self.pipeline = PaydayPipeline(
@@ -32,12 +44,6 @@ class PaydayAppService:
             persona_service=persona_service,
             storage_service=StorageService(settings.supabase),
             repository=self.repository,
-            sample_mode=settings.features.use_sample_mode,
-        )
-
-    def _build_analysis_adapter(self, settings: Settings):
-        return build_analysis_adapter(
-            settings.llm,
             sample_mode=settings.features.use_sample_mode,
         )
 
