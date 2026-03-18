@@ -68,7 +68,7 @@ class ExternalProviderError(RuntimeError):
 
 
 class OpenAIAnalysisAdapter:
-    """Concrete adapter for OpenAI-compatible structured-analysis calls."""
+    """Live adapter that sends prompts to the OpenAI Responses API."""
 
     def __init__(
         self,
@@ -96,12 +96,11 @@ class OpenAIAnalysisAdapter:
                 f"LLM_API_KEY is required when sample mode is disabled for provider '{self.settings.provider}'."
             )
 
-        response_payload = self._transport(
-            prompt=prompt,
-            model=self.settings.model,
-            api_key=api_key,
-        )
-        return self._extract_output_text(response_payload)
+        response_payload = self._transport(prompt=prompt, model=self.settings.model, api_key=api_key)
+        raw_text = self._extract_output_text(response_payload)
+        if not raw_text.strip():
+            raise ExternalProviderError("OpenAI analysis request succeeded but returned no text output.")
+        return raw_text
 
     def _default_transport(self, *, prompt: str, model: str, api_key: str) -> dict[str, Any]:
         payload = json.dumps(
@@ -140,29 +139,32 @@ class OpenAIAnalysisAdapter:
             message = provider_error.get("message") or provider_error.get("type") or "unknown provider error"
             raise ExternalProviderError(f"OpenAI analysis provider error: {message}")
 
-        output_text = response_payload.get("output_text")
-        if isinstance(output_text, str) and output_text.strip():
+        output_text = _extract_openai_output_text(response_payload)
+        if output_text:
             return output_text
-
-        output = response_payload.get("output")
-        if isinstance(output, list):
-            collected: list[str] = []
-            for item in output:
-                if not isinstance(item, dict):
-                    continue
-                content = item.get("content")
-                if not isinstance(content, list):
-                    continue
-                for part in content:
-                    if not isinstance(part, dict):
-                        continue
-                    text_value = part.get("text")
-                    if isinstance(text_value, str) and text_value.strip():
-                        collected.append(text_value)
-            if collected:
-                return "\n".join(collected)
-
         raise ExternalProviderError("OpenAI analysis provider response did not include output text.")
+
+
+class AnthropicAnalysisAdapter:
+    """Placeholder adapter reserved for future live Anthropic support."""
+
+    def __init__(self, settings: LLMSettings) -> None:
+        self.settings = settings
+        self.provider_name = settings.provider
+        self.model_name = settings.model
+
+    def generate_analysis(
+        self,
+        *,
+        prompt: str,
+        transcript: Transcript,
+        expected_schema: dict[str, Any],
+        attempt: int,
+    ) -> str:
+        del prompt, transcript, expected_schema, attempt
+        raise ExternalProviderError(
+            "Anthropic live analysis adapter is reserved for future implementation."
+        )
 
 
 class HeuristicAnalysisAdapter:
@@ -304,28 +306,6 @@ class HeuristicAnalysisAdapter:
             return " ".join(sentences[:2])
         words = text.split()
         return " ".join(words[:24]) + ("..." if len(words) > 24 else "")
-
-
-class AnthropicAnalysisAdapter:
-    """Placeholder adapter reserved for future live Anthropic support."""
-
-    def __init__(self, settings: LLMSettings) -> None:
-        self.settings = settings
-        self.provider_name = settings.provider
-        self.model_name = settings.model
-
-    def generate_analysis(
-        self,
-        *,
-        prompt: str,
-        transcript: Transcript,
-        expected_schema: dict[str, Any],
-        attempt: int,
-    ) -> str:
-        del prompt, transcript, expected_schema, attempt
-        raise RuntimeError(
-            "Anthropic analysis adapter is reserved for future live provider support and is not implemented yet."
-        )
 
 
 class AnalysisService:
@@ -569,14 +549,12 @@ class AnalysisService:
 def build_analysis_adapter(settings: LLMSettings, *, sample_mode: bool) -> AnalysisProviderAdapter:
     if sample_mode:
         return HeuristicAnalysisAdapter()
-
     provider = settings.provider.strip().lower()
     if provider == "openai":
         return OpenAIAnalysisAdapter(settings)
     if provider == "anthropic":
         return AnthropicAnalysisAdapter(settings)
-
-    raise ValueError(f"Unsupported LLM provider '{settings.provider}' for live analysis.")
+    raise ValueError(f"Unsupported LLM provider '{settings.provider}'.")
 
 
 def _field(value: str, evidence_quotes: list[str], notes: str) -> dict[str, Any]:
@@ -682,8 +660,20 @@ def _extract_openai_output_text(payload: dict[str, Any]) -> str:
         for content_item in item.get("content", []):
             if not isinstance(content_item, dict):
                 continue
-            if content_item.get("type") == "output_text":
-                text = content_item.get("text")
-                if isinstance(text, str) and text.strip():
-                    collected.append(text)
+            content_type = content_item.get("type")
+            text = content_item.get("text")
+            if isinstance(text, str) and text.strip() and content_type in {None, "output_text"}:
+                collected.append(text)
     return "\n".join(collected)
+
+
+__all__ = [
+    "AnalysisProviderAdapter",
+    "AnalysisSchemaError",
+    "AnalysisService",
+    "AnthropicAnalysisAdapter",
+    "ExternalProviderError",
+    "HeuristicAnalysisAdapter",
+    "OpenAIAnalysisAdapter",
+    "build_analysis_adapter",
+]

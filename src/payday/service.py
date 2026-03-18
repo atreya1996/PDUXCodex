@@ -36,7 +36,10 @@ class PaydayAppService:
         )
 
     def _build_analysis_adapter(self, settings: Settings):
-        return build_analysis_adapter(settings.llm, sample_mode=settings.features.use_sample_mode)
+        return build_analysis_adapter(
+            settings.llm,
+            sample_mode=settings.features.use_sample_mode,
+        )
 
     def process_upload(self, filename: str, content_type: str, data: bytes) -> PipelineResult:
         return self.pipeline.process_upload(filename=filename, content_type=content_type, data=data)
