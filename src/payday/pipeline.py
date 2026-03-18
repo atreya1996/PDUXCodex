@@ -156,10 +156,6 @@ class PaydayPipeline:
 
     def _sync_result(self, result: PipelineResult) -> None:
         self.repository.save_result(result)
-        self.repository.sync_pipeline_result(
-            result,
-            audio_url=self.storage_service.build_audio_path(result.file_id, result.filename),
-        )
 
     def _sync_interview(
         self,

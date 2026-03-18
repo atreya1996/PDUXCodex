@@ -6,6 +6,9 @@ from functools import lru_cache
 from pathlib import Path
 
 
+DEFAULT_DATABASE_PATH = Path("data/payday.db")
+
+
 def _as_bool(value: str | None, default: bool = False) -> bool:
     if value is None:
         return default
@@ -36,7 +39,7 @@ class TranscriptionSettings:
 
 @dataclass(frozen=True)
 class DatabaseSettings:
-    sqlite_path: str = "data/payday.db"
+    sqlite_path: str = str(DEFAULT_DATABASE_PATH)
 
 
 @dataclass(frozen=True)
@@ -59,7 +62,7 @@ class Settings:
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    sqlite_path = Path(os.getenv("PAYDAY_SQLITE_PATH", "data/payday.db")).expanduser()
+    sqlite_path = Path(os.getenv("PAYDAY_SQLITE_PATH", str(DEFAULT_DATABASE_PATH))).expanduser()
     return Settings(
         app_env=os.getenv("PAYDAY_APP_ENV", "development"),
         database=DatabaseSettings(sqlite_path=str(sqlite_path)),

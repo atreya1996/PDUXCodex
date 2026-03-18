@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from pathlib import Path
-
-from payday.config import DatabaseSettings, FeatureFlags, LLMSettings, Settings, SupabaseSettings, TranscriptionSettings, get_settings
+from payday.config import DatabaseSettings, FeatureFlags, LLMSettings, Settings, SupabaseSettings, TranscriptionSettings
 from payday.models import AnalysisResult, BatchUploadItem, PipelineResult, PipelineStage, ProcessingStatus, Transcript, UploadedAsset
 from payday.personas import PersonaService
 from payday.repository import PaydayRepository
@@ -246,16 +244,14 @@ def test_repository_crud_supports_interview_related_tables(tmp_path) -> None:
     assert status_overview.status_counts == {"completed": 1}
 
 
-def test_app_service_defaults_to_settings_sqlite_path_for_local_development(tmp_path, monkeypatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("PAYDAY_SQLITE_PATH", raising=False)
-    get_settings.cache_clear()
+def test_repository_initialization_creates_missing_database_directory(tmp_path) -> None:
+    database_path = tmp_path / "nested" / "storage" / "payday.db"
 
-    settings = get_settings()
-    service = PaydayAppService(settings)
+    repository = PaydayRepository(database_path=str(database_path))
+    interview = repository.create_interview(audio_url="audio/interview-1/demo.wav")
 
-    assert settings.database.sqlite_path == "data/payday.db"
-    assert service.repository.database_path == str(Path("data/payday.db"))
+    assert database_path.exists()
+    assert interview.audio_url == "audio/interview-1/demo.wav"
 
 
 def test_app_service_uses_sqlite_for_durable_dashboard_reads(tmp_path) -> None:
