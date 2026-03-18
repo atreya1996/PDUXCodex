@@ -1,6 +1,6 @@
 from payday.analysis import AnalysisService
 from payday.config import FeatureFlags, LLMSettings, Settings, SupabaseSettings, TranscriptionSettings
-from payday.models import BatchUploadItem, PipelineStage, ProcessingStatus
+from payday.models import AnalysisResult, BatchUploadItem, PipelineStage, ProcessingStatus, Transcript
 from payday.personas import PersonaService
 from payday.pipeline import PaydayPipeline
 from payday.repository import PaydayRepository
@@ -33,6 +33,14 @@ def build_settings() -> Settings:
         transcription=TranscriptionSettings(),
         features=FeatureFlags(use_sample_mode=True),
     )
+
+
+def build_transcript(text: str = "test transcript") -> Transcript:
+    return Transcript(text=text, provider="test", model="test")
+
+
+def build_analysis(structured_output: dict) -> AnalysisResult:
+    return AnalysisResult(summary="summary", structured_output=structured_output)
 
 
 def test_pipeline_process_upload_returns_completed_result() -> None:
@@ -101,6 +109,7 @@ def test_persona_three_override_for_no_bank_account() -> None:
     assert result.persona is not None
     assert result.persona.persona_id == "persona_3"
     assert result.persona.is_non_target is True
+    assert result.persona.explanation_payload["triggered_fields"] == ["participant_profile.has_bank_account"]
 
 
 
@@ -116,3 +125,78 @@ def test_persona_three_override_for_no_smartphone() -> None:
     assert result.persona is not None
     assert result.persona.persona_id == "persona_3"
     assert result.persona.is_non_target is True
+    assert result.persona.explanation_payload["triggered_fields"] == ["participant_profile.smartphone_user"]
+
+
+def test_persona_classifier_uses_structured_fields_for_persona_one() -> None:
+    persona = PersonaService().classify(
+        build_transcript(),
+        build_analysis(
+            {
+                "participant_profile": {
+                    "smartphone_user": {"value": True, "evidence": ["whatsapp"]},
+                    "has_bank_account": {"value": True, "evidence": ["bank account"]},
+                },
+                "persona_signals": {
+                    "employer_dependency": {"value": True, "evidence": ["madam helped"]},
+                    "digital_borrowing": {"value": True, "evidence": ["loan app"]},
+                },
+            }
+        ),
+    )
+
+    assert persona.persona_id == "persona_1"
+    assert persona.explanation_payload["triggered_fields"] == [
+        "persona_signals.employer_dependency",
+        "persona_signals.digital_borrowing",
+    ]
+    assert persona.evidence_quotes == ("madam helped", "loan app")
+
+
+
+def test_persona_classifier_prioritizes_override_before_other_matches() -> None:
+    persona = PersonaService().classify(
+        build_transcript(),
+        build_analysis(
+            {
+                "participant_profile": {
+                    "smartphone_user": {"value": False, "evidence": ["basic phone"]},
+                    "has_bank_account": {"value": True, "evidence": ["bank account"]},
+                },
+                "persona_signals": {
+                    "cyclical_borrowing": {"value": True, "evidence": ["every month"]},
+                    "repayment_stress": {"value": True, "evidence": ["repay pressure"]},
+                },
+            }
+        ),
+    )
+
+    assert persona.persona_id == "persona_3"
+    assert persona.is_non_target is True
+    assert persona.explanation_payload["decision_type"] == "override"
+
+
+
+def test_persona_classifier_matches_persona_five_before_lower_priority_rules() -> None:
+    persona = PersonaService().classify(
+        build_transcript(),
+        build_analysis(
+            {
+                "participant_profile": {
+                    "smartphone_user": {"value": True, "evidence": ["whatsapp"]},
+                    "has_bank_account": {"value": True, "evidence": ["bank account"]},
+                },
+                "persona_signals": {
+                    "cyclical_borrowing": {"value": True, "evidence": ["every month"]},
+                    "repayment_stress": {"value": True, "evidence": ["repayment pressure"]},
+                    "self_reliance_non_borrowing": {"value": True, "evidence": ["use my savings"]},
+                },
+            }
+        ),
+    )
+
+    assert persona.persona_id == "persona_5"
+    assert persona.explanation_payload["triggered_fields"] == [
+        "persona_signals.cyclical_borrowing",
+        "persona_signals.repayment_stress",
+    ]
