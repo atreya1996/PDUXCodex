@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from payday.config import FeatureFlags, LLMSettings, Settings, SupabaseSettings, TranscriptionSettings
+from payday.config import DatabaseSettings, FeatureFlags, LLMSettings, Settings, SupabaseSettings, TranscriptionSettings
 from payday.models import AnalysisResult, BatchUploadItem, PipelineResult, PipelineStage, ProcessingStatus, Transcript, UploadedAsset
 from payday.personas import PersonaService
 from payday.repository import PaydayRepository
@@ -30,6 +30,7 @@ def build_settings() -> Settings:
         supabase=SupabaseSettings(),
         llm=LLMSettings(),
         transcription=TranscriptionSettings(),
+        database=DatabaseSettings(path=":memory:"),
         features=FeatureFlags(use_sample_mode=True),
     )
 

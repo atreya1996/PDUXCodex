@@ -15,7 +15,7 @@ class PaydayAppService:
     """Thin backend facade used by the Streamlit UI."""
 
     def __init__(self, settings: Settings) -> None:
-        self.repository = PaydayRepository()
+        self.repository = PaydayRepository(database_path=settings.database.path)
         persona_service = PersonaService()
         analysis_service = AnalysisService(
             adapter=HeuristicAnalysisAdapter(settings.llm),

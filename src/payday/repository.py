@@ -64,10 +64,18 @@ class PaydayRepository:
         self.database_path = database_path
         self.schema_path = schema_path or str(Path(__file__).resolve().parents[2] / "sql" / "schema.sql")
         self._items: dict[str, PipelineResult] = {}
+        self._ensure_database_directory()
         self._connection = sqlite3.connect(self.database_path)
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA foreign_keys = ON")
         self._initialize()
+
+
+    def _ensure_database_directory(self) -> None:
+        if self.database_path == ":memory:":
+            return
+
+        Path(self.database_path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
 
     def _connect(self) -> sqlite3.Connection:
         return self._connection
