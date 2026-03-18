@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from payday.analysis import AnalysisService, HeuristicAnalysisAdapter, OpenAIAnalysisAdapter
-from payday.config import Settings
+from payday.analysis import AnalysisService, build_analysis_adapter
+from payday.config import Settings, validate_runtime_settings
 from payday.models import BatchPipelineResult, BatchUploadItem, PipelineResult
 from payday.personas import PersonaService
 from payday.pipeline import PaydayPipeline
@@ -36,11 +36,10 @@ class PaydayAppService:
         )
 
     def _build_analysis_adapter(self, settings: Settings):
-        if settings.features.use_sample_mode:
-            return HeuristicAnalysisAdapter(settings.llm)
-        if settings.llm.provider == "openai":
-            return OpenAIAnalysisAdapter(settings.llm)
-        raise ValueError(f"Unsupported LLM provider '{settings.llm.provider}' in non-sample mode.")
+        return build_analysis_adapter(
+            settings.llm,
+            sample_mode=settings.features.use_sample_mode,
+        )
 
     def process_upload(self, filename: str, content_type: str, data: bytes) -> PipelineResult:
         return self.pipeline.process_upload(filename=filename, content_type=content_type, data=data)
