@@ -96,6 +96,13 @@ class PaydayRepository:
         self._connection.execute("PRAGMA foreign_keys = ON")
         self._initialize()
 
+
+    def _ensure_database_directory(self) -> None:
+        if self.database_path == ":memory:":
+            return
+
+        Path(self.database_path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+
     def _connect(self) -> sqlite3.Connection:
         return self._connection
 
