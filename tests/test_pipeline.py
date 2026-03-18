@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from payday.config import FeatureFlags, LLMSettings, Settings, SupabaseSettings, TranscriptionSettings
-from payday.models import AnalysisResult, BatchUploadItem, PipelineStage, ProcessingStatus, Transcript, UploadedAsset
+from payday.models import AnalysisResult, BatchUploadItem, PipelineResult, PipelineStage, ProcessingStatus, Transcript, UploadedAsset
 from payday.personas import PersonaService
 from payday.repository import PaydayRepository
 from payday.service import PaydayAppService
@@ -59,6 +59,24 @@ def test_pipeline_process_upload_returns_completed_result() -> None:
     assert result.status is ProcessingStatus.COMPLETED
     assert result.current_stage is PipelineStage.STORAGE
     assert service.list_results()
+
+
+def test_repository_list_results_returns_pipeline_results_in_insertion_order() -> None:
+    repository = PaydayRepository()
+    first = repository.save_result(
+        PipelineResult(file_id="file-1", filename="first.wav", status=ProcessingStatus.PENDING)
+    )
+    repository.save_result(PipelineResult(file_id="file-2", filename="second.wav", status=ProcessingStatus.COMPLETED))
+    replacement = repository.save_result(
+        PipelineResult(file_id="file-1", filename="first-retry.wav", status=ProcessingStatus.FAILED)
+    )
+
+    results = repository.list_results()
+
+    assert [result.file_id for result in results] == ["file-1", "file-2"]
+    assert results == [replacement, repository.get_result("file-2")]
+    assert results[0] is not first
+    assert repository.get_result("file-1") == replacement
 
 
 def test_repository_crud_supports_interview_related_tables(tmp_path) -> None:
