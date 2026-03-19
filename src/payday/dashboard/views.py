@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import re
 from dataclasses import dataclass
@@ -60,6 +61,7 @@ class DashboardInterview:
     digital_access: str
     extracted_json: dict[str, Any]
     evidence_quotes: tuple[str, ...]
+    segmented_dialogue: tuple[dict[str, Any], ...] = ()
     audio_bytes: bytes | None = None
     audio_format: str = "audio/wav"
 
@@ -364,6 +366,16 @@ class DashboardRenderer:
             )
             st.markdown(
                 f"<div class='pd-card detail-flags-card'>{flag_markup}</div>",
+                unsafe_allow_html=True,
+            )
+
+        dialogue_turns = self._segmented_dialogue_for(selected)
+        st.markdown("##### Transcript view")
+        if dialogue_turns:
+            self._render_segmented_dialogue(dialogue_turns)
+        else:
+            st.markdown(
+                f"<div class='pd-card dialogue-fallback'>{html.escape(selected.transcript)}</div>",
                 unsafe_allow_html=True,
             )
 
@@ -810,6 +822,34 @@ class DashboardRenderer:
             unsafe_allow_html=True,
         )
 
+    def _segmented_dialogue_for(self, interview: DashboardInterview) -> tuple[dict[str, Any], ...]:
+        if interview.segmented_dialogue:
+            return interview.segmented_dialogue
+        fallback = interview.extracted_json.get("segmented_dialogue")
+        if isinstance(fallback, list):
+            return tuple(item for item in fallback if isinstance(item, dict))
+        return ()
+
+    def _render_segmented_dialogue(self, turns: tuple[dict[str, Any], ...]) -> None:
+        for turn in turns:
+            speaker_label = html.escape(str(turn.get("speaker_label", "unknown")).replace("_", " ").title())
+            utterance_text = html.escape(str(turn.get("utterance_text", "")).strip())
+            speaker_confidence = html.escape(str(turn.get("speaker_confidence", "low")).strip().title())
+            speaker_uncertainty = html.escape(str(turn.get("speaker_uncertainty", "")).strip())
+            if not utterance_text:
+                continue
+            st.markdown(
+                f"""
+                <div class='pd-card dialogue-turn'>
+                    <div class='dialogue-speaker'>{speaker_label}</div>
+                    <div class='dialogue-utterance'>{utterance_text}</div>
+                    <div class='dialogue-meta'>Speaker confidence: {speaker_confidence}</div>
+                    {f"<div class='dialogue-uncertainty'>{speaker_uncertainty}</div>" if speaker_uncertainty else ""}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
     def _next_selected_id(self, interviews: list[DashboardInterview], *, deleted_id: str) -> str | None:
         remaining_ids = [item.id for item in interviews if item.id != deleted_id]
         if not remaining_ids:
@@ -891,6 +931,7 @@ class DashboardRenderer:
         loan_interest_value = get_analysis_value(structured, "loan_interest")
         summary = result.analysis.summary if result.analysis is not None else "Analysis pending."
         evidence_quotes = tuple(result.analysis.evidence_quotes if result.analysis is not None else [])
+        segmented_dialogue = tuple(structured.get("segmented_dialogue", [])) if isinstance(structured.get("segmented_dialogue"), list) else ()
         persona_id = result.persona.persona_id if result.persona is not None else "persona_4"
         persona_name = result.persona.persona_name if result.persona is not None else PERSONA_LOOKUP["persona_4"]
         return DashboardInterview(
@@ -916,6 +957,7 @@ class DashboardRenderer:
             digital_access=digital_access,
             extracted_json=structured or self._empty_extracted_json(summary="Analysis pending."),
             evidence_quotes=evidence_quotes,
+            segmented_dialogue=segmented_dialogue,
             audio_bytes=result.asset.raw_bytes if result.asset is not None else None,
             audio_format=result.asset.content_type if result.asset is not None else "audio/wav",
         )
@@ -944,6 +986,7 @@ class DashboardRenderer:
             "borrowing_history": {"value": record.borrowing_history},
             "repayment_preference": {"value": record.repayment_preference},
             "loan_interest": {"value": record.loan_interest},
+            "segmented_dialogue": record.segmented_dialogue,
             "insight": {
                 "summary": record.summary,
                 "persona": record.persona,
@@ -974,6 +1017,7 @@ class DashboardRenderer:
             digital_access=self._digital_access_label(record.smartphone_user, record.has_bank_account),
             extracted_json=extracted_json,
             evidence_quotes=tuple(record.key_quotes),
+            segmented_dialogue=tuple(record.segmented_dialogue),
         )
 
     def _overlay_cached_result(
@@ -1013,6 +1057,7 @@ class DashboardRenderer:
                 **repository_interview.extracted_json,
             },
             evidence_quotes=repository_interview.evidence_quotes or cached_result.evidence_quotes,
+            segmented_dialogue=repository_interview.segmented_dialogue or cached_result.segmented_dialogue,
             audio_bytes=cached_result.audio_bytes,
             audio_format=cached_result.audio_format,
         )
@@ -1252,31 +1297,29 @@ class DashboardRenderer:
                 line-height: 1.6;
                 color: #1e293b;
             }
-            .interview-detail-inline {
-                margin: 0.5rem 0 1.25rem 0;
-                border: 1px solid rgba(79, 124, 255, 0.18);
-                background: linear-gradient(180deg, rgba(239, 246, 255, 0.95), rgba(255, 255, 255, 1));
+            .dialogue-turn, .dialogue-fallback {
+                margin-bottom: 0.85rem;
             }
-            .interview-inline-grid {
-                display: grid;
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-                gap: 1rem;
-                margin-top: 0.9rem;
-            }
-            .interview-inline-label {
-                font-size: 0.95rem;
+            .dialogue-speaker {
+                font-size: 0.88rem;
                 font-weight: 700;
+                text-transform: uppercase;
+                letter-spacing: 0.04em;
                 color: #1d4ed8;
                 margin-bottom: 0.45rem;
             }
-            .interview-inline-list {
-                margin: 0;
-                padding-left: 1.2rem;
-                color: #1e293b;
+            .dialogue-utterance {
+                font-size: 1rem;
+                line-height: 1.65;
+                color: #0f172a;
+                margin-bottom: 0.5rem;
             }
-            .interview-inline-preview {
-                color: #1e293b;
-                line-height: 1.6;
+            .dialogue-meta, .dialogue-uncertainty {
+                font-size: 0.92rem;
+                color: #64748b;
+            }
+            .dialogue-uncertainty {
+                margin-top: 0.25rem;
             }
             .pd-table {
                 width: 100%;

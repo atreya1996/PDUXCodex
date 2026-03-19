@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS structured_responses (
     borrowing_history TEXT,
     repayment_preference TEXT,
     loan_interest TEXT,
+    segmented_dialogue TEXT,
     FOREIGN KEY (interview_id) REFERENCES interviews (id) ON DELETE CASCADE
 );
 

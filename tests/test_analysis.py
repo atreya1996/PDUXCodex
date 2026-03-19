@@ -118,6 +118,20 @@ VALID_ANALYSIS_PAYLOAD = {
         "observed_evidence": ["trust barrier mentioned"],
         "missing_or_unknown": [],
     },
+    "segmented_dialogue": [
+        {
+            "speaker_label": "participant",
+            "utterance_text": "I use WhatsApp every day",
+            "speaker_confidence": "medium",
+            "speaker_uncertainty": "First-person phrasing suggests the participant is speaking.",
+        },
+        {
+            "speaker_label": "participant",
+            "utterance_text": "I am worried about scams",
+            "speaker_confidence": "medium",
+            "speaker_uncertainty": "First-person phrasing suggests the participant is speaking.",
+        },
+    ],
 }
 
 
@@ -148,6 +162,7 @@ def test_analysis_service_retries_invalid_json_and_returns_validated_output() ->
     assert result.structured_output["smartphone_usage"]["value"] == "has_smartphone"
     assert result.structured_output["bank_account_status"]["value"] == "has_bank_account"
     assert result.evidence_quotes == ["I use WhatsApp every day", "I am worried about scams"]
+    assert result.structured_output["segmented_dialogue"][0]["speaker_label"] == "participant"
 
 
 def test_openai_analysis_adapter_retries_invalid_json_until_valid_payload() -> None:
@@ -237,6 +252,23 @@ def test_analysis_service_applies_defaults_and_tracks_missing_values() -> None:
     assert result.structured_output["smartphone_usage"]["status"] == "missing"
     assert result.structured_output["bank_account_status"]["status"] == "missing"
     assert "smartphone_usage: unknown" in result.structured_output["confidence_signals"]["missing_or_unknown"]
+    assert result.structured_output["segmented_dialogue"] == []
+
+
+def test_analysis_prompt_includes_weak_metadata_hints_and_separates_dialogue_when_evident() -> None:
+    transcript = Transcript(
+        text="Interviewer: Do you use WhatsApp? Participant: Yes, I use it every day.",
+        provider="test-transcription",
+        model="test-model",
+        metadata={"filename": "meena_interview.wav", "participant_name_hint": "Meena"},
+    )
+    service = AnalysisService(adapter=SequenceAdapter([json.dumps(VALID_ANALYSIS_PAYLOAD)]), settings=LLMSettings())
+
+    prompt = service._build_prompt(transcript)  # noqa: SLF001
+
+    assert "Use filename or interview metadata only as a weak hint for participant identity." in prompt
+    assert '"participant_name_hint": "Meena"' in prompt
+    assert "Separate interviewer questions from participant answers" in prompt
 
 
 class FakeHTTPResponse:

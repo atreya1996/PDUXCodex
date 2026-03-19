@@ -185,6 +185,16 @@ def build_sample_interviews(
                 "observed_evidence": ["sample interview"],
                 "missing_or_unknown": [],
             },
+            "segmented_dialogue": [
+                {
+                    "speaker_label": "participant",
+                    "utterance_text": sentence.strip(),
+                    "speaker_confidence": "medium",
+                    "speaker_uncertainty": "Sample fixture assumes participant narration because no interviewer turn is present.",
+                }
+                for sentence in transcript.split(". ")
+                if sentence.strip()
+            ],
         }
         interviews.append(
             DashboardInterview(
@@ -210,6 +220,7 @@ def build_sample_interviews(
                 digital_access=digital_access,
                 extracted_json=extracted_json,
                 evidence_quotes=(transcript.split(". ")[0],),
+                segmented_dialogue=tuple(extracted_json["segmented_dialogue"]),
                 audio_bytes=_sample_audio_bytes(frequency=220 + index * 40),
             )
         )

@@ -76,6 +76,17 @@ class PaydayAppService:
     def list_results(self) -> list[PipelineResult]:
         return self.repository.list_results()
 
+    def runtime_summary(self) -> dict[str, object]:
+        return {
+            "app_env": self.settings.app_env,
+            "sample_mode": self.settings.features.use_sample_mode,
+            "analysis_provider": self.settings.llm.provider,
+            "analysis_model": self.settings.llm.model,
+            "transcription_provider": self.settings.transcription.provider,
+            "transcription_model": self.settings.transcription.model,
+            "sqlite_path": self.settings.database.sqlite_path,
+        }
+
     def list_recent_interviews(self, *, limit: int = 100) -> list[DashboardInterviewRecord]:
         return self.repository.list_recent_interviews(limit=limit)
 
