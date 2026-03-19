@@ -7,6 +7,7 @@ from payday.config import Settings, get_settings
 from payday.dashboard.views import DashboardRenderer
 from payday.models import BatchUploadItem, ProcessingStatus
 from payday.service import PaydayAppService
+from payday.transcription import describe_transcription_file_size_limit
 from payday.upload import SUPPORTED_UPLOAD_EXTENSIONS
 
 REFRESH_STATUS_FLAG = "dashboard_status_reloaded"
@@ -34,27 +35,31 @@ def main() -> None:
     app_service, settings = build_app_service()
     dashboard = DashboardRenderer()
     supported_formats_label = ", ".join(extension.upper() for extension in SUPPORTED_UPLOAD_EXTENSIONS)
+    upload_limit_guidance = describe_transcription_file_size_limit(settings.transcription)
+    upload_help_text = (
+        "Choose 1 to 10 interview recordings in "
+        f"{supported_formats_label}. Start with one file for a live smoke test, then try a full batch."
+    )
+    if upload_limit_guidance:
+        upload_help_text = f"{upload_help_text} {upload_limit_guidance}"
 
     st.title("PayDay interview review")
     st.caption(
         "Batch uploads, evidence-grounded analysis, persona review, and interview QA in one workspace."
     )
 
-    upload_limit_guidance = describe_transcription_file_size_limit(settings.transcription)
-
     st.sidebar.header("Upload interviews")
     st.sidebar.caption(
         "Start with one small recording to validate live processing, then scale up to a full batch. "
         f"Supported formats: {supported_formats_label}. Filters stay in session state for instant iteration."
     )
+    if upload_limit_guidance:
+        st.sidebar.info(upload_limit_guidance)
     uploaded_files = st.sidebar.file_uploader(
         "Audio batch",
         type=list(SUPPORTED_UPLOAD_EXTENSIONS),
         accept_multiple_files=True,
-        help=(
-            "Choose 1 to 10 interview recordings in "
-            f"{supported_formats_label}. Start with one file for a live smoke test, then try a full batch."
-        ),
+        help=upload_help_text,
     )
 
     upload_count = len(uploaded_files) if uploaded_files else 0
