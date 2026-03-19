@@ -14,14 +14,22 @@ DEFAULT_UNKNOWN_VALUE = "unknown"
 FIELD_NAMES = (
     "smartphone_usage",
     "bank_account_status",
-    "income_range",
+    "per_household_earnings",
+    "participant_personal_monthly_income",
+    "total_household_monthly_income",
     "borrowing_history",
     "repayment_preference",
     "loan_interest",
     "summary",
 )
+INCOME_FIELD_NAMES = (
+    "per_household_earnings",
+    "participant_personal_monthly_income",
+    "total_household_monthly_income",
+)
 TOP_LEVEL_SCHEMA_KEYS = FIELD_NAMES + ("key_quotes", "confidence_signals")
 ALLOWED_FIELD_STATUSES = {"observed", "unknown", "missing"}
+ALLOWED_EVIDENCE_TYPES = {"direct", "inferred_or_uncertain", "unknown"}
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 OPENAI_REQUEST_TIMEOUT_SECONDS = 60
 
@@ -49,6 +57,7 @@ class AnalysisField:
     status: str = "missing"
     evidence_quotes: tuple[str, ...] = ()
     notes: str = ""
+    evidence_type: str = "unknown"
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -56,6 +65,7 @@ class AnalysisField:
             "status": self.status,
             "evidence_quotes": list(self.evidence_quotes),
             "notes": self.notes,
+            "evidence_type": self.evidence_type,
         }
 
 
@@ -97,6 +107,12 @@ class OpenAIAnalysisAdapter:
             )
 
         response_payload = self._transport(prompt=prompt, model=self.settings.model, api_key=api_key)
+        if isinstance(response_payload, dict):
+            error_payload = response_payload.get("error")
+            if isinstance(error_payload, dict):
+                message = str(error_payload.get("message", "")).strip()
+                if message:
+                    raise ExternalProviderError(message)
         raw_text = self._extract_output_text(response_payload)
         if not raw_text.strip():
             raise ExternalProviderError("OpenAI analysis request succeeded but returned no text output.")
@@ -129,6 +145,10 @@ class OpenAIAnalysisAdapter:
 
     @staticmethod
     def _extract_output_text(response_payload: dict[str, Any]) -> str:
+        direct_output = response_payload.get("output_text")
+        if isinstance(direct_output, str) and direct_output.strip():
+            return direct_output.strip()
+
         output_items = response_payload.get("output")
         if not isinstance(output_items, list):
             return ""
@@ -143,7 +163,7 @@ class OpenAIAnalysisAdapter:
             for content in content_items:
                 if not isinstance(content, dict):
                     continue
-                if content.get("type") in {"output_text", "text"}:
+                if content.get("type") in {None, "output_text", "text"}:
                     text_value = content.get("text")
                     if isinstance(text_value, str):
                         text_chunks.append(text_value)
@@ -155,7 +175,7 @@ class AnthropicAnalysisAdapter:
 
     def __init__(self, settings: LLMSettings) -> None:
         self.settings = settings
-        self.provider_name = "anthropic"
+        self.provider_name = settings.provider
         self.model_name = settings.model
 
     def generate_analysis(
@@ -196,7 +216,7 @@ class HeuristicAnalysisAdapter:
         payload: dict[str, Any] = {
             "smartphone_usage": self._smartphone_usage(text),
             "bank_account_status": self._bank_account_status(text),
-            "income_range": self._income_range(text),
+            **self._income_fields(text),
             "borrowing_history": self._borrowing_history(text),
             "repayment_preference": self._repayment_preference(text),
             "loan_interest": self._loan_interest(text),
@@ -246,16 +266,88 @@ class HeuristicAnalysisAdapter:
             return _field("has_bank_account", positive, "Direct evidence of an active or available bank account.")
         return AnalysisField(notes="No direct transcript evidence about bank-account access.").as_dict()
 
-    def _income_range(self, text: str) -> dict[str, Any]:
-        rupee_match = re.search(r"₹\s?([\d,]+)", text)
-        monthly_match = re.search(r"(\d{1,2}[,\d]{0,4})\s*(?:rupees|rs)\s*(?:per month|monthly)", text, re.IGNORECASE)
-        if rupee_match:
-            amount = rupee_match.group(1)
-            return _field(f"₹{amount}", _evidence_for_match(text, rupee_match.group(0)), "Income amount quoted directly.")
-        if monthly_match:
-            amount = monthly_match.group(1)
-            return _field(f"₹{amount}", _evidence_for_match(text, monthly_match.group(0)), "Income amount quoted directly.")
-        return AnalysisField(notes="No direct transcript evidence about income.").as_dict()
+    def _income_fields(self, text: str) -> dict[str, dict[str, Any]]:
+        transcript = text.strip()
+        lowered = transcript.lower()
+        sentences = _split_sentences(transcript)
+
+        extracted: dict[str, dict[str, Any]] = {}
+        for field_name in INCOME_FIELD_NAMES:
+            extracted[field_name] = AnalysisField(notes="No direct transcript evidence about income.").as_dict()
+
+        patterns = {
+            "per_household_earnings": (
+                r"(?:from|in)\s+(?:one\s+)?(?:house|home|ghar)\S*[^₹\d]{0,25}(₹\s?[\d,]+|[\d,]+\s*(?:rupees|rs))",
+                r"(₹\s?[\d,]+|[\d,]+\s*(?:rupees|rs))[^.]{0,30}(?:for|from)\s+(?:one\s+)?(?:house|home|ghar)",
+                r"(₹\s?[\d,]+|[\d,]+\s*(?:rupees|rs))[^.]{0,25}(?:per|a)\s+(?:house|home)",
+            ),
+            "participant_personal_monthly_income": (
+                r"(?:my|i)\s+(?:monthly\s+income|income|earn|get|receive)[^.]{0,40}?(₹\s?[\d,]+|[\d,]+\s*(?:rupees|rs))[^.]{0,20}(?:per\s+month|monthly)",
+                r"(?:in\s+total|altogether|total)\s+(?:i\s+)?(?:earn|get|receive)[^.]{0,30}?(₹\s?[\d,]+|[\d,]+\s*(?:rupees|rs))",
+                r"(?:i\s+work\s+in\s+\d+\s+houses[^.]{0,30})?(?:my\s+salary|salary)[^.]{0,25}?(₹\s?[\d,]+|[\d,]+\s*(?:rupees|rs))[^.]{0,20}(?:per\s+month|monthly)",
+            ),
+            "total_household_monthly_income": (
+                r"(?:our|total)\s+(?:household|family)\s+(?:monthly\s+)?income[^.]{0,30}?(₹\s?[\d,]+|[\d,]+\s*(?:rupees|rs))",
+                r"(?:together|altogether)[^.]{0,35}(₹\s?[\d,]+|[\d,]+\s*(?:rupees|rs))[^.]{0,20}(?:per\s+month|monthly)",
+                r"(?:my\s+husband\s+and\s+i|all\s+of\s+us)[^.]{0,35}(₹\s?[\d,]+|[\d,]+\s*(?:rupees|rs))[^.]{0,20}(?:per\s+month|monthly)",
+            ),
+        }
+
+        for field_name, field_patterns in patterns.items():
+            for pattern in field_patterns:
+                match = re.search(pattern, transcript, re.IGNORECASE)
+                if match is None:
+                    continue
+                sentence = _sentence_for_span(sentences, match.span()) or _align_quote_to_transcript(match.group(0), transcript)
+                if not sentence:
+                    continue
+                amount = _normalize_currency_amount(match.group(1))
+                evidence_type = "direct"
+                notes = _income_notes(field_name, evidence_type)
+                extracted[field_name] = _field(amount, [sentence], notes, evidence_type=evidence_type)
+                break
+
+        if extracted["participant_personal_monthly_income"]["status"] != "observed":
+            inferred = self._infer_participant_monthly_income(
+                transcript=transcript,
+                lowered=lowered,
+                sentences=sentences,
+                per_household_field=extracted["per_household_earnings"],
+            )
+            if inferred is not None:
+                extracted["participant_personal_monthly_income"] = inferred
+
+        return extracted
+
+    def _infer_participant_monthly_income(
+        self,
+        *,
+        transcript: str,
+        lowered: str,
+        sentences: list[str],
+        per_household_field: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if per_household_field.get("status") != "observed":
+            return None
+        if any(token in lowered for token in ("total monthly income", "household income", "family income", "in total i earn")):
+            return None
+        house_count_match = re.search(r"(\d+)\s+(?:houses|homes)", lowered)
+        amount_text = str(per_household_field.get("value", "")).strip()
+        if not house_count_match or not amount_text.startswith("₹"):
+            return None
+        amount = int(amount_text.replace("₹", "").replace(",", ""))
+        house_count = int(house_count_match.group(1))
+        inferred_total = f"₹{amount * house_count:,}"
+        supporting_sentence = _sentence_containing(sentences, house_count_match.group(0)) or _align_quote_to_transcript(house_count_match.group(0), transcript)
+        evidence_quotes = [quote for quote in [*per_household_field.get("evidence_quotes", []), supporting_sentence] if quote]
+        if not evidence_quotes:
+            return None
+        return _field(
+            inferred_total,
+            _dedupe_preserve_order(evidence_quotes),
+            _income_notes("participant_personal_monthly_income", "inferred_or_uncertain"),
+            evidence_type="inferred_or_uncertain",
+        )
 
     def _borrowing_history(self, text: str) -> dict[str, Any]:
         borrowed = _matching_phrases(
@@ -384,11 +476,26 @@ class AnalysisService:
                 "evidence_quotes": ["string"],
                 "notes": "string",
             },
-            "income_range": {
+            "per_household_earnings": {
                 "value": "string",
                 "status": "observed|unknown|missing",
                 "evidence_quotes": ["string"],
                 "notes": "string",
+                "evidence_type": "direct|inferred_or_uncertain|unknown",
+            },
+            "participant_personal_monthly_income": {
+                "value": "string",
+                "status": "observed|unknown|missing",
+                "evidence_quotes": ["string"],
+                "notes": "string",
+                "evidence_type": "direct|inferred_or_uncertain|unknown",
+            },
+            "total_household_monthly_income": {
+                "value": "string",
+                "status": "observed|unknown|missing",
+                "evidence_quotes": ["string"],
+                "notes": "string",
+                "evidence_type": "direct|inferred_or_uncertain|unknown",
             },
             "borrowing_history": {
                 "value": "string",
@@ -429,6 +536,12 @@ class AnalysisService:
             "- Preserve direct quotes exactly when evidence exists.\n"
             "- Do not infer unsupported facts.\n"
             "- Mark fields as unknown when the transcript does not provide evidence.\n"
+            "- For every captured income figure, include at least one direct quote in evidence_quotes.\n"
+            "- Separate per-household earnings, the participant's personal monthly income, and total household monthly income.\n"
+            "- Do not treat a single-household wage as the participant's total monthly income.\n"
+            "- If multiple income numbers appear, identify what each number refers to and place each value in the correct income field.\n"
+            "- Prefer the participant's explicitly stated total monthly income when available over inferred totals.\n"
+            "- When an income value is computed from transcript clues instead of stated directly, set evidence_type to inferred_or_uncertain and explain why in notes.\n"
             "- The no-smartphone and no-bank-account cases must be clearly surfaced for downstream Persona 3 handling.\n\n"
             f"Required schema:\n{json.dumps(self.expected_schema(), indent=2)}\n\n"
             f"Transcript:\n{transcript.text.strip() or '[empty transcript]'}"
@@ -496,10 +609,19 @@ class AnalysisService:
 
         evidence_quotes = self._normalize_quote_list(value.get("evidence_quotes"), transcript_text)
         notes = str(value.get("notes", "")).strip()
+        evidence_type = str(value.get("evidence_type", "")).strip().lower() or (
+            "direct" if normalized_status == "observed" and evidence_quotes else "unknown"
+        )
+        if evidence_type not in ALLOWED_EVIDENCE_TYPES:
+            raise AnalysisSchemaError(f"Field '{field_name}' has invalid evidence_type '{evidence_type}'.")
 
         if normalized_value == DEFAULT_UNKNOWN_VALUE and normalized_status == "observed":
             normalized_status = "unknown"
-        if normalized_status == "observed" and not evidence_quotes and field_name != "summary":
+        if field_name in INCOME_FIELD_NAMES and normalized_status == "observed" and not evidence_quotes:
+            raise AnalysisSchemaError(f"Income field '{field_name}' must include at least one direct quote in evidence_quotes.")
+        if normalized_status != "observed":
+            evidence_type = "unknown"
+        elif normalized_status == "observed" and not evidence_quotes and field_name != "summary":
             notes = notes or "Marked observed without a direct quote; review provider output."
 
         return AnalysisField(
@@ -507,6 +629,7 @@ class AnalysisService:
             status=normalized_status,
             evidence_quotes=tuple(evidence_quotes),
             notes=notes,
+            evidence_type=evidence_type,
         ).as_dict()
 
     def _normalize_quote_list(self, value: Any, transcript_text: str) -> list[str]:
@@ -560,19 +683,28 @@ def build_analysis_adapter(settings: LLMSettings, *, sample_mode: bool) -> Analy
     if provider == "openai":
         return OpenAIAnalysisAdapter(settings)
     if provider == "anthropic":
-        return AnthropicAnalysisAdapter(settings)
+        return AnthropicAnalysisAdapter(
+            LLMSettings(provider="anthropic-heuristic", model="heuristic-json")
+        )
 
     return HeuristicAnalysisAdapter(
         LLMSettings(provider=f"{settings.provider}-heuristic", model="heuristic-json")
     )
 
 
-def _field(value: str, evidence_quotes: list[str], notes: str) -> dict[str, Any]:
+def _field(
+    value: str,
+    evidence_quotes: list[str],
+    notes: str,
+    *,
+    evidence_type: str = "direct",
+) -> dict[str, Any]:
     return AnalysisField(
         value=value,
         status="observed",
         evidence_quotes=tuple(evidence_quotes),
         notes=notes,
+        evidence_type=evidence_type,
     ).as_dict()
 
 
@@ -615,6 +747,47 @@ def _align_quote_to_transcript(candidate: str, transcript_text: str) -> str:
         return candidate
     end = start + len(candidate)
     return transcript_text[start:end]
+
+
+
+
+def _sentence_for_span(sentences: list[str], span: tuple[int, int]) -> str:
+    start, end = span
+    cursor = 0
+    for sentence in sentences:
+        sentence_start = cursor
+        sentence_end = cursor + len(sentence)
+        if sentence_start <= start <= sentence_end or sentence_start <= end <= sentence_end:
+            return sentence
+        cursor = sentence_end + 1
+    return ""
+
+
+def _sentence_containing(sentences: list[str], needle: str) -> str:
+    lowered_needle = needle.lower()
+    for sentence in sentences:
+        if lowered_needle in sentence.lower():
+            return sentence
+    return ""
+
+
+def _normalize_currency_amount(raw_amount: str) -> str:
+    digits = re.sub(r"[^\d]", "", raw_amount)
+    if not digits:
+        return DEFAULT_UNKNOWN_VALUE
+    return f"₹{int(digits):,}"
+
+
+def _income_notes(field_name: str, evidence_type: str) -> str:
+    labels = {
+        "per_household_earnings": "Per-household earnings",
+        "participant_personal_monthly_income": "Participant personal monthly income",
+        "total_household_monthly_income": "Total household monthly income",
+    }
+    base = f"{labels[field_name]} identified from transcript evidence."
+    if evidence_type == "inferred_or_uncertain":
+        return f"{base} Marked inferred_or_uncertain because the transcript supports an estimate rather than an explicit total."
+    return f"{base} Quoted directly by the participant."
 
 
 def _string_list(value: Any) -> list[str]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable, Iterable
 from typing import Any, TypeVar
 from uuid import uuid4
@@ -315,7 +316,11 @@ class PaydayPipeline:
                 false_value="no_bank_account",
                 fallback=payload.get("bank_account_status"),
             ),
-            "income_range": self._field_from_unknownable(payload.get("income_range")),
+            "per_household_earnings": self._field_from_unknownable(payload.get("per_household_earnings")),
+            "participant_personal_monthly_income": self._field_from_unknownable(
+                payload.get("participant_personal_monthly_income") or payload.get("income_range")
+            ),
+            "total_household_monthly_income": self._field_from_unknownable(payload.get("total_household_monthly_income")),
             "borrowing_history": self._field_from_unknownable(payload.get("borrowing_history")),
             "repayment_preference": self._field_from_unknownable(payload.get("repayment_preference")),
             "loan_interest": self._field_from_unknownable(payload.get("loan_interest")),
@@ -389,7 +394,9 @@ class PaydayPipeline:
                 "smartphone_user": {"value": detail.smartphone_user},
                 "has_bank_account": {"value": detail.has_bank_account},
             },
-            "income_range": {"value": detail.income_range},
+            "per_household_earnings": {"value": detail.per_household_earnings},
+            "participant_personal_monthly_income": {"value": detail.participant_personal_monthly_income or detail.income_range},
+            "total_household_monthly_income": {"value": detail.total_household_monthly_income},
             "borrowing_history": {"value": detail.borrowing_history},
             "repayment_preference": {"value": detail.repayment_preference},
             "loan_interest": {"value": detail.loan_interest},
@@ -478,7 +485,10 @@ class PaydayPipeline:
         return {
             "smartphone_user": smartphone_user,
             "has_bank_account": has_bank_account,
-            "income_range": self._read_value(structured_output, "income_range"),
+            "per_household_earnings": self._read_value(structured_output, "per_household_earnings"),
+            "participant_personal_monthly_income": self._read_value(structured_output, "participant_personal_monthly_income"),
+            "total_household_monthly_income": self._read_value(structured_output, "total_household_monthly_income"),
+            "income_range": self._preferred_dashboard_income(structured_output),
             "borrowing_history": self._read_value(structured_output, "borrowing_history"),
             "repayment_preference": self._read_value(structured_output, "repayment_preference"),
             "loan_interest": self._read_value(structured_output, "loan_interest"),
@@ -530,7 +540,9 @@ class PaydayPipeline:
         candidate_fields = (
             "smartphone_usage",
             "bank_account_status",
-            "income_range",
+            "per_household_earnings",
+            "participant_personal_monthly_income",
+            "total_household_monthly_income",
             "borrowing_history",
             "repayment_preference",
             "loan_interest",
@@ -547,6 +559,18 @@ class PaydayPipeline:
         if total == 0:
             return 0.0
         return round(observed / total, 2)
+
+
+    def _preferred_dashboard_income(self, structured_output: dict[str, Any]) -> str | None:
+        for field_name in (
+            "participant_personal_monthly_income",
+            "total_household_monthly_income",
+            "income_range",
+        ):
+            value = self._read_value(structured_output, field_name)
+            if value is not None:
+                return value
+        return None
 
     def _read_value(self, structured_output: dict[str, Any], key: str) -> str | None:
         value = structured_output.get(key)
@@ -588,6 +612,41 @@ class PaydayPipeline:
         if value == "no_bank_account":
             return False
         return None
+
+
+    def _set_stage(
+        self,
+        result: PipelineResult,
+        *,
+        stage: PipelineStage,
+        status: ProcessingStatus | None = None,
+        message: str | None = None,
+    ) -> None:
+        result.current_stage = stage
+        if status is not None:
+            result.status = status
+        if message:
+            logger.info("%s: %s (%s)", result.file_id, message, stage.value)
+
+    def _record_failure(
+        self,
+        result: PipelineResult,
+        *,
+        stage: PipelineStage,
+        error: str,
+        message: str | None = None,
+    ) -> None:
+        result.current_stage = stage
+        result.status = ProcessingStatus.FAILED
+        result.last_error = error
+        if not result.errors or result.errors[-1] != error:
+            result.errors.append(error)
+        logger.error("%s: %s (%s)", result.file_id, message or error, stage.value)
+        self._sync_result(result)
+
+    def _log_stage(self, message: str, result: PipelineResult, *, attempts: int | None = None) -> None:
+        suffix = f" after {attempts} attempt(s)" if attempts is not None else ""
+        logger.info("%s: %s%s", result.file_id, message, suffix)
 
     def _run_with_retries(self, stage: PipelineStage, operation: Callable[[], T]) -> tuple[T, int]:
         last_error: Exception | None = None
