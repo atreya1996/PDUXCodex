@@ -33,6 +33,8 @@ class DashboardInterview:
     filename: str
     created_at: str
     status: str
+    current_stage: str
+    last_error: str | None
     summary: str
     transcript: str
     persona_id: str
@@ -576,6 +578,8 @@ class DashboardRenderer:
             {
                 "Filename": interview.filename,
                 "Status": interview.status.title(),
+                "Stage": interview.current_stage.title(),
+                "Last error": self._truncate_text(interview.last_error or "—", limit=120),
                 "Created": interview.created_at,
                 "Persona": interview.persona_name,
                 "Summary": self._truncate_text(interview.summary, limit=100),
@@ -589,6 +593,8 @@ class DashboardRenderer:
             column_config={
                 "Filename": st.column_config.TextColumn(width="medium"),
                 "Status": st.column_config.TextColumn(width="small"),
+                "Stage": st.column_config.TextColumn(width="small"),
+                "Last error": st.column_config.TextColumn(width="large"),
                 "Created": st.column_config.TextColumn(width="small"),
                 "Persona": st.column_config.TextColumn(width="medium"),
                 "Summary": st.column_config.TextColumn(width="large"),
@@ -731,6 +737,8 @@ class DashboardRenderer:
             filename=result.filename,
             created_at=datetime.now(timezone.utc).date().isoformat(),
             status=result.status.value,
+            current_stage=result.current_stage.value,
+            last_error=result.last_error,
             summary=summary,
             transcript=transcript,
             persona_id=persona_id,
@@ -760,6 +768,11 @@ class DashboardRenderer:
         loan_interest_value = record.loan_interest or "unknown"
         extracted_json = {
             "audio_url": record.audio_url,
+            "runtime": {
+                "status": record.status,
+                "current_stage": record.latest_stage,
+                "last_error": record.last_error,
+            },
             "participant_profile": {
                 "smartphone_user": {"value": record.smartphone_user},
                 "has_bank_account": {"value": record.has_bank_account},
@@ -780,6 +793,8 @@ class DashboardRenderer:
             filename=record.filename,
             created_at=self._format_created_at(record.created_at),
             status=record.status,
+            current_stage=record.latest_stage,
+            last_error=record.last_error,
             summary=summary,
             transcript=transcript,
             persona_id=persona_id,
@@ -812,6 +827,8 @@ class DashboardRenderer:
             filename=repository_interview.filename or cached_result.filename,
             created_at=repository_interview.created_at,
             status=repository_interview.status,
+            current_stage=repository_interview.current_stage,
+            last_error=repository_interview.last_error or cached_result.last_error,
             summary=repository_interview.summary or cached_result.summary,
             transcript=repository_interview.transcript or cached_result.transcript,
             persona_id=repository_interview.persona_id if repository_interview.persona_name else cached_result.persona_id,

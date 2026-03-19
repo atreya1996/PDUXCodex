@@ -25,6 +25,7 @@ from payday.transcription import TranscriptionService
 from payday.upload import UploadService
 
 T = TypeVar("T")
+logger = logging.getLogger(__name__)
 
 
 class PaydayPipeline:
@@ -80,17 +81,27 @@ class PaydayPipeline:
     def store_results(self, result: PipelineResult) -> PipelineResult:
         if result.asset is None:
             raise ValueError("Cannot store results without an uploaded asset.")
-        result.current_stage = PipelineStage.STORAGE
-        result.status = ProcessingStatus.PROCESSING
-        result.persisted = False
-        result.persisted = self.storage_service.store_asset(
-            result.asset,
-            sample_mode=self.sample_mode,
-            interview_id=result.file_id,
+        self._set_stage(
+            result,
+            stage=PipelineStage.STORAGE,
+            status=ProcessingStatus.PROCESSING,
+            message="storage started",
         )
-        if not result.persisted:
-            raise RuntimeError(f"Failed to persist asset for {result.filename}.")
+        result.persisted = False
+        try:
+            result.persisted = self.storage_service.store_asset(
+                result.asset,
+                sample_mode=self.sample_mode,
+                interview_id=result.file_id,
+            )
+            if not result.persisted:
+                raise RuntimeError(f"Failed to persist asset for {result.filename}.")
+        except Exception as exc:
+            self._record_failure(result, stage=PipelineStage.STORAGE, error=str(exc), message="storage failed")
+            raise
         result.status = ProcessingStatus.COMPLETED
+        result.last_error = None
+        self._log_stage("storage succeeded", result)
         self._sync_result(result)
         return result
 
@@ -177,58 +188,58 @@ class PaydayPipeline:
             interview_id=item.file_id,
             audio_url=self.storage_service.build_audio_path(item.file_id, item.filename),
             status=ProcessingStatus.PENDING.value,
+            latest_stage=result.current_stage.value,
         )
 
         preflight_error = self._preflight_upload_error(item)
         if preflight_error is not None:
             result.status = ProcessingStatus.FAILED
             result.current_stage = PipelineStage.UPLOAD
-            result.errors.append(preflight_error)
-            self.repository.save_result(result)
-            self.repository.update_interview(interview.id, status=result.status.value)
+            self._record_failure(result, stage=PipelineStage.UPLOAD, error=preflight_error, message="upload rejected")
             return result
 
         try:
-            result.status = ProcessingStatus.PROCESSING
-            result.current_stage = PipelineStage.UPLOAD
-            self._sync_interview(result, status=ProcessingStatus.PROCESSING)
+            self._set_stage(
+                result,
+                stage=PipelineStage.UPLOAD,
+                status=ProcessingStatus.PROCESSING,
+                message="upload accepted",
+            )
             result.asset = self.upload_audio(item)
-            self.repository.save_result(result)
-            self.repository.update_interview(interview.id, status=result.status.value)
 
-            result.current_stage = PipelineStage.TRANSCRIPTION
+            self._set_stage(
+                result,
+                stage=PipelineStage.TRANSCRIPTION,
+                status=ProcessingStatus.PROCESSING,
+                message="transcription started",
+            )
             result.transcript, transcription_attempts = self.transcribe_audio(result.asset)
             result.attempts[PipelineStage.TRANSCRIPTION.value] = transcription_attempts
-            self.repository.save_result(result)
-            self.repository.update_interview(
-                interview.id,
-                transcript=result.transcript.text,
-                status=result.status.value,
-            )
+            self._log_stage("transcription succeeded", result, attempts=transcription_attempts)
+            self._sync_result(result)
 
-            result.current_stage = PipelineStage.ANALYSIS
+            self._set_stage(
+                result,
+                stage=PipelineStage.ANALYSIS,
+                status=ProcessingStatus.PROCESSING,
+                message="analysis started",
+            )
             result.analysis, analysis_attempts = self.analyze_transcript(result.transcript)
             result.analysis.structured_output = self._augment_structured_output(result.analysis.structured_output)
             result.attempts[PipelineStage.ANALYSIS.value] = analysis_attempts
+            self._log_stage("analysis succeeded", result, attempts=analysis_attempts)
             self._sync_result(result)
 
-            result.current_stage = PipelineStage.PERSONA
+            self._set_stage(result, stage=PipelineStage.PERSONA, message="persona classification completed")
             result.persona = self.classify_persona(result.transcript, result.analysis)
-            self.repository.save_result(result)
             self._persist_analysis_outputs(result)
 
             stored = self.store_results(result)
             self.repository.update_interview(interview.id, status=stored.status.value)
             return stored
         except Exception as exc:
-            result.status = ProcessingStatus.FAILED
-            result.errors.append(str(exc))
-            self.repository.save_result(result)
-            self.repository.update_interview(
-                interview.id,
-                transcript=result.transcript.text if result.transcript is not None else None,
-                status=result.status.value,
-            )
+            if result.last_error != str(exc):
+                self._record_failure(result, stage=result.current_stage, error=str(exc))
             return result
 
     def _analysis_from_edit(
@@ -392,6 +403,13 @@ class PaydayPipeline:
 
     def _sync_result(self, result: PipelineResult) -> None:
         self.repository.save_result(result)
+        self._sync_interview(
+            result,
+            transcript=result.transcript.text if result.transcript is not None else None,
+            status=result.status,
+            latest_stage=result.current_stage,
+            last_error=result.last_error,
+        )
 
     def _preflight_upload_error(self, item: BatchUploadItem) -> str | None:
         asset = UploadedAsset(
@@ -408,6 +426,8 @@ class PaydayPipeline:
         *,
         transcript: str | None = None,
         status: ProcessingStatus | None = None,
+        latest_stage: PipelineStage | None = None,
+        last_error: str | object = None,
     ) -> None:
         audio_url = self.storage_service.build_audio_path(result.file_id, result.filename)
         try:
@@ -416,6 +436,8 @@ class PaydayPipeline:
                 audio_url=audio_url,
                 transcript=transcript,
                 status=status.value if status is not None else None,
+                latest_stage=latest_stage.value if latest_stage is not None else None,
+                last_error=last_error,
             )
         except KeyError:
             self.repository.create_interview(
@@ -423,6 +445,8 @@ class PaydayPipeline:
                 audio_url=audio_url,
                 transcript=transcript,
                 status=status.value if status is not None else ProcessingStatus.PENDING.value,
+                latest_stage=latest_stage.value if latest_stage is not None else result.current_stage.value,
+                last_error=result.last_error if last_error is not None else None,
             )
 
     def _persist_analysis_outputs(self, result: PipelineResult) -> None:

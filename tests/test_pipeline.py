@@ -296,7 +296,7 @@ def test_pipeline_process_upload_persists_interview_structured_response_and_insi
 
     with sqlite3.connect(database_path) as connection:
         interview_row = connection.execute(
-            "SELECT id, audio_url, transcript, status FROM interviews WHERE id = ?",
+            "SELECT id, audio_url, transcript, status, latest_stage, last_error FROM interviews WHERE id = ?",
             (result.file_id,),
         ).fetchone()
         structured_row = connection.execute(
@@ -324,6 +324,8 @@ def test_pipeline_process_upload_persists_interview_structured_response_and_insi
     assert interview_row[1] == f"audio/{result.file_id}/demo.wav"
     assert "WhatsApp every day" in interview_row[2]
     assert interview_row[3] == ProcessingStatus.COMPLETED.value
+    assert interview_row[4] == PipelineStage.STORAGE.value
+    assert interview_row[5] is None
 
     assert structured_row is not None
     assert structured_row[0] == result.file_id
@@ -345,6 +347,8 @@ def test_pipeline_process_upload_persists_interview_structured_response_and_insi
 
     assert detail.interview.id == result.file_id
     assert detail.interview.status == ProcessingStatus.COMPLETED.value
+    assert detail.interview.latest_stage == PipelineStage.STORAGE.value
+    assert detail.interview.last_error is None
     assert detail.structured_response is not None
     assert detail.structured_response.smartphone_user is True
     assert detail.structured_response.has_bank_account is True
@@ -374,7 +378,7 @@ def test_pipeline_process_upload_persists_failed_interview_status_to_file_backed
 
     with sqlite3.connect(database_path) as connection:
         interview_row = connection.execute(
-            "SELECT id, transcript, status FROM interviews WHERE id = ?",
+            "SELECT id, transcript, status, latest_stage, last_error FROM interviews WHERE id = ?",
             (result.file_id,),
         ).fetchone()
         structured_count = connection.execute(
@@ -390,6 +394,8 @@ def test_pipeline_process_upload_persists_failed_interview_status_to_file_backed
     assert interview_row[0] == result.file_id
     assert interview_row[1] is None
     assert interview_row[2] == ProcessingStatus.FAILED.value
+    assert interview_row[3] == PipelineStage.TRANSCRIPTION.value
+    assert interview_row[4] == "transcription failed after 3 attempts: hard transcription failure"
     assert structured_count == (0,)
     assert insight_count == (0,)
 
@@ -398,6 +404,8 @@ def test_pipeline_process_upload_persists_failed_interview_status_to_file_backed
 
     assert detail.interview.status == ProcessingStatus.FAILED.value
     assert detail.interview.transcript is None
+    assert detail.interview.latest_stage == PipelineStage.TRANSCRIPTION.value
+    assert detail.interview.last_error == "transcription failed after 3 attempts: hard transcription failure"
     assert detail.structured_response is None
     assert detail.insight is None
 
@@ -812,11 +820,16 @@ def test_pipeline_marks_storage_persistence_failed_without_live_storage_client(t
 
     with sqlite3.connect(database_path) as connection:
         interview_row = connection.execute(
-            "SELECT id, status FROM interviews WHERE id = ?",
+            "SELECT id, status, latest_stage, last_error FROM interviews WHERE id = ?",
             (result.file_id,),
         ).fetchone()
 
-    assert interview_row == (result.file_id, ProcessingStatus.FAILED.value)
+    assert interview_row == (
+        result.file_id,
+        ProcessingStatus.FAILED.value,
+        PipelineStage.STORAGE.value,
+        "Live storage upload requires a configured storage client or explicit upload implementation.",
+    )
 
 
 def test_pipeline_live_storage_persists_only_after_successful_upload(tmp_path) -> None:
@@ -860,11 +873,16 @@ def test_pipeline_live_storage_persists_only_after_successful_upload(tmp_path) -
 
     with sqlite3.connect(database_path) as connection:
         interview_row = connection.execute(
-            "SELECT id, status FROM interviews WHERE id = ?",
+            "SELECT id, status, latest_stage, last_error FROM interviews WHERE id = ?",
             (result.file_id,),
         ).fetchone()
 
-    assert interview_row == (result.file_id, ProcessingStatus.COMPLETED.value)
+    assert interview_row == (
+        result.file_id,
+        ProcessingStatus.COMPLETED.value,
+        PipelineStage.STORAGE.value,
+        None,
+    )
 
 
 def test_persona_classifier_uses_bank_account_override() -> None:

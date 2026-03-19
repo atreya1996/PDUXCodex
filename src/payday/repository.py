@@ -10,6 +10,8 @@ from uuid import uuid4
 
 from payday.models import AnalysisResult, PersonaClassification, PipelineResult
 
+_UNSET = object()
+
 
 @dataclass(frozen=True, slots=True)
 class InterviewRecord:
@@ -17,6 +19,8 @@ class InterviewRecord:
     audio_url: str
     transcript: str | None
     status: str
+    latest_stage: str
+    last_error: str | None
     created_at: str
 
 
@@ -65,6 +69,8 @@ class DashboardInterviewRecord:
     filename: str
     transcript: str | None
     status: str
+    latest_stage: str
+    last_error: str | None
     created_at: str
     smartphone_user: bool | None
     has_bank_account: bool | None
@@ -111,6 +117,19 @@ class PaydayRepository:
         schema_sql = Path(self.schema_path).read_text(encoding="utf-8")
         with self._connect() as connection:
             connection.executescript(schema_sql)
+            self._ensure_interview_columns(connection)
+
+    def _ensure_interview_columns(self, connection: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(interviews)").fetchall()
+        }
+        if "latest_stage" not in columns:
+            connection.execute(
+                "ALTER TABLE interviews ADD COLUMN latest_stage TEXT NOT NULL DEFAULT 'upload'"
+            )
+        if "last_error" not in columns:
+            connection.execute("ALTER TABLE interviews ADD COLUMN last_error TEXT")
 
     def create_interview(
         self,
@@ -118,6 +137,8 @@ class PaydayRepository:
         audio_url: str,
         transcript: str | None = None,
         status: str = "uploaded",
+        latest_stage: str = "upload",
+        last_error: str | None = None,
         interview_id: str | None = None,
         created_at: str | None = None,
     ) -> InterviewRecord:
@@ -126,15 +147,25 @@ class PaydayRepository:
             audio_url=audio_url,
             transcript=transcript,
             status=status,
+            latest_stage=latest_stage,
+            last_error=last_error,
             created_at=created_at or datetime.now(timezone.utc).isoformat(),
         )
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO interviews (id, audio_url, transcript, status, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO interviews (id, audio_url, transcript, status, latest_stage, last_error, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (record.id, record.audio_url, record.transcript, record.status, record.created_at),
+                (
+                    record.id,
+                    record.audio_url,
+                    record.transcript,
+                    record.status,
+                    record.latest_stage,
+                    record.last_error,
+                    record.created_at,
+                ),
             )
         return record
 
@@ -145,6 +176,8 @@ class PaydayRepository:
         audio_url: str | None = None,
         transcript: str | None = None,
         status: str | None = None,
+        latest_stage: str | None = None,
+        last_error: str | object = _UNSET,
     ) -> InterviewRecord:
         existing = self.get_interview(interview_id)
         updated = InterviewRecord(
@@ -152,16 +185,25 @@ class PaydayRepository:
             audio_url=audio_url if audio_url is not None else existing.audio_url,
             transcript=transcript if transcript is not None else existing.transcript,
             status=status if status is not None else existing.status,
+            latest_stage=latest_stage if latest_stage is not None else existing.latest_stage,
+            last_error=existing.last_error if last_error is _UNSET else last_error,
             created_at=existing.created_at,
         )
         with self._connect() as connection:
             connection.execute(
                 """
                 UPDATE interviews
-                SET audio_url = ?, transcript = ?, status = ?
+                SET audio_url = ?, transcript = ?, status = ?, latest_stage = ?, last_error = ?
                 WHERE id = ?
                 """,
-                (updated.audio_url, updated.transcript, updated.status, interview_id),
+                (
+                    updated.audio_url,
+                    updated.transcript,
+                    updated.status,
+                    updated.latest_stage,
+                    updated.last_error,
+                    interview_id,
+                ),
             )
         return updated
 
@@ -169,7 +211,7 @@ class PaydayRepository:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, audio_url, transcript, status, created_at
+                SELECT id, audio_url, transcript, status, latest_stage, last_error, created_at
                 FROM interviews
                 WHERE id = ?
                 """,
@@ -313,6 +355,8 @@ class PaydayRepository:
                     interviews.audio_url,
                     interviews.transcript,
                     interviews.status,
+                    interviews.latest_stage,
+                    interviews.last_error,
                     interviews.created_at,
                     structured_responses.smartphone_user,
                     structured_responses.has_bank_account,
@@ -399,6 +443,8 @@ class PaydayRepository:
                     interviews.audio_url,
                     interviews.transcript,
                     interviews.status,
+                    interviews.latest_stage,
+                    interviews.last_error,
                     interviews.created_at,
                     structured_responses.smartphone_user,
                     structured_responses.has_bank_account,
@@ -482,6 +528,8 @@ class PaydayRepository:
                 audio_url=audio_url,
                 transcript=transcript_text,
                 status=result.status.value,
+                latest_stage=result.current_stage.value,
+                last_error=result.errors[-1] if result.errors else None,
             )
         except KeyError:
             return self.create_interview(
@@ -489,6 +537,8 @@ class PaydayRepository:
                 audio_url=audio_url,
                 transcript=transcript_text,
                 status=result.status.value,
+                latest_stage=result.current_stage.value,
+                last_error=result.errors[-1] if result.errors else None,
             )
 
     def _upsert_structured_response_from_analysis(self, interview_id: str, analysis: AnalysisResult) -> None:
@@ -532,6 +582,8 @@ class PaydayRepository:
             filename=self._filename_from_audio_url(payload["audio_url"]),
             transcript=payload["transcript"],
             status=payload["status"],
+            latest_stage=payload["latest_stage"],
+            last_error=payload["last_error"],
             created_at=payload["created_at"],
             smartphone_user=self._int_to_bool(payload["smartphone_user"]),
             has_bank_account=self._int_to_bool(payload["has_bank_account"]),
