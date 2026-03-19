@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 from payday.config import Settings, get_settings
 from payday.dashboard.views import DashboardRenderer
-from payday.models import BatchUploadItem
+from payday.models import BatchUploadItem, ProcessingStatus
 from payday.service import PaydayAppService
 from payday.upload import SUPPORTED_UPLOAD_EXTENSIONS
 
@@ -29,6 +29,8 @@ def main() -> None:
     st.caption(
         "Batch uploads, evidence-grounded analysis, persona review, and interview QA in one workspace."
     )
+
+    upload_limit_guidance = describe_transcription_file_size_limit(settings.transcription)
 
     st.sidebar.header("Upload interviews")
     st.sidebar.caption(
@@ -72,9 +74,28 @@ def main() -> None:
             ]
             with st.spinner("Processing uploaded interviews..."):
                 batch_result = app_service.process_batch_uploads(items)
-            st.sidebar.success(
-                f"Processed batch {batch_result.batch_id[:8]} with {batch_result.completed_count} completed and {batch_result.failed_count} failed."
+
+            summary_message = (
+                f"Processed batch {batch_result.batch_id[:8]} with {batch_result.completed_count} completed and "
+                f"{batch_result.failed_count} failed."
             )
+            if batch_result.failed_count == 0:
+                st.sidebar.success(summary_message)
+            elif batch_result.completed_count == 0:
+                st.sidebar.error(summary_message)
+            else:
+                st.sidebar.warning(summary_message)
+
+            failed_results = [
+                result for result in batch_result.results if result.status is ProcessingStatus.FAILED
+            ]
+            for failed_result in failed_results:
+                error_message = (
+                    failed_result.errors[0]
+                    if failed_result.errors
+                    else "Processing failed before transcription began."
+                )
+                st.sidebar.error(f"{failed_result.filename}: {error_message}")
 
     if not settings.features.enable_analysis:
         st.warning(

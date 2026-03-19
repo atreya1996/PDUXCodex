@@ -8,6 +8,9 @@ from urllib import error, request
 from payday.config import TranscriptionSettings
 from payday.models import Transcript, UploadedAsset
 
+OPENAI_TRANSCRIPTION_DOCUMENTED_LIMIT_BYTES = 25_000_000
+OPENAI_TRANSCRIPTION_SAFE_FILE_LIMIT_BYTES = 24_000_000
+
 
 class ExternalTranscriptionProviderError(RuntimeError):
     """Raised when an external transcription provider cannot transcribe audio."""
@@ -23,6 +26,41 @@ class TranscriptionProviderAdapter(Protocol):
 
     def transcribe(self, asset: UploadedAsset) -> Transcript:
         """Return a transcript produced by an external provider."""
+
+
+def get_transcription_file_size_limit_bytes(settings: TranscriptionSettings) -> int | None:
+    provider = settings.provider.strip().lower()
+    if provider == "openai":
+        return OPENAI_TRANSCRIPTION_SAFE_FILE_LIMIT_BYTES
+    return None
+
+
+def describe_transcription_file_size_limit(settings: TranscriptionSettings) -> str | None:
+    limit_bytes = get_transcription_file_size_limit_bytes(settings)
+    if limit_bytes is None:
+        return None
+    safe_limit_mb = limit_bytes / 1_000_000
+    documented_limit_mb = OPENAI_TRANSCRIPTION_DOCUMENTED_LIMIT_BYTES / 1_000_000
+    return (
+        f"OpenAI transcriptions cap requests at {documented_limit_mb:.0f} MB, so PayDay preflights "
+        f"uploads at {safe_limit_mb:.0f} MB to leave room for multipart overhead. Compress or split "
+        "larger recordings before processing."
+    )
+
+
+def validate_transcription_asset_size(settings: TranscriptionSettings, asset: UploadedAsset) -> str | None:
+    limit_bytes = get_transcription_file_size_limit_bytes(settings)
+    if limit_bytes is None or asset.size_bytes <= limit_bytes:
+        return None
+
+    safe_limit_mb = limit_bytes / 1_000_000
+    actual_size_mb = asset.size_bytes / 1_000_000
+    documented_limit_mb = OPENAI_TRANSCRIPTION_DOCUMENTED_LIMIT_BYTES / 1_000_000
+    return (
+        f"{asset.filename} is {actual_size_mb:.1f} MB, which exceeds PayDay's {safe_limit_mb:.0f} MB "
+        f"OpenAI transcription safety limit. OpenAI caps transcription requests at {documented_limit_mb:.0f} MB "
+        "including multipart upload overhead, so please compress or split this recording and upload it again."
+    )
 
 
 class OpenAITranscriptionAdapter:
@@ -142,6 +180,9 @@ class TranscriptionService:
         if sample_mode:
             return self._sample_transcript(asset)
         return self._provider_transcript(asset)
+
+    def validate_asset(self, asset: UploadedAsset) -> str | None:
+        return validate_transcription_asset_size(self.settings, asset)
 
     def _sample_transcript(self, asset: UploadedAsset) -> Transcript:
         decoded_text = asset.raw_bytes.decode("utf-8", errors="ignore").strip()
