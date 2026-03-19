@@ -18,3 +18,7 @@
 - Return structured JSON only.
 - Do not add prose before or after the JSON output.
 - Ensure the JSON is valid and machine-readable.
+- Separate income evidence into per-household earnings, participant personal monthly income, and total household monthly income.
+- Do not treat a single-household wage as total monthly income.
+- If multiple income numbers appear, identify what each number refers to, require direct quote evidence for each captured income figure, and prefer the participant's explicitly stated total monthly income when available.
+- Mark income values as inferred_or_uncertain only when the transcript supports an estimate but not a direct statement.

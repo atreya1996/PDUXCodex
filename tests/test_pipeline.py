@@ -106,7 +106,9 @@ VALID_ANALYSIS_JSON = """
 {
   "smartphone_usage": {"value": "has_smartphone", "status": "observed", "evidence_quotes": ["I use WhatsApp every day"], "notes": "Directly stated."},
   "bank_account_status": {"value": "has_bank_account", "status": "observed", "evidence_quotes": ["My bank account is active"], "notes": "Directly stated."},
-  "income_range": {"value": "₹12,000", "status": "observed", "evidence_quotes": ["I earn ₹12,000 per month"], "notes": "Directly stated."},
+  "per_household_earnings": {"value": "unknown", "status": "unknown", "evidence_quotes": [], "notes": "", "evidence_type": "unknown"},
+  "participant_personal_monthly_income": {"value": "₹12,000", "status": "observed", "evidence_quotes": ["I earn ₹12,000 per month"], "notes": "Directly stated.", "evidence_type": "direct"},
+  "total_household_monthly_income": {"value": "unknown", "status": "unknown", "evidence_quotes": [], "notes": "", "evidence_type": "unknown"},
   "borrowing_history": {"value": "has_borrowed", "status": "observed", "evidence_quotes": ["I borrow from neighbors sometimes"], "notes": "Directly stated."},
   "repayment_preference": {"value": "monthly", "status": "observed", "evidence_quotes": ["I repay monthly after salary"], "notes": "Directly stated."},
   "loan_interest": {"value": "fearful_or_uncertain", "status": "observed", "evidence_quotes": ["I am worried about scams"], "notes": "Trust barrier present."},
@@ -305,6 +307,9 @@ def test_pipeline_process_upload_persists_interview_structured_response_and_insi
                 interview_id,
                 smartphone_user,
                 has_bank_account,
+                per_household_earnings,
+                participant_personal_monthly_income,
+                total_household_monthly_income,
                 income_range,
                 borrowing_history,
                 repayment_preference,
@@ -331,16 +336,19 @@ def test_pipeline_process_upload_persists_interview_structured_response_and_insi
     assert structured_row[0] == result.file_id
     assert structured_row[1] == 1
     assert structured_row[2] == 1
-    assert structured_row[3] == "₹12,000"
-    assert structured_row[4] == result.analysis.structured_output["borrowing_history"]["value"]
-    assert structured_row[5] == result.analysis.structured_output["repayment_preference"]["value"]
-    assert structured_row[6] == result.analysis.structured_output["loan_interest"]["value"]
+    assert structured_row[3] is None
+    assert structured_row[4] == "₹12,000"
+    assert structured_row[5] is None
+    assert structured_row[6] == "₹12,000"
+    assert structured_row[7] == result.analysis.structured_output["borrowing_history"]["value"]
+    assert structured_row[8] == result.analysis.structured_output["repayment_preference"]["value"]
+    assert structured_row[9] == result.analysis.structured_output["loan_interest"]["value"]
 
     assert insight_row is not None
     assert insight_row[0] == result.file_id
     assert "WhatsApp every day" in insight_row[1]
     assert insight_row[2] == "Self-Reliant Non-Borrower"
-    assert insight_row[3] == 1.0
+    assert insight_row[3] == 0.78
 
     reloaded_repository = PaydayRepository(database_path=str(database_path))
     detail = reloaded_repository.get_interview_detail(result.file_id)
@@ -352,6 +360,9 @@ def test_pipeline_process_upload_persists_interview_structured_response_and_insi
     assert detail.structured_response is not None
     assert detail.structured_response.smartphone_user is True
     assert detail.structured_response.has_bank_account is True
+    assert detail.structured_response.per_household_earnings is None
+    assert detail.structured_response.participant_personal_monthly_income == "₹12,000"
+    assert detail.structured_response.total_household_monthly_income is None
     assert detail.structured_response.income_range == "₹12,000"
     assert detail.structured_response.borrowing_history == result.analysis.structured_output["borrowing_history"]["value"]
     assert (
@@ -362,7 +373,7 @@ def test_pipeline_process_upload_persists_interview_structured_response_and_insi
     assert detail.insight is not None
     assert detail.insight.summary == result.analysis.summary
     assert detail.insight.persona == "Self-Reliant Non-Borrower"
-    assert detail.insight.confidence_score == 1.0
+    assert detail.insight.confidence_score == 0.78
 
 
 def test_pipeline_process_upload_persists_failed_interview_status_to_file_backed_sqlite(tmp_path) -> None:
@@ -522,6 +533,9 @@ def test_repository_crud_supports_interview_related_tables(tmp_path) -> None:
         interview.id,
         smartphone_user=True,
         has_bank_account=True,
+        per_household_earnings=None,
+        participant_personal_monthly_income="10k-20k",
+        total_household_monthly_income=None,
         income_range="10k-20k",
         borrowing_history="Borrowed from employer during emergencies.",
         repayment_preference="Weekly",
@@ -568,6 +582,9 @@ def test_repository_delete_interview_cascades_related_rows(tmp_path) -> None:
         interview.id,
         smartphone_user=True,
         has_bank_account=True,
+        per_household_earnings=None,
+        participant_personal_monthly_income="10k-20k",
+        total_household_monthly_income=None,
         income_range="10k-20k",
         borrowing_history="has_borrowed",
         repayment_preference="monthly",
@@ -633,7 +650,9 @@ def test_app_service_save_interview_edits_persists_transcript_and_refreshes_outp
             "smartphone_user": {"value": current_detail.smartphone_user},
             "has_bank_account": {"value": current_detail.has_bank_account},
         },
-        "income_range": {"value": current_detail.income_range},
+        "per_household_earnings": {"value": current_detail.per_household_earnings},
+        "participant_personal_monthly_income": {"value": current_detail.participant_personal_monthly_income or current_detail.income_range},
+        "total_household_monthly_income": {"value": current_detail.total_household_monthly_income},
         "borrowing_history": {"value": current_detail.borrowing_history},
         "repayment_preference": {"value": current_detail.repayment_preference},
         "loan_interest": {"value": current_detail.loan_interest},
@@ -672,7 +691,9 @@ def test_app_service_save_interview_edits_accepts_dashboard_json_and_rederives_p
             "smartphone_user": {"value": False},
             "has_bank_account": {"value": True},
         },
-        "income_range": {"value": "₹9,000", "status": "observed", "evidence_quotes": ["₹9,000"], "notes": ""},
+        "participant_personal_monthly_income": {"value": "₹9,000", "status": "observed", "evidence_quotes": ["₹9,000"], "notes": "", "evidence_type": "direct"},
+        "per_household_earnings": {"value": "unknown", "status": "unknown", "evidence_quotes": [], "notes": "", "evidence_type": "unknown"},
+        "total_household_monthly_income": {"value": "unknown", "status": "unknown", "evidence_quotes": [], "notes": "", "evidence_type": "unknown"},
         "borrowing_history": {"value": "has_not_borrowed_recently", "status": "observed", "evidence_quotes": ["I avoid loans"], "notes": ""},
         "repayment_preference": {"value": "monthly", "status": "observed", "evidence_quotes": ["monthly"], "notes": ""},
         "loan_interest": {"value": "not_interested", "status": "observed", "evidence_quotes": ["not interested"], "notes": ""},

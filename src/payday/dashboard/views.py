@@ -744,7 +744,7 @@ class DashboardRenderer:
             persona_id=persona_id,
             persona_name=persona_name,
             is_non_target=bool(result.persona.is_non_target) if result.persona is not None else False,
-            income_band=self._nested_value(structured, "income_range") or "Unknown",
+            income_band=self._preferred_income_band(structured),
             borrowing_source=self._borrowing_source_label(transcript, borrowing_value),
             borrowing_label="Borrower" if self._is_borrower_value(borrowing_value, transcript) else "Non-borrower",
             is_borrower=self._is_borrower_value(borrowing_value, transcript),
@@ -777,7 +777,9 @@ class DashboardRenderer:
                 "smartphone_user": {"value": record.smartphone_user},
                 "has_bank_account": {"value": record.has_bank_account},
             },
-            "income_range": {"value": record.income_range},
+            "per_household_earnings": {"value": record.per_household_earnings},
+            "participant_personal_monthly_income": {"value": record.participant_personal_monthly_income or record.income_range},
+            "total_household_monthly_income": {"value": record.total_household_monthly_income},
             "borrowing_history": {"value": record.borrowing_history},
             "repayment_preference": {"value": record.repayment_preference},
             "loan_interest": {"value": record.loan_interest},
@@ -800,7 +802,7 @@ class DashboardRenderer:
             persona_id=persona_id,
             persona_name=persona_name,
             is_non_target=record.smartphone_user is False or record.has_bank_account is False,
-            income_band=record.income_range or "Unknown",
+            income_band=self._record_income_band(record),
             borrowing_source=self._borrowing_source_label(transcript, borrowing_value),
             borrowing_label="Borrower" if self._is_borrower_value(borrowing_value, transcript) else "Non-borrower",
             is_borrower=self._is_borrower_value(borrowing_value, transcript),
@@ -893,6 +895,28 @@ class DashboardRenderer:
             if isinstance(nested, dict):
                 return str(nested.get("value", "unknown"))
         return "unknown"
+
+
+    def _preferred_income_band(self, structured: dict[str, Any]) -> str:
+        for field_name in (
+            "participant_personal_monthly_income",
+            "total_household_monthly_income",
+            "income_range",
+        ):
+            value = self._nested_value(structured, field_name)
+            if value != "unknown":
+                return value
+        return "Unknown"
+
+    def _record_income_band(self, record: DashboardInterviewRecord) -> str:
+        for value in (
+            record.participant_personal_monthly_income,
+            record.total_household_monthly_income,
+            record.income_range,
+        ):
+            if value:
+                return value
+        return "Unknown"
 
     def _smartphone_user(self, structured: dict[str, Any]) -> bool | None:
         if "smartphone_usage" in structured:
