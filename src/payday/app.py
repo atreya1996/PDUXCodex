@@ -7,7 +7,7 @@ from payday.config import Settings, get_settings
 from payday.dashboard.views import DashboardRenderer
 from payday.models import BatchUploadItem, ProcessingStatus
 from payday.service import PaydayAppService
-from payday.transcription import describe_transcription_file_size_limit
+from payday.upload import SUPPORTED_UPLOAD_EXTENSIONS
 
 
 @st.cache_resource
@@ -23,6 +23,7 @@ def main() -> None:
 
     app_service, settings = build_app_service()
     dashboard = DashboardRenderer()
+    supported_formats_label = ", ".join(extension.upper() for extension in SUPPORTED_UPLOAD_EXTENSIONS)
 
     st.title("PayDay interview review")
     st.caption(
@@ -33,18 +34,16 @@ def main() -> None:
 
     st.sidebar.header("Upload interviews")
     st.sidebar.caption(
-        "Start with one small audio file to validate live processing, then scale up to a full batch. "
-        "Filters stay in session state for instant iteration."
+        "Start with one small recording to validate live processing, then scale up to a full batch. "
+        f"Supported formats: {supported_formats_label}. Filters stay in session state for instant iteration."
     )
-    if upload_limit_guidance is not None:
-        st.sidebar.info(upload_limit_guidance)
     uploaded_files = st.sidebar.file_uploader(
         "Audio batch",
-        type=["mp3", "wav", "m4a", "aac", "ogg"],
+        type=list(SUPPORTED_UPLOAD_EXTENSIONS),
         accept_multiple_files=True,
         help=(
-            "Choose 1 to 10 interview recordings. Start with one file for a live smoke test, then try a full batch. "
-            + (upload_limit_guidance or "")
+            "Choose 1 to 10 interview recordings in "
+            f"{supported_formats_label}. Start with one file for a live smoke test, then try a full batch."
         ),
     )
 

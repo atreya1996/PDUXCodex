@@ -20,12 +20,8 @@ from payday.personas import PersonaService
 from payday.repository import PaydayRepository
 from payday.service import PaydayAppService
 from payday.storage import StorageService
-from payday.transcription import (
-    OPENAI_TRANSCRIPTION_SAFE_FILE_LIMIT_BYTES,
-    OpenAITranscriptionAdapter,
-    TranscriptionService,
-    describe_transcription_file_size_limit,
-)
+from payday.transcription import OpenAITranscriptionAdapter, TranscriptionService
+from payday.upload import SUPPORTED_UPLOAD_EXTENSIONS, UploadService, UploadValidationError
 
 
 class FlakyTranscriptionService(TranscriptionService):
@@ -197,6 +193,48 @@ def test_transcription_service_timeout_propagates_for_pipeline_retries(monkeypat
 
     with pytest.raises(TimeoutError, match="timed out"):
         service.transcribe(asset, sample_mode=False)
+
+
+def test_upload_service_normalizes_supported_openai_formats() -> None:
+    service = UploadService()
+
+    mp4_asset = service.create_asset("interview.mp4", "application/octet-stream", b"mp4-bytes")
+    mpeg_asset = service.create_asset("interview.mpeg", "", b"mpeg-bytes")
+    webm_asset = service.create_asset("interview.webm", "audio/webm", b"webm-bytes")
+
+    assert mp4_asset.content_type == "video/mp4"
+    assert mpeg_asset.content_type == "audio/mpeg"
+    assert webm_asset.content_type == "audio/webm"
+    assert SUPPORTED_UPLOAD_EXTENSIONS == ("mp3", "mp4", "mpeg", "mpga", "m4a", "wav", "webm", "ogg", "aac")
+
+
+def test_upload_service_rejects_unsupported_extensions() -> None:
+    service = UploadService()
+
+    with pytest.raises(UploadValidationError, match="Unsupported upload format"):
+        service.create_asset("notes.txt", "text/plain", b"hello")
+
+
+def test_pipeline_accepts_mp4_and_mpeg_family_uploads() -> None:
+    service = PaydayAppService(build_settings())
+
+    mp4_result = service.process_upload(
+        "interview.mp4",
+        "application/octet-stream",
+        b"I use WhatsApp and my bank account is active.",
+    )
+    mpga_result = service.process_upload(
+        "interview.mpga",
+        "",
+        b"I have a smartphone and my bank account is active.",
+    )
+
+    assert mp4_result.status is ProcessingStatus.COMPLETED
+    assert mp4_result.asset is not None
+    assert mp4_result.asset.content_type == "video/mp4"
+    assert mpga_result.status is ProcessingStatus.COMPLETED
+    assert mpga_result.asset is not None
+    assert mpga_result.asset.content_type == "audio/mpeg"
 
 
 def test_pipeline_process_upload_returns_completed_result() -> None:
