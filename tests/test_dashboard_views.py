@@ -149,3 +149,132 @@ renderer.render(
     assert not any("High-Stress Cyclical Borrower" in value for value in markdown_values)
     assert not any("WhatsApp every day" in value for value in markdown_values)
     assert not any("Open" == element.label for element in app.button)
+
+
+def test_dashboard_renderer_extracts_numeric_income_metrics_only_from_direct_values() -> None:
+    renderer = DashboardRenderer()
+    interviews = [
+        DashboardInterviewRecord(
+            id="interview-1",
+            audio_url="audio/interview-1.wav",
+            filename="interview-1.wav",
+            transcript="I earn ₹12,000 per month",
+            status=ProcessingStatus.COMPLETED.value,
+            latest_stage="analysis",
+            last_error=None,
+            created_at="2026-03-18T10:00:00+00:00",
+            smartphone_user=True,
+            has_bank_account=True,
+            income_range="₹12,000",
+            borrowing_history="has_borrowed",
+            repayment_preference="monthly",
+            loan_interest="interested",
+            summary="Direct income",
+            key_quotes=["I earn ₹12,000 per month"],
+            persona="Digitally Ready but Fearful",
+            confidence_score=0.9,
+        ),
+        DashboardInterviewRecord(
+            id="interview-2",
+            audio_url="audio/interview-2.wav",
+            filename="interview-2.wav",
+            transcript="Income is around 15k",
+            status=ProcessingStatus.COMPLETED.value,
+            latest_stage="analysis",
+            last_error=None,
+            created_at="2026-03-18T11:00:00+00:00",
+            smartphone_user=True,
+            has_bank_account=True,
+            income_range="₹15k",
+            borrowing_history="has_borrowed",
+            repayment_preference="monthly",
+            loan_interest="interested",
+            summary="Shorthand income",
+            key_quotes=["Income is around 15k"],
+            persona="Digitally Ready but Fearful",
+            confidence_score=0.9,
+        ),
+        DashboardInterviewRecord(
+            id="interview-3",
+            audio_url="audio/interview-3.wav",
+            filename="interview-3.wav",
+            transcript="I make between 10k and 15k",
+            status=ProcessingStatus.COMPLETED.value,
+            latest_stage="analysis",
+            last_error=None,
+            created_at="2026-03-18T12:00:00+00:00",
+            smartphone_user=True,
+            has_bank_account=True,
+            income_range="₹10k–15k",
+            borrowing_history="has_borrowed",
+            repayment_preference="monthly",
+            loan_interest="interested",
+            summary="Range income",
+            key_quotes=["I make between 10k and 15k"],
+            persona="Digitally Ready but Fearful",
+            confidence_score=0.9,
+        ),
+    ]
+
+    dashboard_interviews = [renderer._from_repository_record(record) for record in interviews]
+
+    assert renderer._numeric_income_values(dashboard_interviews) == [12000, 15000]
+
+
+def test_dashboard_renderer_formats_overview_tables_for_income_and_borrowing_sources() -> None:
+    renderer = DashboardRenderer()
+    interviews = [
+        renderer._from_repository_record(
+            DashboardInterviewRecord(
+                id="interview-1",
+                audio_url="audio/interview-1.wav",
+                filename="interview-1.wav",
+                transcript="I borrow from my employer",
+                status=ProcessingStatus.COMPLETED.value,
+                latest_stage="analysis",
+                last_error=None,
+                created_at="2026-03-18T10:00:00+00:00",
+                smartphone_user=True,
+                has_bank_account=True,
+                income_range="₹12,000",
+                borrowing_history="has_borrowed",
+                repayment_preference="monthly",
+                loan_interest="interested",
+                summary="Employer borrowing",
+                key_quotes=["I borrow from my employer"],
+                persona="Digitally Ready but Fearful",
+                confidence_score=0.9,
+            )
+        ),
+        renderer._from_repository_record(
+            DashboardInterviewRecord(
+                id="interview-2",
+                audio_url="audio/interview-2.wav",
+                filename="interview-2.wav",
+                transcript="I borrow from family",
+                status=ProcessingStatus.COMPLETED.value,
+                latest_stage="analysis",
+                last_error=None,
+                created_at="2026-03-18T11:00:00+00:00",
+                smartphone_user=True,
+                has_bank_account=True,
+                income_range="Below ₹10k",
+                borrowing_history="has_borrowed",
+                repayment_preference="monthly",
+                loan_interest="interested",
+                summary="Family borrowing",
+                key_quotes=["I borrow from family"],
+                persona="Digitally Ready but Fearful",
+                confidence_score=0.9,
+            )
+        ),
+    ]
+
+    assert renderer._build_cohort_rows(interviews, "income_band") == [
+        ("₹12,000", 1, "50%"),
+        ("Below ₹10k", 1, "50%"),
+    ]
+    assert renderer._build_cohort_rows(interviews, "borrowing_source") == [
+        ("Employer", 1, "50%"),
+        ("Family / friends", 1, "50%"),
+    ]

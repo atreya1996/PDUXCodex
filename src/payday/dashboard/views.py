@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from statistics import mean, median
 from typing import Any, Callable
 
 import streamlit as st
@@ -168,21 +170,11 @@ class DashboardRenderer:
                 )
             return
 
-        left_col, right_col = st.columns(2, gap="large")
-        with left_col:
-            self._render_chart_card(
-                title="Income distribution",
-                subtitle="Current filtered set",
-                values=self._count_by(filtered, lambda item: item.income_band),
-                color="#4f7cff",
-            )
-        with right_col:
-            self._render_chart_card(
-                title="Borrowing sources",
-                subtitle="Where participants say they borrow from",
-                values=self._count_by(filtered, lambda item: item.borrowing_source),
-                color="#14b8a6",
-            )
+        income_col, borrowing_col = st.columns(2, gap="large")
+        with income_col:
+            self._render_income_summary(filtered)
+        with borrowing_col:
+            self._render_borrowing_sources_summary(filtered)
 
         top_quotes = [quote for interview in filtered for quote in interview.evidence_quotes][:4]
         if top_quotes:
@@ -615,7 +607,7 @@ class DashboardRenderer:
             st.info("No chart data available.")
             return
         st.vega_lite_chart(
-            {"values": chart_data},
+            chart_data,
             {
                 "mark": {"type": "bar", "cornerRadiusTopLeft": 10, "cornerRadiusTopRight": 10, "color": color},
                 "encoding": {
@@ -648,6 +640,37 @@ class DashboardRenderer:
             </div>
             """,
             unsafe_allow_html=True,
+        )
+
+    def _render_income_summary(self, interviews: list[DashboardInterview]) -> None:
+        st.markdown("<div class='table-title'>Income overview</div>", unsafe_allow_html=True)
+        numeric_incomes = self._numeric_income_values(interviews)
+        metric_columns = st.columns(2, gap="medium")
+        metric_specs = [
+            ("Median stated income", self._format_currency(int(median(numeric_incomes))) if numeric_incomes else "—"),
+            ("Average stated income", self._format_currency(int(round(mean(numeric_incomes)))) if numeric_incomes else "—"),
+        ]
+        for column, (label, value) in zip(metric_columns, metric_specs, strict=False):
+            with column:
+                st.markdown(
+                    f"<div class='pd-card kpi-card'><div class='kpi-label'>{label}</div><div class='kpi-value'>{value}</div></div>",
+                    unsafe_allow_html=True,
+                )
+
+        if not numeric_incomes:
+            st.caption("Median and average are shown only when a direct numeric monthly income was extracted.")
+
+        self._render_table_card(
+            title="Income buckets",
+            rows=self._build_cohort_rows(interviews, "income_band"),
+            headers=("Income bucket", "Count", "% of filtered"),
+        )
+
+    def _render_borrowing_sources_summary(self, interviews: list[DashboardInterview]) -> None:
+        self._render_table_card(
+            title="Borrowing sources",
+            rows=self._build_cohort_rows(interviews, "borrowing_source"),
+            headers=("Source", "Count", "Share"),
         )
 
     def _render_interview_row(self, interview: DashboardInterview) -> None:
@@ -688,6 +711,35 @@ class DashboardRenderer:
         counts = self._count_by(interviews, lambda item: getattr(item, attribute))
         total = len(interviews)
         return [(label, count, self._percent(count, total)) for label, count in counts.items()]
+
+    def _numeric_income_values(self, interviews: list[DashboardInterview]) -> list[int]:
+        values: list[int] = []
+        for interview in interviews:
+            income_value = self._parse_direct_income_value(interview.income_band)
+            if income_value is not None:
+                values.append(income_value)
+        return values
+
+    def _parse_direct_income_value(self, income_band: str) -> int | None:
+        normalized = income_band.strip()
+        if not normalized:
+            return None
+        if any(separator in normalized for separator in ("-", "–", "to")):
+            return None
+        if any(term in normalized.lower() for term in ("below", "under", "less than", "unknown")):
+            return None
+
+        match = re.search(r"(\d[\d,]*)(?:\s*([kK]))?", normalized)
+        if match is None:
+            return None
+
+        amount = int(match.group(1).replace(",", ""))
+        if match.group(2):
+            amount *= 1000
+        return amount
+
+    def _format_currency(self, amount: int) -> str:
+        return f"₹{amount:,}"
 
     def _count_by(self, interviews: list[DashboardInterview], key_func: Any) -> dict[str, int]:
         counts: dict[str, int] = {}
