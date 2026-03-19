@@ -52,3 +52,24 @@ class PaydayAppService:
 
     def get_status_overview(self) -> DashboardStatusOverview:
         return self.repository.get_status_overview()
+
+    def save_interview_edits(
+        self,
+        interview_id: str,
+        *,
+        transcript: str,
+        extracted_json: str,
+        transcript_changed: bool,
+        structured_json_changed: bool,
+    ) -> DashboardInterviewRecord:
+        self.pipeline.reprocess_interview_detail(
+            interview_id,
+            transcript_text=transcript,
+            extracted_json=extracted_json,
+            transcript_changed=transcript_changed,
+            structured_json_changed=structured_json_changed,
+        )
+        return self.repository.get_dashboard_interview_detail(interview_id)
+
+    def delete_interview(self, interview_id: str) -> bool:
+        return self.repository.delete_interview(interview_id)

@@ -130,6 +130,8 @@ def main() -> None:
         recent_interviews=dashboard_state["recent_interviews"],
         status_overview=dashboard_state["status_overview"],
         interview_detail_loader=app_service.get_interview_detail,
+        save_interview_edits=getattr(app_service, "save_interview_edits", None),
+        delete_interview=getattr(app_service, "delete_interview", None),
         sample_mode=settings.features.use_sample_mode,
     )
 

@@ -179,6 +179,18 @@ class PaydayRepository:
             raise KeyError(f"Interview {interview_id} was not found.")
         return InterviewRecord(**dict(row))
 
+    def delete_interview(self, interview_id: str) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                DELETE FROM interviews
+                WHERE id = ?
+                """,
+                (interview_id,),
+            )
+        self._items.pop(interview_id, None)
+        return cursor.rowcount > 0
+
     def upsert_structured_response(
         self,
         interview_id: str,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import types
 
@@ -552,6 +553,39 @@ def test_repository_initialization_creates_missing_database_directory(tmp_path) 
     assert interview.audio_url == "audio/interview-1/demo.wav"
 
 
+def test_repository_delete_interview_cascades_related_rows(tmp_path) -> None:
+    repository = PaydayRepository(database_path=str(tmp_path / "cascade.db"))
+    interview = repository.create_interview(audio_url="audio/interview-1/demo.wav", status="completed")
+    repository.upsert_structured_response(
+        interview.id,
+        smartphone_user=True,
+        has_bank_account=True,
+        income_range="10k-20k",
+        borrowing_history="has_borrowed",
+        repayment_preference="monthly",
+        loan_interest="interested",
+    )
+    repository.upsert_insight(
+        interview.id,
+        summary="Summary",
+        key_quotes=["Direct quote"],
+        persona="Self-Reliant Non-Borrower",
+        confidence_score=0.8,
+    )
+
+    deleted = repository.delete_interview(interview.id)
+
+    assert deleted is True
+    assert repository.list_recent_interviews() == []
+    with pytest.raises(KeyError, match=interview.id):
+        repository.get_interview(interview.id)
+
+    with sqlite3.connect(repository.database_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM interviews").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM structured_responses").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM insights").fetchone()[0] == 0
+
+
 def test_app_service_uses_sqlite_for_durable_dashboard_reads(tmp_path) -> None:
     database_path = str(tmp_path / "payday-dashboard.db")
     first_service = PaydayAppService(build_settings(database_path))
@@ -574,6 +608,85 @@ def test_app_service_uses_sqlite_for_durable_dashboard_reads(tmp_path) -> None:
     assert recent[0].id == result.file_id
     assert detail.summary is not None
     assert detail.filename == "durable.wav"
+
+
+def test_app_service_save_interview_edits_persists_transcript_and_refreshes_outputs(tmp_path) -> None:
+    service = PaydayAppService(build_settings(str(tmp_path / "edit-save.db")))
+    result = service.process_upload(
+        "editable.wav",
+        "audio/wav",
+        b"I use WhatsApp and my bank account is active.",
+    )
+
+    current_detail = service.get_interview_detail(result.file_id)
+    current_payload = {
+        "audio_url": current_detail.audio_url,
+        "participant_profile": {
+            "smartphone_user": {"value": current_detail.smartphone_user},
+            "has_bank_account": {"value": current_detail.has_bank_account},
+        },
+        "income_range": {"value": current_detail.income_range},
+        "borrowing_history": {"value": current_detail.borrowing_history},
+        "repayment_preference": {"value": current_detail.repayment_preference},
+        "loan_interest": {"value": current_detail.loan_interest},
+        "insight": {
+            "summary": current_detail.summary,
+            "key_quotes": current_detail.key_quotes,
+        },
+    }
+
+    saved_detail = service.save_interview_edits(
+        result.file_id,
+        transcript="I use WhatsApp but I do not have a bank account.",
+        extracted_json=json.dumps(current_payload, ensure_ascii=False),
+        transcript_changed=True,
+        structured_json_changed=False,
+    )
+
+    assert saved_detail.transcript == "I use WhatsApp but I do not have a bank account."
+    assert saved_detail.status == ProcessingStatus.COMPLETED.value
+    assert saved_detail.has_bank_account is False
+    assert saved_detail.persona == "Offline / Excluded"
+    assert service.get_status_overview().status_counts == {ProcessingStatus.COMPLETED.value: 1}
+
+
+def test_app_service_save_interview_edits_accepts_dashboard_json_and_rederives_persona(tmp_path) -> None:
+    service = PaydayAppService(build_settings(str(tmp_path / "edit-json.db")))
+    result = service.process_upload(
+        "json-edit.wav",
+        "audio/wav",
+        b"I use WhatsApp and my bank account is active.",
+    )
+
+    edited_payload = {
+        "audio_url": service.get_interview_detail(result.file_id).audio_url,
+        "participant_profile": {
+            "smartphone_user": {"value": False},
+            "has_bank_account": {"value": True},
+        },
+        "income_range": {"value": "₹9,000", "status": "observed", "evidence_quotes": ["₹9,000"], "notes": ""},
+        "borrowing_history": {"value": "has_not_borrowed_recently", "status": "observed", "evidence_quotes": ["I avoid loans"], "notes": ""},
+        "repayment_preference": {"value": "monthly", "status": "observed", "evidence_quotes": ["monthly"], "notes": ""},
+        "loan_interest": {"value": "not_interested", "status": "observed", "evidence_quotes": ["not interested"], "notes": ""},
+        "insight": {
+            "summary": "Participant lacks a smartphone and avoids borrowing.",
+            "key_quotes": ["I use a basic phone now."],
+        },
+    }
+
+    saved_detail = service.save_interview_edits(
+        result.file_id,
+        transcript="I use a basic phone now.",
+        extracted_json=json.dumps(edited_payload, ensure_ascii=False),
+        transcript_changed=False,
+        structured_json_changed=True,
+    )
+
+    assert saved_detail.smartphone_user is False
+    assert saved_detail.persona == "Offline / Excluded"
+    assert saved_detail.summary == "Participant lacks a smartphone and avoids borrowing."
+    assert saved_detail.key_quotes == ["I use a basic phone now."]
+    assert service.get_status_overview().status_counts == {ProcessingStatus.COMPLETED.value: 1}
 
 
 def test_batch_uploads_persist_mixed_statuses_for_durable_dashboard_refresh(tmp_path) -> None:
