@@ -12,7 +12,12 @@ from payday.personas import PersonaService
 from payday.repository import PaydayRepository
 from payday.service import PaydayAppService
 from payday.storage import StorageService
-from payday.transcription import OpenAITranscriptionAdapter, TranscriptionService
+from payday.transcription import (
+    OPENAI_TRANSCRIPTION_SAFE_FILE_LIMIT_BYTES,
+    OpenAITranscriptionAdapter,
+    TranscriptionService,
+    describe_transcription_file_size_limit,
+)
 from payday.upload import SUPPORTED_UPLOAD_EXTENSIONS, UploadService, UploadValidationError
 
 
@@ -399,7 +404,7 @@ def test_pipeline_marks_external_analysis_provider_errors_as_failed_results() ->
     ]
 
 
-def test_pipeline_fails_cleanly_when_live_transcription_api_key_is_missing() -> None:
+def test_app_service_fails_fast_when_live_transcription_api_key_is_missing() -> None:
     settings = Settings(
         app_env="test",
         database=DatabaseSettings(sqlite_path=":memory:"),
@@ -408,22 +413,9 @@ def test_pipeline_fails_cleanly_when_live_transcription_api_key_is_missing() -> 
         transcription=TranscriptionSettings(provider="openai", model="whisper-test", api_key=""),
         features=FeatureFlags(use_sample_mode=False),
     )
-    pipeline = PaydayAppService(settings).pipeline
-    pipeline.analysis_service = AnalysisService(
-        adapter=OpenAIAnalysisAdapter(
-            LLMSettings(provider="openai", model="gpt-test", api_key="analysis-key"),
-            transport=StaticAnalysisTransport({"output_text": VALID_ANALYSIS_JSON}),
-        ),
-        settings=settings.llm,
-    )
 
-    result = pipeline.process_upload("missing-key.wav", "audio/wav", b"audio payload")
-
-    assert result.status is ProcessingStatus.FAILED
-    assert result.current_stage is PipelineStage.TRANSCRIPTION
-    assert result.errors == [
-        "transcription failed after 3 attempts: TRANSCRIPTION_API_KEY is required when sample mode is disabled for provider 'openai'."
-    ]
+    with pytest.raises(ValueError, match="TRANSCRIPTION_API_KEY is required"):
+        PaydayAppService(settings)
 
 
 def test_openai_transcription_adapter_uses_mocked_provider_response() -> None:
@@ -718,7 +710,7 @@ def test_app_service_uses_live_openai_analysis_adapter_when_sample_mode_disabled
         database=DatabaseSettings(sqlite_path=":memory:"),
         supabase=SupabaseSettings(),
         llm=LLMSettings(provider="openai", model="gpt-4.1-mini", api_key="live-key"),
-        transcription=TranscriptionSettings(),
+        transcription=TranscriptionSettings(api_key="tx-key"),
         features=FeatureFlags(use_sample_mode=False),
     )
 
