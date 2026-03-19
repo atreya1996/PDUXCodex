@@ -379,6 +379,16 @@ class DashboardRenderer:
                 unsafe_allow_html=True,
             )
 
+        dialogue_turns = self._segmented_dialogue_for(selected)
+        st.markdown("##### Transcript view")
+        if dialogue_turns:
+            self._render_segmented_dialogue(dialogue_turns)
+        else:
+            st.markdown(
+                f"<div class='pd-card dialogue-fallback'>{html.escape(selected.transcript)}</div>",
+                unsafe_allow_html=True,
+            )
+
         st.markdown("##### Editable transcript")
         updated_transcript = st.text_area(
             "Transcript",
@@ -821,6 +831,34 @@ class DashboardRenderer:
             """,
             unsafe_allow_html=True,
         )
+
+    def _segmented_dialogue_for(self, interview: DashboardInterview) -> tuple[dict[str, Any], ...]:
+        if interview.segmented_dialogue:
+            return interview.segmented_dialogue
+        fallback = interview.extracted_json.get("segmented_dialogue")
+        if isinstance(fallback, list):
+            return tuple(item for item in fallback if isinstance(item, dict))
+        return ()
+
+    def _render_segmented_dialogue(self, turns: tuple[dict[str, Any], ...]) -> None:
+        for turn in turns:
+            speaker_label = html.escape(str(turn.get("speaker_label", "unknown")).replace("_", " ").title())
+            utterance_text = html.escape(str(turn.get("utterance_text", "")).strip())
+            speaker_confidence = html.escape(str(turn.get("speaker_confidence", "low")).strip().title())
+            speaker_uncertainty = html.escape(str(turn.get("speaker_uncertainty", "")).strip())
+            if not utterance_text:
+                continue
+            st.markdown(
+                f"""
+                <div class='pd-card dialogue-turn'>
+                    <div class='dialogue-speaker'>{speaker_label}</div>
+                    <div class='dialogue-utterance'>{utterance_text}</div>
+                    <div class='dialogue-meta'>Speaker confidence: {speaker_confidence}</div>
+                    {f"<div class='dialogue-uncertainty'>{speaker_uncertainty}</div>" if speaker_uncertainty else ""}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
     def _segmented_dialogue_for(self, interview: DashboardInterview) -> tuple[dict[str, Any], ...]:
         if interview.segmented_dialogue:
