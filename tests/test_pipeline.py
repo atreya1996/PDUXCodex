@@ -82,6 +82,7 @@ class StaticAnalysisTransport:
 class RecordingBucket:
     def __init__(self) -> None:
         self.upload_calls: list[dict[str, object]] = []
+        self.remove_calls: list[list[str]] = []
 
     def upload(self, path: str, payload: bytes, file_options: dict[str, object] | None = None) -> None:
         self.upload_calls.append(
@@ -91,6 +92,9 @@ class RecordingBucket:
                 "file_options": file_options or {},
             }
         )
+
+    def remove(self, paths: list[str]) -> None:
+        self.remove_calls.append(paths)
 
 
 class RecordingSupabaseStorageClient:
@@ -352,7 +356,7 @@ def test_pipeline_process_upload_persists_interview_structured_response_and_insi
     assert insight_row is not None
     assert insight_row[0] == result.file_id
     assert "WhatsApp every day" in insight_row[1]
-    assert insight_row[2] == "Self-Reliant Non-Borrower"
+    assert insight_row[2] == "High-Stress Cyclical Borrower"
     assert insight_row[3] == 0.78
 
     reloaded_repository = PaydayRepository(database_path=str(database_path))
@@ -377,7 +381,7 @@ def test_pipeline_process_upload_persists_interview_structured_response_and_insi
     assert detail.structured_response.loan_interest == result.analysis.structured_output["loan_interest"]["value"]
     assert detail.insight is not None
     assert detail.insight.summary == result.analysis.summary
-    assert detail.insight.persona == "Self-Reliant Non-Borrower"
+    assert detail.insight.persona == "High-Stress Cyclical Borrower"
     assert detail.insight.confidence_score == 0.78
 
 
@@ -889,6 +893,23 @@ def test_storage_service_live_mode_without_storage_client_fails() -> None:
     with pytest.raises(RuntimeError, match="configured storage client or explicit upload implementation"):
         storage.store_asset(asset, sample_mode=False, interview_id="interview-123")
 
+    with pytest.raises(RuntimeError, match="configured storage client or explicit delete implementation"):
+        storage.delete_asset("audio/interview-123/live.wav", sample_mode=False)
+
+
+def test_storage_service_live_mode_deletes_uploaded_asset_from_bucket() -> None:
+    storage_client = RecordingSupabaseStorageClient()
+    storage = StorageService(SupabaseSettings(storage_bucket="test-assets"), storage_client=storage_client)
+
+    deleted = storage.delete_asset(
+        "https://example.supabase.co/storage/v1/object/public/test-assets/audio/interview-123/live.wav",
+        sample_mode=False,
+    )
+
+    assert deleted is True
+    assert storage_client.bucket_names == ["test-assets"]
+    assert storage_client.bucket.remove_calls == [["audio/interview-123/live.wav"]]
+
 
 def test_pipeline_marks_storage_persistence_failed_without_live_storage_client(tmp_path) -> None:
     database_path = tmp_path / "storage-failure.sqlite3"
@@ -987,6 +1008,45 @@ def test_pipeline_live_storage_persists_only_after_successful_upload(tmp_path) -
         PipelineStage.STORAGE.value,
         None,
     )
+
+
+def test_app_service_delete_interview_removes_durable_rows_and_stored_audio(tmp_path) -> None:
+    database_path = str(tmp_path / "delete-service.sqlite3")
+    settings = Settings(
+        app_env="test",
+        database=DatabaseSettings(sqlite_path=database_path),
+        supabase=SupabaseSettings(storage_bucket="test-assets"),
+        llm=LLMSettings(provider="openai", model="gpt-test", api_key="analysis-key"),
+        transcription=TranscriptionSettings(provider="openai", model="whisper-test", api_key="transcription-key"),
+        features=FeatureFlags(use_sample_mode=False),
+    )
+    storage_client = RecordingSupabaseStorageClient()
+    service = PaydayAppService(settings)
+    service.pipeline.storage_service = StorageService(settings.supabase, storage_client=storage_client)
+    interview = service.repository.create_interview(
+        interview_id="delete-me-id",
+        audio_url="audio/delete-me-id/delete-me.wav",
+        transcript="I use WhatsApp and have a bank account.",
+        status=ProcessingStatus.COMPLETED.value,
+        latest_stage=PipelineStage.STORAGE.value,
+    )
+
+    service.repository.upsert_insight(
+        interview.id,
+        summary="Completed interview ready for deletion.",
+        key_quotes=["I use WhatsApp and have a bank account."],
+        persona="Digitally Ready but Fearful",
+        confidence_score=0.9,
+    )
+
+    deleted = service.delete_interview(interview.id)
+
+    assert deleted is True
+    assert service.list_recent_interviews() == []
+    assert service.get_status_overview().total_interviews == 0
+    assert storage_client.bucket.remove_calls == [["audio/delete-me-id/delete-me.wav"]]
+    with pytest.raises(KeyError, match=interview.id):
+        service.get_interview_detail(interview.id)
 
 
 def test_persona_classifier_uses_bank_account_override() -> None:

@@ -181,6 +181,9 @@ record = DashboardInterviewRecord(
     created_at="2026-03-18T10:00:00+00:00",
     smartphone_user=True,
     has_bank_account=True,
+    per_household_earnings=None,
+    participant_personal_monthly_income="₹10k–15k",
+    total_household_monthly_income=None,
     income_range="₹10k–15k",
     borrowing_history="has_borrowed",
     repayment_preference="monthly",
@@ -202,10 +205,69 @@ renderer.render(
 '''
 
     app = AppTest.from_string(script)
-    app.run()
+    app.run(timeout=10)
 
     button_labels = [element.label for element in app.button]
 
     assert "Save transcript" in button_labels
     assert "Save structured JSON" in button_labels
     assert "Save all edits" in button_labels
+
+
+def test_dashboard_interview_detail_requires_confirmation_before_delete() -> None:
+    script = '''
+from payday.dashboard.views import DashboardRenderer
+from payday.models import ProcessingStatus
+from payday.repository import DashboardInterviewRecord, DashboardStatusOverview
+
+renderer = DashboardRenderer()
+record = DashboardInterviewRecord(
+    id="interview-1",
+    audio_url="audio/interview-1/repo-name.wav",
+    filename="repo-name.wav",
+    transcript="Repository transcript",
+    status=ProcessingStatus.COMPLETED.value,
+    latest_stage="storage",
+    last_error=None,
+    created_at="2026-03-18T10:00:00+00:00",
+    smartphone_user=True,
+    has_bank_account=True,
+    per_household_earnings=None,
+    participant_personal_monthly_income="₹10k–15k",
+    total_household_monthly_income=None,
+    income_range="₹10k–15k",
+    borrowing_history="has_borrowed",
+    repayment_preference="monthly",
+    loan_interest="interested",
+    summary="Repository summary",
+    key_quotes=["Repository quote"],
+    persona="Digitally Ready but Fearful",
+    confidence_score=0.91,
+)
+
+renderer.render(
+    cached_results=[],
+    recent_interviews=[record],
+    status_overview=DashboardStatusOverview(total_interviews=1, status_counts={ProcessingStatus.COMPLETED.value: 1}),
+    interview_detail_loader=lambda interview_id: record,
+    delete_interview=lambda interview_id: True,
+    sample_mode=False,
+)
+'''
+
+    app = AppTest.from_string(script)
+    app.run(timeout=10)
+
+    assert any(button.label == "Delete interview" for button in app.button)
+    assert not any(button.label == "Confirm delete" for button in app.button)
+
+    delete_button = next(button for button in app.button if button.label == "Delete interview")
+    delete_button.click()
+    app.run()
+
+    button_labels = [button.label for button in app.button]
+    warning_values = [warning.value for warning in app.warning]
+
+    assert "Confirm delete" in button_labels
+    assert "Cancel delete" in button_labels
+    assert any("stored audio asset" in value for value in warning_values)

@@ -141,6 +141,7 @@ class PaydayRepository:
         if "last_error" not in interview_columns:
             connection.execute("ALTER TABLE interviews ADD COLUMN last_error TEXT")
 
+    def _ensure_structured_response_columns(self, connection: sqlite3.Connection) -> None:
         structured_columns = {
             row["name"]
             for row in connection.execute("PRAGMA table_info(structured_responses)").fetchall()
@@ -240,7 +241,13 @@ class PaydayRepository:
 
     def delete_interview(self, interview_id: str) -> bool:
         with self._connect() as connection:
-            cursor = connection.execute(
+            existing = connection.execute(
+                "SELECT 1 FROM interviews WHERE id = ?",
+                (interview_id,),
+            ).fetchone()
+            if existing is None:
+                return False
+            connection.execute(
                 """
                 DELETE FROM interviews
                 WHERE id = ?
@@ -248,7 +255,7 @@ class PaydayRepository:
                 (interview_id,),
             )
         self._items.pop(interview_id, None)
-        return cursor.rowcount > 0
+        return True
 
     def upsert_structured_response(
         self,
@@ -294,7 +301,7 @@ class PaydayRepository:
                     loan_interest,
                     segmented_dialogue
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(interview_id) DO UPDATE SET
                     smartphone_user = excluded.smartphone_user,
                     has_bank_account = excluded.has_bank_account,

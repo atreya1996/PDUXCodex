@@ -498,7 +498,7 @@ class DashboardRenderer:
 
         if st.session_state.get(FILTER_SESSION_KEYS["delete_confirm"]) == selected.id and delete_interview is not None:
             st.warning(
-                "Delete this interview from durable storage? This also removes linked structured responses and insights."
+                "Delete this interview from durable storage? This removes linked structured responses and insights, and deletes the stored audio asset when live storage is enabled."
             )
             confirm_col, cancel_col = st.columns(2, gap="medium")
             with confirm_col:
@@ -525,7 +525,7 @@ class DashboardRenderer:
                             )
                             st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
                                 "kind": "success",
-                                "message": "Interview deleted. Overview, cohort, and persona counts were refreshed from durable storage.",
+                                "message": "Interview deleted. Interview lists and overview counts were refreshed from durable storage.",
                             }
                         else:
                             st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
@@ -705,6 +705,22 @@ class DashboardRenderer:
                 "Persona": st.column_config.TextColumn(width="medium"),
                 "Summary": st.column_config.TextColumn(width="large"),
             },
+        )
+
+    def _render_income_summary(self, interviews: list[DashboardInterview]) -> None:
+        self._render_chart_card(
+            title="Income bands",
+            subtitle="Most recent participant income signals from durable dashboard records.",
+            values=self._count_by(interviews, lambda item: item.income_band),
+            color="#4F46E5",
+        )
+
+    def _render_borrowing_sources_summary(self, interviews: list[DashboardInterview]) -> None:
+        self._render_chart_card(
+            title="Borrowing sources",
+            subtitle="How filtered interviews describe current fallback borrowing behavior.",
+            values=self._count_by(interviews, lambda item: item.borrowing_label),
+            color="#0F766E",
         )
 
     def _render_chart_card(
