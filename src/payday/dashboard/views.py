@@ -1007,9 +1007,28 @@ class DashboardRenderer:
             }
             .stTabs [data-baseweb="tab"] {
                 background: white;
+                color: #334155;
                 border-radius: 999px;
                 padding: 0.6rem 1rem;
                 box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+                border: 1px solid rgba(148, 163, 184, 0.24);
+                transition: color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+            }
+            .stTabs [data-baseweb="tab"] p {
+                color: inherit;
+            }
+            .stTabs [data-baseweb="tab"]:hover {
+                color: #1d4ed8;
+                border-color: rgba(79, 124, 255, 0.32);
+                box-shadow: 0 10px 24px rgba(79, 124, 255, 0.1);
+            }
+            .stTabs [data-baseweb="tab"][aria-selected="true"] {
+                color: #1d4ed8;
+                border-color: rgba(79, 124, 255, 0.38);
+                box-shadow: 0 12px 28px rgba(79, 124, 255, 0.14);
+            }
+            .stTabs [data-baseweb="tab"][aria-selected="true"] p {
+                color: inherit;
             }
             .stTextInput label, .stMultiSelect label, .stTextArea label {
                 font-size: 1rem !important;
