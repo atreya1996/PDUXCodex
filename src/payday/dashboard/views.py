@@ -15,6 +15,7 @@ from payday.personas import PERSONAS
 from payday.repository import DashboardInterviewRecord, DashboardStatusOverview
 
 PERSONA_LOOKUP = {persona.id: persona.name for persona in PERSONAS.values()}
+STATUS_DISPLAY_ORDER = tuple(status.value for status in ProcessingStatus)
 FILTER_SESSION_KEYS = {
     "income": "dashboard_filter_income",
     "borrowing": "dashboard_filter_borrowing",
@@ -133,6 +134,7 @@ class DashboardRenderer:
         status_overview: DashboardStatusOverview,
     ) -> None:
         st.markdown("### Interview portfolio")
+        self._render_status_panel(all_interviews, status_overview)
         self._render_filter_summary(filtered, all_interviews, status_overview)
         self._render_kpis(filtered, status_overview)
 
@@ -386,6 +388,55 @@ class DashboardRenderer:
                     unsafe_allow_html=True,
                 )
 
+    def _render_status_panel(
+        self,
+        interviews: list[DashboardInterview],
+        status_overview: DashboardStatusOverview,
+    ) -> None:
+        st.markdown("#### Processing status")
+        st.caption("Per-file pipeline states are reloaded from the durable SQLite store whenever the app reruns or you use Refresh status.")
+
+        counts = self._status_counts(interviews, status_overview)
+        count_columns = st.columns(len(STATUS_DISPLAY_ORDER), gap="medium")
+        for column, status in zip(count_columns, STATUS_DISPLAY_ORDER, strict=False):
+            with column:
+                st.markdown(
+                    (
+                        "<div class='pd-card status-card'>"
+                        f"<div class='status-label'>{status.title()}</div>"
+                        f"<div class='status-value'>{counts.get(status, 0)}</div>"
+                        "</div>"
+                    ),
+                    unsafe_allow_html=True,
+                )
+
+        if not interviews:
+            st.info("No interview records are available yet. Upload a batch to populate the durable status table.")
+            return
+
+        status_rows = [
+            {
+                "Filename": interview.filename,
+                "Status": interview.status.title(),
+                "Created": interview.created_at,
+                "Persona": interview.persona_name,
+                "Summary": self._truncate_text(interview.summary, limit=100),
+            }
+            for interview in interviews
+        ]
+        st.dataframe(
+            status_rows,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Filename": st.column_config.TextColumn(width="medium"),
+                "Status": st.column_config.TextColumn(width="small"),
+                "Created": st.column_config.TextColumn(width="small"),
+                "Persona": st.column_config.TextColumn(width="medium"),
+                "Summary": st.column_config.TextColumn(width="large"),
+            },
+        )
+
     def _render_chart_card(
         self,
         *,
@@ -483,7 +534,9 @@ class DashboardRenderer:
         mapped_results = {result.file_id: self._from_pipeline_result(result) for result in results}
         merged = [self._overlay_cached_result(record, mapped_results.get(record.id)) for record in recent_interviews]
         if merged:
-            return merged
+            repository_ids = {record.id for record in recent_interviews}
+            cache_only = [interview for file_id, interview in mapped_results.items() if file_id not in repository_ids]
+            return [*merged, *cache_only]
         if mapped_results:
             return list(mapped_results.values())
         return self._sample_interviews()
@@ -580,31 +633,33 @@ class DashboardRenderer:
         repository_interview = self._from_repository_record(record)
         if cached_result is None:
             return repository_interview
+        persona_name = repository_interview.persona_name or cached_result.persona_name
         return DashboardInterview(
             id=repository_interview.id,
-            filename=cached_result.filename or repository_interview.filename,
+            filename=repository_interview.filename or cached_result.filename,
             created_at=repository_interview.created_at,
-            status=cached_result.status,
-            summary=cached_result.summary,
-            transcript=cached_result.transcript,
-            persona_id=cached_result.persona_id,
-            persona_name=cached_result.persona_name,
-            is_non_target=cached_result.is_non_target,
-            income_band=cached_result.income_band,
-            borrowing_source=cached_result.borrowing_source,
-            borrowing_label=cached_result.borrowing_label,
-            is_borrower=cached_result.is_borrower,
-            loan_interest_label=cached_result.loan_interest_label,
-            interested_in_loan=cached_result.interested_in_loan,
-            smartphone_user=cached_result.smartphone_user,
-            has_bank_account=cached_result.has_bank_account,
-            digital_access=cached_result.digital_access,
+            status=repository_interview.status,
+            summary=repository_interview.summary or cached_result.summary,
+            transcript=repository_interview.transcript or cached_result.transcript,
+            persona_id=repository_interview.persona_id if repository_interview.persona_name else cached_result.persona_id,
+            persona_name=persona_name,
+            is_non_target=repository_interview.is_non_target,
+            income_band=repository_interview.income_band if repository_interview.income_band != "Unknown" else cached_result.income_band,
+            borrowing_source=repository_interview.borrowing_source
+            if repository_interview.borrowing_source != "Unknown"
+            else cached_result.borrowing_source,
+            borrowing_label=repository_interview.borrowing_label,
+            is_borrower=repository_interview.is_borrower,
+            loan_interest_label=repository_interview.loan_interest_label,
+            interested_in_loan=repository_interview.interested_in_loan,
+            smartphone_user=repository_interview.smartphone_user,
+            has_bank_account=repository_interview.has_bank_account,
+            digital_access=repository_interview.digital_access,
             extracted_json={
-                **repository_interview.extracted_json,
                 **cached_result.extracted_json,
-                "audio_url": repository_interview.extracted_json.get("audio_url"),
+                **repository_interview.extracted_json,
             },
-            evidence_quotes=cached_result.evidence_quotes or repository_interview.evidence_quotes,
+            evidence_quotes=repository_interview.evidence_quotes or cached_result.evidence_quotes,
             audio_bytes=cached_result.audio_bytes,
             audio_format=cached_result.audio_format,
         )
@@ -921,6 +976,26 @@ class DashboardRenderer:
             return "0%"
         return f"{round((numerator / denominator) * 100)}%"
 
+    def _status_counts(
+        self,
+        interviews: list[DashboardInterview],
+        status_overview: DashboardStatusOverview,
+    ) -> dict[str, int]:
+        counts = {status: 0 for status in STATUS_DISPLAY_ORDER}
+        if status_overview.total_interviews > 0:
+            for status in STATUS_DISPLAY_ORDER:
+                counts[status] = status_overview.status_counts.get(status, 0)
+            return counts
+        for interview in interviews:
+            counts[interview.status] = counts.get(interview.status, 0) + 1
+        return counts
+
+    def _truncate_text(self, value: str, *, limit: int) -> str:
+        normalized = value.strip()
+        if len(normalized) <= limit:
+            return normalized
+        return f"{normalized[: limit - 1].rstrip()}…"
+
     def _inject_styles(self) -> None:
         st.markdown(
             """
@@ -946,14 +1021,25 @@ class DashboardRenderer:
                 flex-direction: column;
                 justify-content: space-between;
             }
+            .status-card {
+                min-height: 112px;
+                display: flex;
+                flex-direction: column;
+                justify-content: space-between;
+            }
             .kpi-label, .chart-subtitle, .table-title, .interview-meta, .persona-meta {
                 color: #64748b;
                 font-size: 0.95rem;
             }
-            .kpi-value, .persona-count {
+            .kpi-value, .persona-count, .status-value {
                 font-size: 2rem;
                 font-weight: 700;
                 color: #0f172a;
+            }
+            .status-label {
+                color: #475569;
+                font-size: 0.98rem;
+                font-weight: 600;
             }
             .chart-title, .table-title {
                 font-size: 1.15rem;
