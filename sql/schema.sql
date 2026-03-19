@@ -3,6 +3,8 @@ CREATE TABLE IF NOT EXISTS interviews (
     audio_url TEXT NOT NULL,
     transcript TEXT,
     status TEXT NOT NULL,
+    latest_stage TEXT NOT NULL DEFAULT 'upload',
+    last_error TEXT,
     created_at TEXT NOT NULL
 );
 

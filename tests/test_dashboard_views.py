@@ -48,6 +48,8 @@ def test_dashboard_renderer_prefers_durable_repository_values_for_status_rows() 
         filename="repo-name.wav",
         transcript="Repository transcript",
         status=ProcessingStatus.COMPLETED.value,
+        latest_stage="storage",
+        last_error=None,
         created_at="2026-03-18T10:00:00+00:00",
         smartphone_user=True,
         has_bank_account=True,
@@ -66,6 +68,8 @@ def test_dashboard_renderer_prefers_durable_repository_values_for_status_rows() 
     assert len(interviews) == 1
     assert interviews[0].filename == "repo-name.wav"
     assert interviews[0].status == ProcessingStatus.COMPLETED.value
+    assert interviews[0].current_stage == "storage"
+    assert interviews[0].last_error is None
     assert interviews[0].summary == "Repository summary"
     assert interviews[0].transcript == "Repository transcript"
     assert interviews[0].evidence_quotes == ("Repository quote",)

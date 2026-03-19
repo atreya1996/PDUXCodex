@@ -63,14 +63,13 @@ def main() -> None:
     )
 
     upload_count = len(uploaded_files) if uploaded_files else 0
+    runtime_summary = app_service.runtime_summary()
     st.sidebar.write(
         {
             "files_selected": upload_count,
-            "sample_mode": settings.features.use_sample_mode,
             "analysis_enabled": settings.features.enable_analysis,
             "sqlite_path": settings.database.sqlite_path,
-            "llm_provider": settings.llm.provider,
-            "transcription_provider": settings.transcription.provider,
+            **runtime_summary,
         }
     )
 
