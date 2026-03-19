@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import json
-import math
-import wave
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from io import BytesIO
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 import streamlit as st
@@ -62,23 +59,28 @@ class DashboardRenderer:
         recent_interviews: list[DashboardInterviewRecord],
         status_overview: DashboardStatusOverview,
         interview_detail_loader: Callable[[str], DashboardInterviewRecord],
+        sample_mode: bool = False,
     ) -> None:
         self._inject_styles()
-        interviews = self._build_dashboard_interviews(cached_results, recent_interviews)
+        interviews = self._build_dashboard_interviews(
+            cached_results,
+            recent_interviews,
+            sample_mode=sample_mode,
+        )
         self._initialize_session_state(interviews)
         filtered = self._apply_filters(interviews)
 
         tabs = st.tabs(["Overview", "Cohorts", "Personas", "Interviews", "Interview Detail"])
         with tabs[0]:
-            self._render_overview(filtered, interviews, status_overview)
+            self._render_overview(filtered, interviews, status_overview, sample_mode=sample_mode)
         with tabs[1]:
             self._render_cohorts(filtered)
         with tabs[2]:
-            self._render_personas(filtered)
+            self._render_personas(filtered, sample_mode=sample_mode)
         with tabs[3]:
-            self._render_interviews(filtered)
+            self._render_interviews(filtered, sample_mode=sample_mode)
         with tabs[4]:
-            self._render_interview_detail(filtered, interviews, interview_detail_loader)
+            self._render_interview_detail(filtered, interviews, interview_detail_loader, sample_mode=sample_mode)
 
     def _initialize_session_state(self, interviews: list[DashboardInterview]) -> None:
         st.session_state.setdefault(FILTER_SESSION_KEYS["income"], [])
@@ -132,14 +134,23 @@ class DashboardRenderer:
         filtered: list[DashboardInterview],
         all_interviews: list[DashboardInterview],
         status_overview: DashboardStatusOverview,
+        *,
+        sample_mode: bool,
     ) -> None:
         st.markdown("### Interview portfolio")
-        self._render_status_panel(all_interviews, status_overview)
+        self._render_status_panel(all_interviews, status_overview, sample_mode=sample_mode)
         self._render_filter_summary(filtered, all_interviews, status_overview)
         self._render_kpis(filtered, status_overview)
 
         if not filtered:
-            st.info("No interviews match the current filters.")
+            if all_interviews:
+                st.info("No interviews match the current filters.")
+            else:
+                self._render_empty_state(
+                    "No interviews yet",
+                    sample_mode=sample_mode,
+                    context="Upload interview audio from the sidebar to populate the dashboard overview.",
+                )
             return
 
         left_col, right_col = st.columns(2, gap="large")
@@ -203,10 +214,14 @@ class DashboardRenderer:
                 headers=("Status", "Count", "% of filtered"),
             )
 
-    def _render_personas(self, filtered: list[DashboardInterview]) -> None:
+    def _render_personas(self, filtered: list[DashboardInterview], *, sample_mode: bool) -> None:
         st.markdown("### Persona review")
         if not filtered:
-            st.info("No persona cards to show for the current filter set.")
+            self._render_empty_state(
+                "No personas to review yet",
+                sample_mode=sample_mode,
+                context="Run at least one interview through transcription and analysis before persona cards can appear.",
+            )
             return
 
         counts = self._count_by(filtered, lambda item: item.persona_name)
@@ -233,10 +248,14 @@ class DashboardRenderer:
                     unsafe_allow_html=True,
                 )
 
-    def _render_interviews(self, filtered: list[DashboardInterview]) -> None:
+    def _render_interviews(self, filtered: list[DashboardInterview], *, sample_mode: bool) -> None:
         st.markdown("### Searchable interview list")
         if not filtered:
-            st.info("No interviews match the current search and filters.")
+            self._render_empty_state(
+                "No interview cards yet",
+                sample_mode=sample_mode,
+                context="Upload audio files or intentionally load sample fixtures to create interview cards.",
+            )
             return
 
         for interview in filtered:
@@ -247,10 +266,16 @@ class DashboardRenderer:
         filtered: list[DashboardInterview],
         all_interviews: list[DashboardInterview],
         interview_detail_loader: Callable[[str], DashboardInterviewRecord],
+        *,
+        sample_mode: bool,
     ) -> None:
         st.markdown("### Interview detail")
         if not all_interviews:
-            st.info("Upload or process interviews to inspect details here.")
+            self._render_empty_state(
+                "No interview selected",
+                sample_mode=sample_mode,
+                context="Upload and process at least one interview, or intentionally load sample fixtures, to inspect transcript details here.",
+            )
             return
 
         selected_id = st.session_state[FILTER_SESSION_KEYS["selected"]]
@@ -392,6 +417,8 @@ class DashboardRenderer:
         self,
         interviews: list[DashboardInterview],
         status_overview: DashboardStatusOverview,
+        *,
+        sample_mode: bool,
     ) -> None:
         st.markdown("#### Processing status")
         st.caption("Per-file pipeline states are reloaded from the durable SQLite store whenever the app reruns or you use Refresh status.")
@@ -411,7 +438,11 @@ class DashboardRenderer:
                 )
 
         if not interviews:
-            st.info("No interview records are available yet. Upload a batch to populate the durable status table.")
+            self._render_empty_state(
+                "No interview records are available yet",
+                sample_mode=sample_mode,
+                context="Upload a batch to populate the durable status table.",
+            )
             return
 
         status_rows = [
@@ -530,6 +561,8 @@ class DashboardRenderer:
         self,
         results: list[PipelineResult],
         recent_interviews: list[DashboardInterviewRecord],
+        *,
+        sample_mode: bool = False,
     ) -> list[DashboardInterview]:
         mapped_results = {result.file_id: self._from_pipeline_result(result) for result in results}
         merged = [self._overlay_cached_result(record, mapped_results.get(record.id)) for record in recent_interviews]
@@ -539,7 +572,14 @@ class DashboardRenderer:
             return [*merged, *cache_only]
         if mapped_results:
             return list(mapped_results.values())
-        return self._sample_interviews()
+        if sample_mode:
+            from payday.dashboard.sample_data import build_sample_interviews
+
+            return build_sample_interviews(
+                persona_lookup=PERSONA_LOOKUP,
+                digital_access_label=self._digital_access_label,
+            )
+        return []
 
     def _from_pipeline_result(self, result: PipelineResult) -> DashboardInterview:
         structured = result.analysis.structured_output if result.analysis is not None else {}
@@ -771,205 +811,13 @@ class DashboardRenderer:
     def _is_loan_interest_positive(self, loan_interest_value: str) -> bool:
         return loan_interest_value == "interested"
 
-    def _sample_interviews(self) -> list[DashboardInterview]:
-        now = datetime.now(timezone.utc)
-        samples = [
-            {
-                "id": "sample-001",
-                "filename": "meena_whatsapp_borrower.wav",
-                "transcript": (
-                    "I use WhatsApp every day and my bank account is active. I earn ₹12,000 per month. "
-                    "When money is short I borrow from my employer first, but I am worried about scams from apps."
-                ),
-                "persona_id": "persona_2",
-                "income_band": "₹10k–15k",
-                "borrowing_source": "Employer",
-                "borrowing_label": "Borrower",
-                "loan_interest_label": "Fearful / uncertain",
-                "interested_in_loan": False,
-                "smartphone_user": True,
-                "has_bank_account": True,
-                "status": ProcessingStatus.COMPLETED.value,
-            },
-            {
-                "id": "sample-002",
-                "filename": "rekha_offline_non_target.wav",
-                "transcript": (
-                    "I use a basic phone and I do not have a bank account. When there is an emergency, I ask my sister for help."
-                ),
-                "persona_id": "persona_3",
-                "income_band": "Below ₹10k",
-                "borrowing_source": "Family / friends",
-                "borrowing_label": "Borrower",
-                "loan_interest_label": "Unknown",
-                "interested_in_loan": False,
-                "smartphone_user": False,
-                "has_bank_account": False,
-                "status": ProcessingStatus.COMPLETED.value,
-            },
-            {
-                "id": "sample-003",
-                "filename": "saira_self_reliant.wav",
-                "transcript": (
-                    "My salary goes to my bank account and I use WhatsApp. I save first and I do not borrow because I manage on my own."
-                ),
-                "persona_id": "persona_4",
-                "income_band": "₹15k–20k",
-                "borrowing_source": "No borrowing disclosed",
-                "borrowing_label": "Non-borrower",
-                "loan_interest_label": "Not interested",
-                "interested_in_loan": False,
-                "smartphone_user": True,
-                "has_bank_account": True,
-                "status": ProcessingStatus.COMPLETED.value,
-            },
-            {
-                "id": "sample-004",
-                "filename": "anita_cyclical_borrower.wav",
-                "transcript": (
-                    "Every month I take another loan from a local moneylender and the repayment pressure gives me tension. "
-                    "I have a smartphone and a bank account, but debt follows me again and again."
-                ),
-                "persona_id": "persona_5",
-                "income_band": "₹10k–15k",
-                "borrowing_source": "Informal lender",
-                "borrowing_label": "Borrower",
-                "loan_interest_label": "Interested",
-                "interested_in_loan": True,
-                "smartphone_user": True,
-                "has_bank_account": True,
-                "status": ProcessingStatus.COMPLETED.value,
-            },
-            {
-                "id": "sample-005",
-                "filename": "lata_employer_digital.wav",
-                "transcript": (
-                    "My employer helped me use a loan app on my smartphone. I have a bank account and I repay monthly after salary."
-                ),
-                "persona_id": "persona_1",
-                "income_band": "₹15k–20k",
-                "borrowing_source": "Digital / app",
-                "borrowing_label": "Borrower",
-                "loan_interest_label": "Interested",
-                "interested_in_loan": True,
-                "smartphone_user": True,
-                "has_bank_account": True,
-                "status": ProcessingStatus.COMPLETED.value,
-            },
-            {
-                "id": "sample-006",
-                "filename": "pooja_partial_access.wav",
-                "transcript": (
-                    "I have a smartphone and WhatsApp, but I share my sister's account because I still do not have my own bank account."
-                ),
-                "persona_id": "persona_3",
-                "income_band": "Below ₹10k",
-                "borrowing_source": "Family / friends",
-                "borrowing_label": "Borrower",
-                "loan_interest_label": "Fearful / uncertain",
-                "interested_in_loan": False,
-                "smartphone_user": True,
-                "has_bank_account": False,
-                "status": ProcessingStatus.PROCESSING.value,
-            },
-        ]
-        interviews: list[DashboardInterview] = []
-        for index, sample in enumerate(samples):
-            transcript = sample["transcript"]
-            persona_id = sample["persona_id"]
-            persona_name = PERSONA_LOOKUP[persona_id]
-            digital_access = self._digital_access_label(sample["smartphone_user"], sample["has_bank_account"])
-            extracted_json = {
-                "smartphone_usage": {
-                    "value": "has_smartphone" if sample["smartphone_user"] else "no_smartphone",
-                    "status": "observed",
-                    "evidence_quotes": [transcript.split(". ")[0]],
-                    "notes": "Sample-mode structured output.",
-                },
-                "bank_account_status": {
-                    "value": "has_bank_account" if sample["has_bank_account"] else "no_bank_account",
-                    "status": "observed",
-                    "evidence_quotes": [transcript.split(". ")[0]],
-                    "notes": "Sample-mode structured output.",
-                },
-                "income_range": {
-                    "value": sample["income_band"],
-                    "status": "observed",
-                    "evidence_quotes": [transcript.split(". ")[0]],
-                    "notes": "Sample-mode structured output.",
-                },
-                "borrowing_history": {
-                    "value": sample["borrowing_label"].lower().replace("-", "_"),
-                    "status": "observed",
-                    "evidence_quotes": [transcript],
-                    "notes": "Sample-mode structured output.",
-                },
-                "repayment_preference": {
-                    "value": "monthly" if "monthly" in transcript.lower() or "every month" in transcript.lower() else "unknown",
-                    "status": "observed" if "monthly" in transcript.lower() or "every month" in transcript.lower() else "unknown",
-                    "evidence_quotes": [transcript] if "month" in transcript.lower() else [],
-                    "notes": "Sample-mode structured output.",
-                },
-                "loan_interest": {
-                    "value": sample["loan_interest_label"].lower().replace(" / ", "_").replace(" ", "_"),
-                    "status": "observed" if sample["loan_interest_label"] != "Unknown" else "unknown",
-                    "evidence_quotes": [transcript],
-                    "notes": "Sample-mode structured output.",
-                },
-                "summary": {
-                    "value": transcript,
-                    "status": "observed",
-                    "evidence_quotes": [transcript],
-                    "notes": "Sample-mode structured output.",
-                },
-                "key_quotes": [transcript.split(". ")[0]],
-                "confidence_signals": {
-                    "observed_evidence": ["sample interview"],
-                    "missing_or_unknown": [],
-                },
-            }
-            interviews.append(
-                DashboardInterview(
-                    id=sample["id"],
-                    filename=sample["filename"],
-                    created_at=(now - timedelta(days=index)).date().isoformat(),
-                    status=sample["status"],
-                    summary=transcript,
-                    transcript=transcript,
-                    persona_id=persona_id,
-                    persona_name=persona_name,
-                    is_non_target=persona_id == "persona_3",
-                    income_band=sample["income_band"],
-                    borrowing_source=sample["borrowing_source"],
-                    borrowing_label=sample["borrowing_label"],
-                    is_borrower=sample["borrowing_label"] == "Borrower",
-                    loan_interest_label=sample["loan_interest_label"],
-                    interested_in_loan=sample["interested_in_loan"],
-                    smartphone_user=sample["smartphone_user"],
-                    has_bank_account=sample["has_bank_account"],
-                    digital_access=digital_access,
-                    extracted_json=extracted_json,
-                    evidence_quotes=(transcript.split(". ")[0],),
-                    audio_bytes=self._sample_audio_bytes(frequency=220 + index * 40),
-                )
-            )
-        return interviews
-
-    def _sample_audio_bytes(self, frequency: int) -> bytes:
-        sample_rate = 22050
-        duration_seconds = 1
-        amplitude = 12000
-        with BytesIO() as buffer:
-            with wave.open(buffer, "wb") as wav_file:
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(sample_rate)
-                frames = bytearray()
-                for step in range(sample_rate * duration_seconds):
-                    value = int(amplitude * math.sin(2 * math.pi * frequency * step / sample_rate))
-                    frames.extend(value.to_bytes(2, byteorder="little", signed=True))
-                wav_file.writeframes(bytes(frames))
-            return buffer.getvalue()
+    def _render_empty_state(self, title: str, *, sample_mode: bool, context: str) -> None:
+        sample_guidance = (
+            " Because sample mode is enabled, you can also intentionally load developer sample fixtures from the app layer."
+            if sample_mode
+            else " To inspect demo content, enable the developer-only sample-mode path instead of relying on implicit fallback data."
+        )
+        st.info(f"{title}. {context}{sample_guidance}")
 
     def _percent(self, numerator: int, denominator: int) -> str:
         if denominator == 0:

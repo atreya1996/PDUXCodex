@@ -125,6 +125,7 @@ def main() -> None:
         recent_interviews=dashboard_state["recent_interviews"],
         status_overview=dashboard_state["status_overview"],
         interview_detail_loader=app_service.get_interview_detail,
+        sample_mode=settings.features.use_sample_mode,
     )
 
 
