@@ -163,7 +163,13 @@ class OpenAITranscriptionAdapter:
 
 
 class TranscriptionService:
-    """Provider facade for audio/video transcription."""
+    """Provider facade for audio/video transcription.
+
+    Speaker-role labeling intentionally happens in structured analysis rather than
+    in the raw transcription payload so the pipeline can keep provider output
+    evidence-first, preserve plain transcript text, and apply weak filename or
+    interview metadata hints without fabricating unsupported tags.
+    """
 
     def __init__(
         self,

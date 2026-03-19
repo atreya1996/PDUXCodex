@@ -112,7 +112,11 @@ VALID_ANALYSIS_JSON = """
   "loan_interest": {"value": "fearful_or_uncertain", "status": "observed", "evidence_quotes": ["I am worried about scams"], "notes": "Trust barrier present."},
   "summary": {"value": "The participant uses WhatsApp, has a bank account, earns ₹12,000, and worries about scams.", "status": "observed", "evidence_quotes": ["I use WhatsApp every day", "I am worried about scams"], "notes": "Grounded in transcript."},
   "key_quotes": ["I use WhatsApp every day", "I am worried about scams"],
-  "confidence_signals": {"observed_evidence": ["trust barrier mentioned"], "missing_or_unknown": []}
+  "confidence_signals": {"observed_evidence": ["trust barrier mentioned"], "missing_or_unknown": []},
+  "segmented_dialogue": [
+    {"speaker_label": "participant", "utterance_text": "I use WhatsApp every day", "speaker_confidence": "medium", "speaker_uncertainty": "First-person phrasing suggests the participant is speaking."},
+    {"speaker_label": "participant", "utterance_text": "I am worried about scams", "speaker_confidence": "medium", "speaker_uncertainty": "First-person phrasing suggests the participant is speaking."}
+  ]
 }
 """.strip()
 
