@@ -22,6 +22,8 @@ FILTER_SESSION_KEYS = {
     "selected": "dashboard_selected_interview_id",
     "transcripts": "dashboard_transcript_edits",
     "json": "dashboard_json_edits",
+    "detail_message": "dashboard_detail_message",
+    "delete_confirm": "dashboard_delete_confirm",
 }
 
 
@@ -61,6 +63,8 @@ class DashboardRenderer:
         recent_interviews: list[DashboardInterviewRecord],
         status_overview: DashboardStatusOverview,
         interview_detail_loader: Callable[[str], DashboardInterviewRecord],
+        save_interview_edits: Callable[..., DashboardInterviewRecord] | None = None,
+        delete_interview: Callable[[str], bool] | None = None,
         sample_mode: bool = False,
     ) -> None:
         self._inject_styles()
@@ -82,7 +86,14 @@ class DashboardRenderer:
         with tabs[3]:
             self._render_interviews(filtered, sample_mode=sample_mode)
         with tabs[4]:
-            self._render_interview_detail(filtered, interviews, interview_detail_loader, sample_mode=sample_mode)
+            self._render_interview_detail(
+                filtered,
+                interviews,
+                interview_detail_loader,
+                save_interview_edits=save_interview_edits,
+                delete_interview=delete_interview,
+                sample_mode=sample_mode,
+            )
 
     def _initialize_session_state(self, interviews: list[DashboardInterview]) -> None:
         st.session_state.setdefault(FILTER_SESSION_KEYS["income"], [])
@@ -92,6 +103,8 @@ class DashboardRenderer:
         st.session_state.setdefault(FILTER_SESSION_KEYS["search"], "")
         st.session_state.setdefault(FILTER_SESSION_KEYS["transcripts"], {})
         st.session_state.setdefault(FILTER_SESSION_KEYS["json"], {})
+        st.session_state.setdefault(FILTER_SESSION_KEYS["detail_message"], None)
+        st.session_state.setdefault(FILTER_SESSION_KEYS["delete_confirm"], None)
 
         selected_key = FILTER_SESSION_KEYS["selected"]
         if interviews and not st.session_state.get(selected_key):
@@ -269,6 +282,8 @@ class DashboardRenderer:
         all_interviews: list[DashboardInterview],
         interview_detail_loader: Callable[[str], DashboardInterviewRecord],
         *,
+        save_interview_edits: Callable[..., DashboardInterviewRecord] | None,
+        delete_interview: Callable[[str], bool] | None,
         sample_mode: bool,
     ) -> None:
         st.markdown("### Interview detail")
@@ -293,8 +308,19 @@ class DashboardRenderer:
 
         transcript_edits: dict[str, str] = st.session_state[FILTER_SESSION_KEYS["transcripts"]]
         json_edits: dict[str, str] = st.session_state[FILTER_SESSION_KEYS["json"]]
+        original_json = json.dumps(selected.extracted_json, indent=2, ensure_ascii=False)
         transcript_edits.setdefault(selected.id, selected.transcript)
-        json_edits.setdefault(selected.id, json.dumps(selected.extracted_json, indent=2, ensure_ascii=False))
+        json_edits.setdefault(selected.id, original_json)
+
+        detail_message = st.session_state.get(FILTER_SESSION_KEYS["detail_message"])
+        if isinstance(detail_message, dict):
+            kind = detail_message.get("kind")
+            message = str(detail_message.get("message", "")).strip()
+            if kind == "success" and message:
+                st.success(message)
+            elif kind == "error" and message:
+                st.error(message)
+            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = None
 
         header_col, badge_col = st.columns([3, 1])
         with header_col:
@@ -347,6 +373,107 @@ class DashboardRenderer:
             label_visibility="collapsed",
         )
         json_edits[selected.id] = updated_json
+
+        transcript_changed = updated_transcript != selected.transcript
+        structured_json_changed = updated_json != original_json
+
+        action_col, delete_col = st.columns([1.2, 1], gap="medium")
+        with action_col:
+            save_disabled = save_interview_edits is None
+            if st.button(
+                "Save transcript + JSON",
+                key=f"save_interview_{selected.id}",
+                type="primary",
+                use_container_width=True,
+                disabled=save_disabled,
+            ):
+                try:
+                    save_interview_edits(
+                        selected.id,
+                        transcript=updated_transcript,
+                        extracted_json=updated_json,
+                        transcript_changed=transcript_changed,
+                        structured_json_changed=structured_json_changed,
+                    )
+                except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+                    st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                        "kind": "error",
+                        "message": f"Save failed: {exc}",
+                    }
+                else:
+                    transcript_edits.pop(selected.id, None)
+                    json_edits.pop(selected.id, None)
+                    st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+                    st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                        "kind": "success",
+                        "message": "Interview saved. Analysis, persona, and dashboard aggregates were refreshed from durable storage.",
+                    }
+                    st.rerun()
+            if save_disabled:
+                st.caption("Save is unavailable because no backend save handler was provided.")
+            elif not transcript_changed and not structured_json_changed:
+                st.caption("No unsaved transcript or JSON edits detected.")
+            else:
+                st.caption("Saving persists transcript edits, refreshes analysis/persona outputs, and reloads overview counts.")
+
+        with delete_col:
+            delete_disabled = delete_interview is None
+            if st.button(
+                "Delete interview",
+                key=f"delete_interview_{selected.id}",
+                use_container_width=True,
+                disabled=delete_disabled,
+            ):
+                st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = selected.id
+            if delete_disabled:
+                st.caption("Delete is unavailable because no backend delete handler was provided.")
+
+        if st.session_state.get(FILTER_SESSION_KEYS["delete_confirm"]) == selected.id and delete_interview is not None:
+            st.warning(
+                "Delete this interview from durable storage? This also removes linked structured responses and insights."
+            )
+            confirm_col, cancel_col = st.columns(2, gap="medium")
+            with confirm_col:
+                if st.button(
+                    "Confirm delete",
+                    key=f"confirm_delete_interview_{selected.id}",
+                    type="secondary",
+                    use_container_width=True,
+                ):
+                    try:
+                        deleted = delete_interview(selected.id)
+                    except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+                        st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                            "kind": "error",
+                            "message": f"Delete failed: {exc}",
+                        }
+                    else:
+                        if deleted:
+                            transcript_edits.pop(selected.id, None)
+                            json_edits.pop(selected.id, None)
+                            st.session_state[FILTER_SESSION_KEYS["selected"]] = self._next_selected_id(
+                                all_interviews,
+                                deleted_id=selected.id,
+                            )
+                            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                                "kind": "success",
+                                "message": "Interview deleted. Overview, cohort, and persona counts were refreshed from durable storage.",
+                            }
+                        else:
+                            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                                "kind": "error",
+                                "message": f"Interview {selected.id} could not be deleted because it no longer exists.",
+                            }
+                        st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+                        st.rerun()
+            with cancel_col:
+                if st.button(
+                    "Cancel delete",
+                    key=f"cancel_delete_interview_{selected.id}",
+                    use_container_width=True,
+                ):
+                    st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+                    st.rerun()
 
     def _render_filter_summary(
         self,
@@ -550,6 +677,12 @@ class DashboardRenderer:
         with col_action:
             if st.button("Open", key=f"open_interview_{interview.id}", use_container_width=True):
                 st.session_state[FILTER_SESSION_KEYS["selected"]] = interview.id
+
+    def _next_selected_id(self, interviews: list[DashboardInterview], *, deleted_id: str) -> str | None:
+        remaining_ids = [item.id for item in interviews if item.id != deleted_id]
+        if not remaining_ids:
+            return None
+        return remaining_ids[0]
 
     def _build_cohort_rows(self, interviews: list[DashboardInterview], attribute: str) -> list[tuple[str, int, str]]:
         counts = self._count_by(interviews, lambda item: getattr(item, attribute))
