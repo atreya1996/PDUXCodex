@@ -384,44 +384,87 @@ class DashboardRenderer:
         transcript_changed = updated_transcript != selected.transcript
         structured_json_changed = updated_json != original_json
 
-        action_col, delete_col = st.columns([1.2, 1], gap="medium")
-        with action_col:
-            save_disabled = save_interview_edits is None
+        transcript_col, json_col, save_all_col, delete_col = st.columns([1.1, 1.2, 1.1, 1], gap="medium")
+        with transcript_col:
+            transcript_save_disabled = save_interview_edits is None or not transcript_changed
             if st.button(
-                "Save transcript + JSON",
-                key=f"save_interview_{selected.id}",
+                "Save transcript",
+                key=f"save_transcript_{selected.id}",
                 type="primary",
                 use_container_width=True,
-                disabled=save_disabled,
+                disabled=transcript_save_disabled,
             ):
-                try:
-                    save_interview_edits(
-                        selected.id,
-                        transcript=updated_transcript,
-                        extracted_json=updated_json,
-                        transcript_changed=transcript_changed,
-                        structured_json_changed=structured_json_changed,
-                    )
-                except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
-                    st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                        "kind": "error",
-                        "message": f"Save failed: {exc}",
-                    }
-                else:
-                    transcript_edits.pop(selected.id, None)
-                    json_edits.pop(selected.id, None)
-                    st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
-                    st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                        "kind": "success",
-                        "message": "Interview saved. Analysis, persona, and dashboard aggregates were refreshed from durable storage.",
-                    }
-                    st.rerun()
-            if save_disabled:
-                st.caption("Save is unavailable because no backend save handler was provided.")
-            elif not transcript_changed and not structured_json_changed:
-                st.caption("No unsaved transcript or JSON edits detected.")
+                self._save_interview_detail_edits(
+                    interview_id=selected.id,
+                    transcript=updated_transcript,
+                    extracted_json=original_json,
+                    transcript_changed=True,
+                    structured_json_changed=False,
+                    save_interview_edits=save_interview_edits,
+                    transcript_edits=transcript_edits,
+                    json_edits=json_edits,
+                    success_message="Transcript saved. Downstream analysis, persona derivation, and dashboard views were refreshed from SQLite.",
+                )
+            if save_interview_edits is None:
+                st.caption("Transcript save is unavailable because no backend save handler was provided.")
+            elif not transcript_changed:
+                st.caption("No transcript edits to save.")
             else:
-                st.caption("Saving persists transcript edits, refreshes analysis/persona outputs, and reloads overview counts.")
+                st.caption("Saves only the transcript, then reruns analysis/persona and reloads dashboard summaries.")
+
+        with json_col:
+            json_save_disabled = save_interview_edits is None or not structured_json_changed
+            if st.button(
+                "Save structured JSON",
+                key=f"save_json_{selected.id}",
+                use_container_width=True,
+                disabled=json_save_disabled,
+            ):
+                self._save_interview_detail_edits(
+                    interview_id=selected.id,
+                    transcript=selected.transcript or "",
+                    extracted_json=updated_json,
+                    transcript_changed=False,
+                    structured_json_changed=True,
+                    save_interview_edits=save_interview_edits,
+                    transcript_edits=transcript_edits,
+                    json_edits=json_edits,
+                    success_message="Structured JSON saved. Persona outputs and dashboard summaries were refreshed from SQLite.",
+                )
+            if save_interview_edits is None:
+                st.caption("Structured JSON save is unavailable because no backend save handler was provided.")
+            elif not structured_json_changed:
+                st.caption("No structured JSON edits to save.")
+            else:
+                st.caption("Validates the JSON, persists it to SQLite, and reruns persona derivation from the edited values.")
+
+        with save_all_col:
+            save_all_disabled = save_interview_edits is None or (not transcript_changed and not structured_json_changed)
+            if st.button(
+                "Save all edits",
+                key=f"save_all_{selected.id}",
+                use_container_width=True,
+                disabled=save_all_disabled,
+            ):
+                self._save_interview_detail_edits(
+                    interview_id=selected.id,
+                    transcript=updated_transcript,
+                    extracted_json=updated_json,
+                    transcript_changed=transcript_changed,
+                    structured_json_changed=structured_json_changed,
+                    save_interview_edits=save_interview_edits,
+                    transcript_edits=transcript_edits,
+                    json_edits=json_edits,
+                    success_message="Transcript and structured JSON saved. Analysis, persona outputs, and dashboard summaries were refreshed from SQLite.",
+                )
+            if save_interview_edits is None:
+                st.caption("Save all is unavailable because no backend save handler was provided.")
+            elif not transcript_changed and not structured_json_changed:
+                st.caption("No unsaved interview detail edits detected.")
+            elif transcript_changed and structured_json_changed:
+                st.caption("Recommended when both transcript and JSON drafts changed, so both edits persist together.")
+            else:
+                st.caption("Saves whichever interview detail drafts are currently unsaved.")
 
         with delete_col:
             delete_disabled = delete_interview is None
@@ -481,6 +524,44 @@ class DashboardRenderer:
                 ):
                     st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
                     st.rerun()
+
+    def _save_interview_detail_edits(
+        self,
+        *,
+        interview_id: str,
+        transcript: str,
+        extracted_json: str,
+        transcript_changed: bool,
+        structured_json_changed: bool,
+        save_interview_edits: Callable[..., DashboardInterviewRecord] | None,
+        transcript_edits: dict[str, str],
+        json_edits: dict[str, str],
+        success_message: str,
+    ) -> None:
+        if save_interview_edits is None:
+            return
+        try:
+            save_interview_edits(
+                interview_id,
+                transcript=transcript,
+                extracted_json=extracted_json,
+                transcript_changed=transcript_changed,
+                structured_json_changed=structured_json_changed,
+            )
+        except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                "kind": "error",
+                "message": f"Save failed: {exc}",
+            }
+        else:
+            transcript_edits.pop(interview_id, None)
+            json_edits.pop(interview_id, None)
+            st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                "kind": "success",
+                "message": success_message,
+            }
+            st.rerun()
 
     def _render_filter_summary(
         self,

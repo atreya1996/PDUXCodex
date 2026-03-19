@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable, Iterable
 from typing import Any, TypeVar
 from uuid import uuid4
@@ -146,6 +147,8 @@ class PaydayPipeline:
             interview_id,
             transcript=transcript_text,
             status=ProcessingStatus.PROCESSING.value,
+            latest_stage=PipelineStage.ANALYSIS.value,
+            last_error=None,
         )
 
         try:
@@ -162,23 +165,34 @@ class PaydayPipeline:
             result.persona = self.classify_persona(transcript, analysis)
             result.status = ProcessingStatus.COMPLETED
             result.persisted = True
-            self._sync_result(result)
-            self._persist_analysis_outputs(result)
-            self.repository.update_interview(
+            self.repository.persist_reprocessed_interview(
                 interview_id,
                 transcript=transcript_text,
                 status=ProcessingStatus.COMPLETED.value,
+                latest_stage=result.current_stage.value,
+                last_error=None,
+                structured_response=self._structured_response_fields(result.analysis.structured_output),
+                insight={
+                    "summary": result.analysis.summary,
+                    "key_quotes": list(result.analysis.evidence_quotes),
+                    "persona": result.persona.persona_name,
+                    "confidence_score": self._confidence_score(result.analysis.structured_output),
+                },
             )
+            self.repository.save_result(result)
             return result
         except Exception as exc:
             result.status = ProcessingStatus.FAILED
+            result.last_error = str(exc)
             result.errors.append(str(exc))
-            self._sync_result(result)
             self.repository.update_interview(
                 interview_id,
                 transcript=transcript_text,
                 status=ProcessingStatus.FAILED.value,
+                latest_stage=result.current_stage.value,
+                last_error=str(exc),
             )
+            self.repository.save_result(result)
             raise
 
     def _process_item(self, item: BatchUploadItem) -> PipelineResult:
@@ -588,6 +602,59 @@ class PaydayPipeline:
         if value == "no_bank_account":
             return False
         return None
+
+    def _set_stage(
+        self,
+        result: PipelineResult,
+        *,
+        stage: PipelineStage,
+        status: ProcessingStatus | None = None,
+        message: str | None = None,
+    ) -> None:
+        result.current_stage = stage
+        if status is not None:
+            result.status = status
+        self._sync_result(result)
+        if message:
+            self._log_stage(message, result)
+
+    def _record_failure(
+        self,
+        result: PipelineResult,
+        *,
+        stage: PipelineStage,
+        error: str,
+        message: str = "pipeline stage failed",
+    ) -> None:
+        result.current_stage = stage
+        result.status = ProcessingStatus.FAILED
+        result.last_error = error
+        if error not in result.errors:
+            result.errors.append(error)
+        self._log_stage(message, result, error=error)
+        self._sync_result(result)
+
+    def _log_stage(
+        self,
+        message: str,
+        result: PipelineResult,
+        *,
+        attempts: int | None = None,
+        error: str | None = None,
+    ) -> None:
+        payload = {
+            "file_id": result.file_id,
+            "filename": result.filename,
+            "stage": result.current_stage.value,
+            "status": result.status.value,
+        }
+        if attempts is not None:
+            payload["attempts"] = attempts
+        if error is not None:
+            payload["error"] = error
+            logger.error("%s: %s", message, payload)
+            return
+        logger.info("%s: %s", message, payload)
 
     def _run_with_retries(self, stage: PipelineStage, operation: Callable[[], T]) -> tuple[T, int]:
         last_error: Exception | None = None
