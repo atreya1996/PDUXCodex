@@ -3,6 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from payday.analysis import (
+    DEFAULT_UNKNOWN_VALUE,
+    bank_account_user_from_analysis,
+    get_analysis_evidence_quotes,
+    get_analysis_value,
+    smartphone_user_from_analysis,
+)
 from payday.models import AnalysisResult, PersonaClassification, Transcript
 
 
@@ -56,14 +63,13 @@ class PersonaService:
         return list(PERSONAS.values())
 
     def classify(self, transcript: Transcript, analysis: AnalysisResult) -> PersonaClassification:
-        del transcript
         structured_output = analysis.structured_output or {}
 
         decisions = (
             self._persona_three_no_smartphone(structured_output),
             self._persona_three_no_bank_account(structured_output),
-            self._persona_five_high_stress_cyclical_borrower(structured_output),
-            self._persona_one_employer_dependent_digital_borrower(structured_output),
+            self._persona_five_high_stress_cyclical_borrower(transcript, structured_output),
+            self._persona_one_employer_dependent_digital_borrower(transcript, structured_output),
             self._persona_two_digitally_ready_but_fearful(structured_output),
             self._persona_four_self_reliant_non_borrower(structured_output),
         )
@@ -85,47 +91,60 @@ class PersonaService:
         )
 
     def _persona_three_no_smartphone(self, structured_output: dict[str, Any]) -> PersonaDecision | None:
-        smartphone = self._read_field(structured_output, "participant_profile.smartphone_user")
-        if smartphone.get("value") is False:
+        smartphone_user = smartphone_user_from_analysis(structured_output)
+        if smartphone_user is False:
             return PersonaDecision(
                 persona_key="persona_3",
-                rationale="Persona 3 override applied because smartphone_user is false.",
-                triggered_fields=("participant_profile.smartphone_user",),
-                evidence_quotes=self._evidence_tuple(smartphone),
+                rationale="Persona 3 override applied because smartphone_usage shows no smartphone.",
+                triggered_fields=("smartphone_usage",),
+                evidence_quotes=get_analysis_evidence_quotes(structured_output, "smartphone_usage")[:2],
                 is_non_target=True,
             )
         return None
 
     def _persona_three_no_bank_account(self, structured_output: dict[str, Any]) -> PersonaDecision | None:
-        bank_account = self._read_field(structured_output, "participant_profile.has_bank_account")
-        if bank_account.get("value") is False:
+        has_bank_account = bank_account_user_from_analysis(structured_output)
+        if has_bank_account is False:
             return PersonaDecision(
                 persona_key="persona_3",
-                rationale="Persona 3 override applied because has_bank_account is false.",
-                triggered_fields=("participant_profile.has_bank_account",),
-                evidence_quotes=self._evidence_tuple(bank_account),
+                rationale="Persona 3 override applied because bank_account_status shows no bank account.",
+                triggered_fields=("bank_account_status",),
+                evidence_quotes=get_analysis_evidence_quotes(structured_output, "bank_account_status")[:2],
                 is_non_target=True,
             )
         return None
 
     def _persona_one_employer_dependent_digital_borrower(
         self,
+        transcript: Transcript,
         structured_output: dict[str, Any],
     ) -> PersonaDecision | None:
-        employer_dependency = self._read_field(structured_output, "persona_signals.employer_dependency")
-        digital_borrowing = self._read_field(structured_output, "persona_signals.digital_borrowing")
-        if employer_dependency.get("value") is True and digital_borrowing.get("value") is True:
+        if smartphone_user_from_analysis(structured_output) is not True:
+            return None
+        if bank_account_user_from_analysis(structured_output) is not True:
+            return None
+
+        borrowing_history = get_analysis_value(structured_output, "borrowing_history")
+        lowered_transcript = transcript.text.lower()
+        mentions_employer = any(token in lowered_transcript for token in ("employer", "madam", "sir", "boss"))
+        if borrowing_history == "has_borrowed" and mentions_employer:
+            borrowing_quotes = list(get_analysis_evidence_quotes(structured_output, "borrowing_history"))
+            employer_quotes = [
+                sentence
+                for sentence in transcript.text.split(".")
+                if any(token in sentence.lower() for token in ("employer", "madam", "sir", "boss"))
+            ]
             return PersonaDecision(
                 persona_key="persona_1",
                 rationale=(
-                    "Persona 1 matched because the structured analysis shows both employer dependency "
-                    "and digital borrowing evidence."
+                    "Persona 1 matched because the participant has digital access, has borrowed, "
+                    "and the transcript ties borrowing context to the employer."
                 ),
                 triggered_fields=(
-                    "persona_signals.employer_dependency",
-                    "persona_signals.digital_borrowing",
+                    "borrowing_history",
+                    "smartphone_usage",
                 ),
-                evidence_quotes=self._combine_evidence(employer_dependency, digital_borrowing),
+                evidence_quotes=tuple((borrowing_quotes + [quote.strip() for quote in employer_quotes if quote.strip()])[:2]),
             )
         return None
 
@@ -133,20 +152,29 @@ class PersonaService:
         self,
         structured_output: dict[str, Any],
     ) -> PersonaDecision | None:
-        digital_readiness = self._read_field(structured_output, "persona_signals.digital_readiness")
-        trust_fear_barrier = self._read_field(structured_output, "persona_signals.trust_fear_barrier")
-        if digital_readiness.get("value") is True and trust_fear_barrier.get("value") is True:
+        if smartphone_user_from_analysis(structured_output) is not True:
+            return None
+        if bank_account_user_from_analysis(structured_output) is not True:
+            return None
+
+        loan_interest = get_analysis_value(structured_output, "loan_interest")
+        if loan_interest == "fearful_or_uncertain":
             return PersonaDecision(
                 persona_key="persona_2",
                 rationale=(
-                    "Persona 2 matched because the structured analysis shows digital readiness alongside "
-                    "trust or fear barriers."
+                    "Persona 2 matched because the participant is digitally in-scope and explicitly "
+                    "expresses trust or fear barriers about borrowing."
                 ),
                 triggered_fields=(
-                    "persona_signals.digital_readiness",
-                    "persona_signals.trust_fear_barrier",
+                    "smartphone_usage",
+                    "loan_interest",
                 ),
-                evidence_quotes=self._combine_evidence(digital_readiness, trust_fear_barrier),
+                evidence_quotes=tuple(
+                    (
+                        list(get_analysis_evidence_quotes(structured_output, "smartphone_usage"))
+                        + list(get_analysis_evidence_quotes(structured_output, "loan_interest"))
+                    )[:2]
+                ),
             )
         return None
 
@@ -154,37 +182,58 @@ class PersonaService:
         self,
         structured_output: dict[str, Any],
     ) -> PersonaDecision | None:
-        self_reliance = self._read_field(structured_output, "persona_signals.self_reliance_non_borrowing")
-        if self_reliance.get("value") is True:
+        borrowing_history = get_analysis_value(structured_output, "borrowing_history")
+        if borrowing_history == "has_not_borrowed_recently":
             return PersonaDecision(
                 persona_key="persona_4",
                 rationale=(
-                    "Persona 4 matched because the structured analysis shows self-reliance and explicit "
-                    "non-borrowing behavior."
+                    "Persona 4 matched because the participant explicitly reports not borrowing recently."
                 ),
-                triggered_fields=("persona_signals.self_reliance_non_borrowing",),
-                evidence_quotes=self._evidence_tuple(self_reliance),
+                triggered_fields=("borrowing_history",),
+                evidence_quotes=get_analysis_evidence_quotes(structured_output, "borrowing_history")[:2],
             )
         return None
 
     def _persona_five_high_stress_cyclical_borrower(
         self,
+        transcript: Transcript,
         structured_output: dict[str, Any],
     ) -> PersonaDecision | None:
-        cyclical_borrowing = self._read_field(structured_output, "persona_signals.cyclical_borrowing")
-        repayment_stress = self._read_field(structured_output, "persona_signals.repayment_stress")
-        if cyclical_borrowing.get("value") is True and repayment_stress.get("value") is True:
+        if smartphone_user_from_analysis(structured_output) is not True:
+            return None
+        if bank_account_user_from_analysis(structured_output) is not True:
+            return None
+
+        borrowing_history = get_analysis_value(structured_output, "borrowing_history")
+        repayment_preference = get_analysis_value(structured_output, "repayment_preference")
+        loan_interest = get_analysis_value(structured_output, "loan_interest")
+        lowered_transcript = transcript.text.lower()
+        stress_markers = ("pressure", "stress", "tension", "cycle", "again", "every month")
+        has_stress_evidence = any(marker in lowered_transcript for marker in stress_markers)
+
+        if (
+            borrowing_history == "has_borrowed"
+            and repayment_preference != DEFAULT_UNKNOWN_VALUE
+            and (loan_interest == "fearful_or_uncertain" or has_stress_evidence)
+        ):
             return PersonaDecision(
                 persona_key="persona_5",
                 rationale=(
-                    "Persona 5 matched because the structured analysis shows repeated borrowing together "
-                    "with repayment stress."
+                    "Persona 5 matched because the participant reports borrowing, a concrete repayment cadence, "
+                    "and stress or fear around the borrowing cycle."
                 ),
                 triggered_fields=(
-                    "persona_signals.cyclical_borrowing",
-                    "persona_signals.repayment_stress",
+                    "borrowing_history",
+                    "repayment_preference",
+                    "loan_interest",
                 ),
-                evidence_quotes=self._combine_evidence(cyclical_borrowing, repayment_stress),
+                evidence_quotes=tuple(
+                    (
+                        list(get_analysis_evidence_quotes(structured_output, "borrowing_history"))
+                        + list(get_analysis_evidence_quotes(structured_output, "repayment_preference"))
+                        + list(get_analysis_evidence_quotes(structured_output, "loan_interest"))
+                    )[:2]
+                ),
             )
         return None
 
@@ -212,29 +261,3 @@ class PersonaService:
             explanation_payload=explanation_payload,
             is_non_target=decision.is_non_target,
         )
-
-    def _read_field(self, data: dict[str, Any], dotted_path: str) -> dict[str, Any]:
-        current: Any = data
-        for key in dotted_path.split("."):
-            if not isinstance(current, dict):
-                return {"field": dotted_path, "value": None, "evidence": []}
-            current = current.get(key)
-        if isinstance(current, dict):
-            return {
-                "field": current.get("field", dotted_path),
-                "value": current.get("value"),
-                "evidence": current.get("evidence", []),
-            }
-        return {"field": dotted_path, "value": current, "evidence": []}
-
-    def _evidence_tuple(self, field_payload: dict[str, Any]) -> tuple[str, ...]:
-        return tuple(str(item) for item in field_payload.get("evidence", []) if item)[:2]
-
-    def _combine_evidence(self, *field_payloads: dict[str, Any]) -> tuple[str, ...]:
-        evidence: list[str] = []
-        for payload in field_payloads:
-            for item in payload.get("evidence", []):
-                text = str(item)
-                if text and text not in evidence:
-                    evidence.append(text)
-        return tuple(evidence[:2])
