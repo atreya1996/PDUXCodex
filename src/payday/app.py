@@ -9,6 +9,8 @@ from payday.models import BatchUploadItem, ProcessingStatus
 from payday.service import PaydayAppService
 from payday.upload import SUPPORTED_UPLOAD_EXTENSIONS
 
+REFRESH_STATUS_FLAG = "dashboard_status_reloaded"
+
 
 @st.cache_resource
 def build_app_service() -> tuple[PaydayAppService, Settings]:
@@ -16,6 +18,14 @@ def build_app_service() -> tuple[PaydayAppService, Settings]:
     get_settings.cache_clear()
     settings = get_settings()
     return PaydayAppService(settings), settings
+
+
+def load_dashboard_state(app_service: PaydayAppService) -> dict[str, object]:
+    return {
+        "cached_results": app_service.list_results(),
+        "recent_interviews": app_service.list_recent_interviews(),
+        "status_overview": app_service.get_status_overview(),
+    }
 
 
 def main() -> None:
@@ -58,6 +68,13 @@ def main() -> None:
             "transcription_provider": settings.transcription.provider,
         }
     )
+
+    st.sidebar.caption("Reload the latest durable interview rows from SQLite after a rerun or batch completion.")
+    if st.sidebar.button("Refresh status", use_container_width=True):
+        st.session_state[REFRESH_STATUS_FLAG] = True
+        st.rerun()
+    if st.session_state.pop(REFRESH_STATUS_FLAG, False):
+        st.sidebar.success("Reloaded durable interview statuses from SQLite.")
 
     process_disabled = not settings.features.enable_analysis or upload_count == 0
     if st.sidebar.button("Process batch", type="primary", use_container_width=True, disabled=process_disabled):
@@ -102,10 +119,11 @@ def main() -> None:
             "Analysis is disabled by feature flag. The dashboard continues to show durable SQLite-backed interviews plus any current-session cache."
         )
 
+    dashboard_state = load_dashboard_state(app_service)
     dashboard.render(
-        cached_results=app_service.list_results(),
-        recent_interviews=app_service.list_recent_interviews(),
-        status_overview=app_service.get_status_overview(),
+        cached_results=dashboard_state["cached_results"],
+        recent_interviews=dashboard_state["recent_interviews"],
+        status_overview=dashboard_state["status_overview"],
         interview_detail_loader=app_service.get_interview_detail,
     )
 

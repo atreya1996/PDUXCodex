@@ -7,15 +7,7 @@ import pytest
 
 from payday.analysis import AnalysisService, OpenAIAnalysisAdapter
 from payday.config import DatabaseSettings, FeatureFlags, LLMSettings, Settings, SupabaseSettings, TranscriptionSettings
-from payday.models import (
-    AnalysisResult,
-    BatchUploadItem,
-    PipelineResult,
-    PipelineStage,
-    ProcessingStatus,
-    Transcript,
-    UploadedAsset,
-)
+from payday.models import AnalysisResult, BatchUploadItem, PipelineResult, PipelineStage, ProcessingStatus, Transcript, UploadedAsset
 from payday.personas import PersonaService
 from payday.repository import PaydayRepository
 from payday.service import PaydayAppService
@@ -566,6 +558,51 @@ def test_app_service_uses_sqlite_for_durable_dashboard_reads(tmp_path) -> None:
     assert recent[0].id == result.file_id
     assert detail.summary is not None
     assert detail.filename == "durable.wav"
+
+
+def test_batch_uploads_persist_mixed_statuses_for_durable_dashboard_refresh(tmp_path) -> None:
+    database_path = str(tmp_path / "payday-batch-dashboard.db")
+    service = PaydayAppService(build_settings(database_path))
+    service.pipeline.transcription_service = FlakyTranscriptionService(build_settings().transcription)
+
+    batch_result = service.process_batch_uploads(
+        [
+            BatchUploadItem(
+                filename="success-1.wav",
+                content_type="audio/wav",
+                data=b"I use WhatsApp and my bank account is active.",
+            ),
+            BatchUploadItem(
+                filename="fail.wav",
+                content_type="audio/wav",
+                data=b"This file should fail transcription.",
+            ),
+            BatchUploadItem(
+                filename="success-2.wav",
+                content_type="audio/wav",
+                data=b"I have a smartphone, a bank account, and I avoid loans.",
+            ),
+        ]
+    )
+
+    assert batch_result.completed_count == 2
+    assert batch_result.failed_count == 1
+
+    refreshed_service = PaydayAppService(build_settings(database_path))
+    refreshed_recent = refreshed_service.list_recent_interviews()
+    refreshed_overview = refreshed_service.get_status_overview()
+
+    assert refreshed_service.list_results() == []
+    assert {record.filename: record.status for record in refreshed_recent} == {
+        "success-2.wav": ProcessingStatus.COMPLETED.value,
+        "fail.wav": ProcessingStatus.FAILED.value,
+        "success-1.wav": ProcessingStatus.COMPLETED.value,
+    }
+    assert refreshed_overview.total_interviews == 3
+    assert refreshed_overview.status_counts == {
+        ProcessingStatus.COMPLETED.value: 2,
+        ProcessingStatus.FAILED.value: 1,
+    }
 
 
 def test_storage_service_builds_predictable_audio_paths() -> None:
