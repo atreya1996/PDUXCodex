@@ -49,7 +49,7 @@ sql/                           # Database schema and migrations
 - The pipeline is designed so each interview can succeed or fail independently.
 - Provider settings are injected through `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`, `TRANSCRIPTION_PROVIDER`, `TRANSCRIPTION_MODEL`, and `TRANSCRIPTION_API_KEY` instead of being hard-coded in the UI.
 - Sample mode lets developers exercise the end-to-end flow without live APIs or external credentials.
-- Live mode now validates provider selection at startup and fails fast with a clear error if required analysis or transcription credentials are missing.
+- Live mode now runs a single startup validation pass for provider selection and credentials, then fails fast with field-specific errors if `LLM_API_KEY`, `TRANSCRIPTION_API_KEY`, or a provider name is invalid.
 - The current implementation is still an MVP scaffold: provider factories are in place for OpenAI-first live integrations, and the analysis branch already reserves a clean extension point for Anthropic later.
 
 ## Required environment variables
@@ -129,7 +129,7 @@ LLM_MODEL=gpt-4.1-mini
 LLM_API_KEY=your-key
 ```
 
-Use sample mode if you do not want a live LLM yet. In sample mode, no external credentials are required. In live mode, the app validates `LLM_API_KEY` during startup. The analysis layer is abstracted behind a provider factory so OpenAI can be implemented first and Anthropic can be added later without changing the dashboard or pipeline call sites.
+Use sample mode if you do not want a live LLM yet. In sample mode, no external credentials are required. In live mode, startup validation rejects missing `LLM_API_KEY` with an explicit `LLM_API_KEY is required ...` message and also rejects unsupported `LLM_PROVIDER` values before the app service is constructed. The analysis layer is abstracted behind a provider factory so OpenAI can be implemented first and Anthropic can be added later without changing the dashboard or pipeline call sites.
 
 ### Transcription provider selection
 
@@ -141,7 +141,7 @@ TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe
 TRANSCRIPTION_API_KEY=your-key
 ```
 
-When `PAYDAY_USE_SAMPLE_MODE=true`, the mock transcription flow reads uploaded file bytes as text when possible and does not require `TRANSCRIPTION_API_KEY`. That means the `.txt` files in `sample_data/mock_uploads/` can be uploaded directly to demonstrate the dashboard without any live transcription integration. When `PAYDAY_USE_SAMPLE_MODE=false`, the app validates `TRANSCRIPTION_API_KEY` during startup.
+When `PAYDAY_USE_SAMPLE_MODE=true`, the mock transcription flow reads uploaded file bytes as text when possible and does not require `TRANSCRIPTION_API_KEY`. That means the `.txt` files in `sample_data/mock_uploads/` can be uploaded directly to demonstrate the dashboard without any live transcription integration. When `PAYDAY_USE_SAMPLE_MODE=false`, the same startup validation path rejects missing `TRANSCRIPTION_API_KEY` with an explicit `TRANSCRIPTION_API_KEY is required ...` message and also rejects unsupported `TRANSCRIPTION_PROVIDER` values before the app service is constructed.
 
 ## How to run Streamlit locally
 
