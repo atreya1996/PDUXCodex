@@ -149,3 +149,84 @@ renderer.render(
     assert not any("High-Stress Cyclical Borrower" in value for value in markdown_values)
     assert not any("WhatsApp every day" in value for value in markdown_values)
     assert not any("Open" == element.label for element in app.button)
+
+
+def test_dashboard_interview_selection_shows_inline_detail_and_syncs_detail_tab() -> None:
+    script = '''
+from payday.dashboard.views import DashboardRenderer
+from payday.models import ProcessingStatus
+from payday.repository import DashboardInterviewRecord, DashboardStatusOverview
+
+records = [
+    DashboardInterviewRecord(
+        id="interview-1",
+        audio_url="audio/interview-1/first.wav",
+        filename="first.wav",
+        transcript="First transcript with evidence.",
+        status=ProcessingStatus.COMPLETED.value,
+        latest_stage="analysis",
+        last_error=None,
+        created_at="2026-03-18T10:00:00+00:00",
+        smartphone_user=True,
+        has_bank_account=True,
+        income_range="₹10k–15k",
+        borrowing_history="has_borrowed",
+        repayment_preference="monthly",
+        loan_interest="interested",
+        summary="First summary",
+        key_quotes=["First quote"],
+        persona="Digitally Ready but Fearful",
+        confidence_score=0.9,
+    ),
+    DashboardInterviewRecord(
+        id="interview-2",
+        audio_url="audio/interview-2/second.wav",
+        filename="second.wav",
+        transcript="Second transcript with better evidence for the inline preview.",
+        status=ProcessingStatus.COMPLETED.value,
+        latest_stage="analysis",
+        last_error=None,
+        created_at="2026-03-18T11:00:00+00:00",
+        smartphone_user=True,
+        has_bank_account=True,
+        income_range="₹15k–20k",
+        borrowing_history="has_borrowed",
+        repayment_preference="weekly",
+        loan_interest="interested",
+        summary="Second summary",
+        key_quotes=["Second quote"],
+        persona="High-Stress Cyclical Borrower",
+        confidence_score=0.95,
+    ),
+]
+
+renderer = DashboardRenderer()
+renderer.render(
+    cached_results=[],
+    recent_interviews=records,
+    status_overview=DashboardStatusOverview(
+        total_interviews=2,
+        status_counts={ProcessingStatus.COMPLETED.value: 2},
+    ),
+    interview_detail_loader=lambda interview_id: next(record for record in records if record.id == interview_id),
+    sample_mode=False,
+)
+'''
+
+    app = AppTest.from_string(script)
+    app.run(timeout=10)
+
+    select_button = next(button for button in app.button if button.key == "select_interview_interview-2")
+    select_button.click()
+    app.run(timeout=10)
+
+    success_values = [element.value for element in app.success]
+    info_values = [element.value for element in app.info]
+    markdown_values = [element.value for element in app.markdown]
+
+    assert any("Showing inline detail for second.wav." in value for value in success_values)
+    assert any(
+        "Interview selection synced from the Interviews tab: second.wav is now active in Interview Detail." in value
+        for value in info_values
+    )
+    assert any("#### second.wav" in value for value in markdown_values)

@@ -24,6 +24,7 @@ FILTER_SESSION_KEYS = {
     "json": "dashboard_json_edits",
     "detail_message": "dashboard_detail_message",
     "delete_confirm": "dashboard_delete_confirm",
+    "selection_notice": "dashboard_selection_notice",
 }
 
 
@@ -105,6 +106,7 @@ class DashboardRenderer:
         st.session_state.setdefault(FILTER_SESSION_KEYS["json"], {})
         st.session_state.setdefault(FILTER_SESSION_KEYS["detail_message"], None)
         st.session_state.setdefault(FILTER_SESSION_KEYS["delete_confirm"], None)
+        st.session_state.setdefault(FILTER_SESSION_KEYS["selection_notice"], None)
 
         selected_key = FILTER_SESSION_KEYS["selected"]
         if interviews and not st.session_state.get(selected_key):
@@ -265,6 +267,7 @@ class DashboardRenderer:
 
     def _render_interviews(self, filtered: list[DashboardInterview], *, sample_mode: bool) -> None:
         st.markdown("### Searchable interview list")
+        st.caption("Click an interview card to open an inline preview immediately. The Interview Detail tab stays synced to the same selection.")
         if not filtered:
             self._render_empty_state(
                 "No interview cards yet",
@@ -273,8 +276,10 @@ class DashboardRenderer:
             )
             return
 
+        selected_id = st.session_state.get(FILTER_SESSION_KEYS["selected"])
         for interview in filtered:
-            self._render_interview_row(interview)
+            if self._render_interview_row(interview, selected_id=selected_id):
+                selected_id = interview.id
 
     def _render_interview_detail(
         self,
@@ -321,6 +326,10 @@ class DashboardRenderer:
             elif kind == "error" and message:
                 st.error(message)
             st.session_state[FILTER_SESSION_KEYS["detail_message"]] = None
+
+        selection_notice = st.session_state.get(FILTER_SESSION_KEYS["selection_notice"])
+        if selection_notice == selected.id:
+            st.info(f"Interview selection synced from the Interviews tab: {selected.filename} is now active in Interview Detail.")
 
         header_col, badge_col = st.columns([3, 1])
         with header_col:
@@ -650,18 +659,21 @@ class DashboardRenderer:
             unsafe_allow_html=True,
         )
 
-    def _render_interview_row(self, interview: DashboardInterview) -> None:
-        col_main, col_meta, col_action = st.columns([3.2, 1.4, 0.9], gap="medium")
+    def _render_interview_row(self, interview: DashboardInterview, *, selected_id: str | None) -> bool:
+        button_label = (
+            f"**{interview.filename}**  \n"
+            f"{self._truncate_text(interview.summary, limit=140)}  \n"
+            f"Borrowing: {interview.borrowing_source} · Income: {interview.income_band}"
+        )
+        row_selected = interview.id == selected_id
+
+        col_main, col_meta = st.columns([3.2, 1.4], gap="medium")
         with col_main:
-            st.markdown(
-                f"""
-                <div class='pd-card interview-row'>
-                    <div class='interview-title'>{interview.filename}</div>
-                    <div class='interview-summary'>{interview.summary}</div>
-                    <div class='interview-meta'>Borrowing: {interview.borrowing_source} · Income: {interview.income_band}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
+            clicked = st.button(
+                button_label,
+                key=f"select_interview_{interview.id}",
+                use_container_width=True,
+                type="primary" if row_selected else "secondary",
             )
         with col_meta:
             st.markdown(
@@ -674,9 +686,44 @@ class DashboardRenderer:
                 """,
                 unsafe_allow_html=True,
             )
-        with col_action:
-            if st.button("Open", key=f"open_interview_{interview.id}", use_container_width=True):
-                st.session_state[FILTER_SESSION_KEYS["selected"]] = interview.id
+
+        if clicked:
+            st.session_state[FILTER_SESSION_KEYS["selected"]] = interview.id
+            st.session_state[FILTER_SESSION_KEYS["selection_notice"]] = interview.id
+            row_selected = True
+
+        if row_selected:
+            self._render_inline_interview_detail(interview)
+
+        return clicked
+
+    def _render_inline_interview_detail(self, interview: DashboardInterview) -> None:
+        st.success(f"Showing inline detail for {interview.filename}. The Interview Detail tab was updated to this selection.")
+
+        quote_markup = "".join(
+            f"<li>{quote}</li>" for quote in interview.evidence_quotes[:3]
+        ) or "<li>No direct quote captured yet.</li>"
+        transcript_preview = self._truncate_text(interview.transcript, limit=320)
+        st.markdown(
+            f"""
+            <div class='pd-card interview-detail-inline'>
+                <div class='interview-detail-inline-header'>Selected interview snapshot</div>
+                <div class='interview-meta'>Interview ID: {interview.id} · Persona: {interview.persona_name} · Status: {interview.status}</div>
+                <div class='interview-summary'>{interview.summary}</div>
+                <div class='interview-inline-grid'>
+                    <div>
+                        <div class='interview-inline-label'>Evidence quotes</div>
+                        <ul class='interview-inline-list'>{quote_markup}</ul>
+                    </div>
+                    <div>
+                        <div class='interview-inline-label'>Transcript preview</div>
+                        <div class='interview-inline-preview'>{transcript_preview}</div>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     def _next_selected_id(self, interviews: list[DashboardInterview], *, deleted_id: str) -> str | None:
         remaining_ids = [item.id for item in interviews if item.id != deleted_id]
@@ -1045,7 +1092,7 @@ class DashboardRenderer:
                 color: #0f172a;
                 margin-bottom: 0.2rem;
             }
-            .persona-label, .interview-title {
+            .persona-label, .interview-title, .interview-detail-inline-header {
                 font-size: 1.1rem;
                 font-weight: 650;
                 color: #0f172a;
@@ -1055,6 +1102,32 @@ class DashboardRenderer:
                 font-size: 1rem;
                 line-height: 1.6;
                 color: #1e293b;
+            }
+            .interview-detail-inline {
+                margin: 0.5rem 0 1.25rem 0;
+                border: 1px solid rgba(79, 124, 255, 0.18);
+                background: linear-gradient(180deg, rgba(239, 246, 255, 0.95), rgba(255, 255, 255, 1));
+            }
+            .interview-inline-grid {
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 1rem;
+                margin-top: 0.9rem;
+            }
+            .interview-inline-label {
+                font-size: 0.95rem;
+                font-weight: 700;
+                color: #1d4ed8;
+                margin-bottom: 0.45rem;
+            }
+            .interview-inline-list {
+                margin: 0;
+                padding-left: 1.2rem;
+                color: #1e293b;
+            }
+            .interview-inline-preview {
+                color: #1e293b;
+                line-height: 1.6;
             }
             .pd-table {
                 width: 100%;
