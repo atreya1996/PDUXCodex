@@ -135,11 +135,26 @@ def build_sample_interviews(
                 "evidence_quotes": [transcript.split(". ")[0]],
                 "notes": "Sample-mode structured output.",
             },
-            "income_range": {
+            "per_household_earnings": {
+                "value": "unknown",
+                "status": "unknown",
+                "evidence_quotes": [],
+                "notes": "Sample-mode structured output.",
+                "evidence_type": "unknown",
+            },
+            "participant_personal_monthly_income": {
                 "value": sample["income_band"],
                 "status": "observed",
                 "evidence_quotes": [transcript.split(". ")[0]],
                 "notes": "Sample-mode structured output.",
+                "evidence_type": "direct",
+            },
+            "total_household_monthly_income": {
+                "value": "unknown",
+                "status": "unknown",
+                "evidence_quotes": [],
+                "notes": "Sample-mode structured output.",
+                "evidence_type": "unknown",
             },
             "borrowing_history": {
                 "value": sample["borrowing_label"].lower().replace("-", "_"),

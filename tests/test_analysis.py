@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -64,11 +65,26 @@ VALID_ANALYSIS_PAYLOAD = {
         "evidence_quotes": ["My bank account is active"],
         "notes": "Directly stated.",
     },
-    "income_range": {
+    "per_household_earnings": {
+        "value": "unknown",
+        "status": "unknown",
+        "evidence_quotes": [],
+        "notes": "No per-household quote.",
+        "evidence_type": "unknown",
+    },
+    "participant_personal_monthly_income": {
         "value": "₹12,000",
         "status": "observed",
         "evidence_quotes": ["I earn ₹12,000 per month"],
         "notes": "Directly stated.",
+        "evidence_type": "direct",
+    },
+    "total_household_monthly_income": {
+        "value": "unknown",
+        "status": "unknown",
+        "evidence_quotes": [],
+        "notes": "No household total quote.",
+        "evidence_type": "unknown",
     },
     "borrowing_history": {
         "value": "has_borrowed",
@@ -168,6 +184,27 @@ def test_openai_analysis_adapter_surfaces_provider_errors() -> None:
         service.analyze(build_transcript())
 
     assert transport.calls == 1
+
+
+INCOME_CASE_FIXTURES = json.loads(Path("tests/fixtures/income_analysis_cases.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("case", INCOME_CASE_FIXTURES, ids=lambda case: case["name"])
+def test_heuristic_analysis_separates_income_fields(case: dict[str, object]) -> None:
+    service = AnalysisService()
+    transcript = Transcript(text=str(case["transcript"]), provider="test-transcription", model="test-model")
+
+    result = service.analyze(transcript)
+
+    expected = case["expected"]
+    assert isinstance(expected, dict)
+    for field_name, field_expected in expected.items():
+        field = result.structured_output[field_name]
+        assert field["value"] == field_expected["value"]
+        assert field["status"] == field_expected["status"]
+        assert field["evidence_type"] == field_expected["evidence_type"]
+        if field["status"] == "observed":
+            assert field["evidence_quotes"]
 
 
 def test_analysis_service_applies_defaults_and_tracks_missing_values() -> None:

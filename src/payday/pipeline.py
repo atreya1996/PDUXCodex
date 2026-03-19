@@ -336,7 +336,11 @@ class PaydayPipeline:
                 false_value=BANK_ACCOUNT_NO_VALUE,
                 fallback=payload.get("bank_account_status"),
             ),
-            "income_range": self._field_from_unknownable(payload.get("income_range")),
+            "per_household_earnings": self._field_from_unknownable(payload.get("per_household_earnings")),
+            "participant_personal_monthly_income": self._field_from_unknownable(
+                payload.get("participant_personal_monthly_income") or payload.get("income_range")
+            ),
+            "total_household_monthly_income": self._field_from_unknownable(payload.get("total_household_monthly_income")),
             "borrowing_history": self._field_from_unknownable(payload.get("borrowing_history")),
             "repayment_preference": self._field_from_unknownable(payload.get("repayment_preference")),
             "loan_interest": self._field_from_unknownable(payload.get("loan_interest")),
@@ -405,27 +409,22 @@ class PaydayPipeline:
 
     def _dashboard_payload_from_record(self, detail: DashboardInterviewRecord) -> dict[str, Any]:
         return {
-            "smartphone_usage": self._field_from_bool(
-                value=detail.smartphone_user,
-                true_value=SMARTPHONE_HAS_VALUE,
-                false_value=SMARTPHONE_NO_VALUE,
-                fallback=None,
-            ),
-            "bank_account_status": self._field_from_bool(
-                value=detail.has_bank_account,
-                true_value=BANK_ACCOUNT_HAS_VALUE,
-                false_value=BANK_ACCOUNT_NO_VALUE,
-                fallback=None,
-            ),
-            "income_range": self._field_from_unknownable(detail.income_range),
-            "borrowing_history": self._field_from_unknownable(detail.borrowing_history),
-            "repayment_preference": self._field_from_unknownable(detail.repayment_preference),
-            "loan_interest": self._field_from_unknownable(detail.loan_interest),
-            "summary": self._field_from_unknownable(detail.summary),
-            "key_quotes": list(detail.key_quotes),
-            "confidence_signals": {
-                "observed_evidence": [],
-                "missing_or_unknown": [],
+            "audio_url": detail.audio_url,
+            "participant_profile": {
+                "smartphone_user": {"value": detail.smartphone_user},
+                "has_bank_account": {"value": detail.has_bank_account},
+            },
+            "per_household_earnings": {"value": detail.per_household_earnings},
+            "participant_personal_monthly_income": {"value": detail.participant_personal_monthly_income or detail.income_range},
+            "total_household_monthly_income": {"value": detail.total_household_monthly_income},
+            "borrowing_history": {"value": detail.borrowing_history},
+            "repayment_preference": {"value": detail.repayment_preference},
+            "loan_interest": {"value": detail.loan_interest},
+            "insight": {
+                "summary": detail.summary,
+                "persona": detail.persona,
+                "confidence_score": detail.confidence_score,
+                "key_quotes": detail.key_quotes,
             },
         }
 
@@ -543,9 +542,12 @@ class PaydayPipeline:
 
     def _structured_response_fields(self, structured_output: dict[str, Any]) -> dict[str, Any]:
         return {
-            "smartphone_user": smartphone_user_from_analysis(structured_output),
-            "has_bank_account": bank_account_user_from_analysis(structured_output),
-            "income_range": self._read_value(structured_output, "income_range"),
+            "smartphone_user": smartphone_user,
+            "has_bank_account": has_bank_account,
+            "per_household_earnings": self._read_value(structured_output, "per_household_earnings"),
+            "participant_personal_monthly_income": self._read_value(structured_output, "participant_personal_monthly_income"),
+            "total_household_monthly_income": self._read_value(structured_output, "total_household_monthly_income"),
+            "income_range": self._preferred_dashboard_income(structured_output),
             "borrowing_history": self._read_value(structured_output, "borrowing_history"),
             "repayment_preference": self._read_value(structured_output, "repayment_preference"),
             "loan_interest": self._read_value(structured_output, "loan_interest"),
@@ -563,7 +565,9 @@ class PaydayPipeline:
         candidate_fields = (
             "smartphone_usage",
             "bank_account_status",
-            "income_range",
+            "per_household_earnings",
+            "participant_personal_monthly_income",
+            "total_household_monthly_income",
             "borrowing_history",
             "repayment_preference",
             "loan_interest",
@@ -581,11 +585,86 @@ class PaydayPipeline:
             return 0.0
         return round(observed / total, 2)
 
+
+    def _preferred_dashboard_income(self, structured_output: dict[str, Any]) -> str | None:
+        for field_name in (
+            "participant_personal_monthly_income",
+            "total_household_monthly_income",
+            "income_range",
+        ):
+            value = self._read_value(structured_output, field_name)
+            if value is not None:
+                return value
+        return None
+
     def _read_value(self, structured_output: dict[str, Any], key: str) -> str | None:
         normalized = get_analysis_value(structured_output, key).strip()
         if not normalized or normalized == DEFAULT_UNKNOWN_VALUE:
             return None
         return normalized
+
+    def _read_bool(self, structured_output: dict[str, Any], dotted_path: str) -> bool | None:
+        current: Any = structured_output
+        for key in dotted_path.split("."):
+            if not isinstance(current, dict):
+                return None
+            current = current.get(key)
+        if isinstance(current, dict) and isinstance(current.get("value"), bool):
+            return current["value"]
+        if isinstance(current, bool):
+            return current
+        return None
+
+    def _smartphone_bool_from_flat(self, structured_output: dict[str, Any]) -> bool | None:
+        value = self._read_value(structured_output, "smartphone_usage")
+        if value == "has_smartphone":
+            return True
+        if value == "no_smartphone":
+            return False
+        return None
+
+    def _bank_account_bool_from_flat(self, structured_output: dict[str, Any]) -> bool | None:
+        value = self._read_value(structured_output, "bank_account_status")
+        if value == "has_bank_account":
+            return True
+        if value == "no_bank_account":
+            return False
+        return None
+
+
+    def _set_stage(
+        self,
+        result: PipelineResult,
+        *,
+        stage: PipelineStage,
+        status: ProcessingStatus | None = None,
+        message: str | None = None,
+    ) -> None:
+        result.current_stage = stage
+        if status is not None:
+            result.status = status
+        if message:
+            logger.info("%s: %s (%s)", result.file_id, message, stage.value)
+
+    def _record_failure(
+        self,
+        result: PipelineResult,
+        *,
+        stage: PipelineStage,
+        error: str,
+        message: str | None = None,
+    ) -> None:
+        result.current_stage = stage
+        result.status = ProcessingStatus.FAILED
+        result.last_error = error
+        if not result.errors or result.errors[-1] != error:
+            result.errors.append(error)
+        logger.error("%s: %s (%s)", result.file_id, message or error, stage.value)
+        self._sync_result(result)
+
+    def _log_stage(self, message: str, result: PipelineResult, *, attempts: int | None = None) -> None:
+        suffix = f" after {attempts} attempt(s)" if attempts is not None else ""
+        logger.info("%s: %s%s", result.file_id, message, suffix)
 
     def _run_with_retries(self, stage: PipelineStage, operation: Callable[[], T]) -> tuple[T, int]:
         last_error: Exception | None = None

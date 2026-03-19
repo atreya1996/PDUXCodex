@@ -105,3 +105,13 @@ class PaydayAppService:
 
     def delete_interview(self, interview_id: str) -> bool:
         return self.repository.delete_interview(interview_id)
+
+    def runtime_summary(self) -> dict[str, object]:
+        return {
+            "sample_mode": self.settings.features.use_sample_mode,
+            "analysis_provider": self.pipeline.analysis_service.adapter.provider_name,
+            "analysis_model": self.pipeline.analysis_service.adapter.model_name,
+            "transcription_provider": self.pipeline.transcription_service.settings.provider,
+            "transcription_model": self.pipeline.transcription_service.settings.model,
+            "database_path": self.repository.database_path,
+        }

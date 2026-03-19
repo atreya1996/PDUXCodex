@@ -905,7 +905,7 @@ class DashboardRenderer:
             persona_id=persona_id,
             persona_name=persona_name,
             is_non_target=bool(result.persona.is_non_target) if result.persona is not None else False,
-            income_band=self._display_value(get_analysis_value(structured, "income_range")),
+            income_band=self._preferred_income_band(structured),
             borrowing_source=self._borrowing_source_label(transcript, borrowing_value),
             borrowing_label="Borrower" if self._is_borrower_value(borrowing_value, transcript) else "Non-borrower",
             is_borrower=self._is_borrower_value(borrowing_value, transcript),
@@ -927,7 +927,30 @@ class DashboardRenderer:
         persona_id = self._persona_id_from_name(persona_name)
         borrowing_value = record.borrowing_history or "unknown"
         loan_interest_value = record.loan_interest or "unknown"
-        extracted_json = self._repository_analysis_json(record)
+        extracted_json = {
+            "audio_url": record.audio_url,
+            "runtime": {
+                "status": record.status,
+                "current_stage": record.latest_stage,
+                "last_error": record.last_error,
+            },
+            "participant_profile": {
+                "smartphone_user": {"value": record.smartphone_user},
+                "has_bank_account": {"value": record.has_bank_account},
+            },
+            "per_household_earnings": {"value": record.per_household_earnings},
+            "participant_personal_monthly_income": {"value": record.participant_personal_monthly_income or record.income_range},
+            "total_household_monthly_income": {"value": record.total_household_monthly_income},
+            "borrowing_history": {"value": record.borrowing_history},
+            "repayment_preference": {"value": record.repayment_preference},
+            "loan_interest": {"value": record.loan_interest},
+            "insight": {
+                "summary": record.summary,
+                "persona": record.persona,
+                "confidence_score": record.confidence_score,
+                "key_quotes": record.key_quotes,
+            },
+        }
         return DashboardInterview(
             id=record.id,
             filename=record.filename,
@@ -940,7 +963,7 @@ class DashboardRenderer:
             persona_id=persona_id,
             persona_name=persona_name,
             is_non_target=record.smartphone_user is False or record.has_bank_account is False,
-            income_band=record.income_range or "Unknown",
+            income_band=self._record_income_band(record),
             borrowing_source=self._borrowing_source_label(transcript, borrowing_value),
             borrowing_label="Borrower" if self._is_borrower_value(borrowing_value, transcript) else "Non-borrower",
             is_borrower=self._is_borrower_value(borrowing_value, transcript),
@@ -1018,69 +1041,71 @@ class DashboardRenderer:
         except ValueError:
             return created_at
 
-    def _repository_analysis_json(self, record: DashboardInterviewRecord) -> dict[str, Any]:
-        return {
-            "smartphone_usage": self._bool_field(
-                record.smartphone_user,
-                true_value="has_smartphone",
-                false_value="no_smartphone",
-            ),
-            "bank_account_status": self._bool_field(
-                record.has_bank_account,
-                true_value="has_bank_account",
-                false_value="no_bank_account",
-            ),
-            "income_range": self._value_field(record.income_range),
-            "borrowing_history": self._value_field(record.borrowing_history),
-            "repayment_preference": self._value_field(record.repayment_preference),
-            "loan_interest": self._value_field(record.loan_interest),
-            "summary": self._value_field(record.summary, evidence_quotes=record.key_quotes),
-            "key_quotes": list(record.key_quotes),
-            "confidence_signals": {
-                "observed_evidence": [],
-                "missing_or_unknown": [],
-            },
-        }
+    def _nested_value(self, structured: dict[str, Any], field_name: str) -> str:
+        value = structured.get(field_name)
+        if isinstance(value, dict):
+            return str(value.get("value", "unknown"))
+        participant_profile = structured.get("participant_profile", {})
+        persona_signals = structured.get("persona_signals", {})
+        if isinstance(participant_profile, dict) and field_name in participant_profile:
+            nested = participant_profile[field_name]
+            if isinstance(nested, dict):
+                return str(nested.get("value", "unknown"))
+        if isinstance(persona_signals, dict) and field_name in persona_signals:
+            nested = persona_signals[field_name]
+            if isinstance(nested, dict):
+                return str(nested.get("value", "unknown"))
+        return "unknown"
 
-    def _bool_field(
-        self,
-        value: bool | None,
-        *,
-        true_value: str,
-        false_value: str,
-    ) -> dict[str, Any]:
-        if value is True:
-            return self._value_field(true_value)
-        if value is False:
-            return self._value_field(false_value)
-        return self._value_field(None)
 
-    def _value_field(self, value: str | None, *, evidence_quotes: list[str] | None = None) -> dict[str, Any]:
-        normalized = (value or "").strip()
-        if not normalized:
-            normalized = DEFAULT_UNKNOWN_VALUE
-        return {
-            "value": normalized,
-            "status": "unknown" if normalized == DEFAULT_UNKNOWN_VALUE else "observed",
-            "evidence_quotes": list(evidence_quotes or []),
-            "notes": "",
-        }
+    def _preferred_income_band(self, structured: dict[str, Any]) -> str:
+        for field_name in (
+            "participant_personal_monthly_income",
+            "total_household_monthly_income",
+            "income_range",
+        ):
+            value = self._nested_value(structured, field_name)
+            if value != "unknown":
+                return value
+        return "Unknown"
 
-    def _empty_extracted_json(self, *, summary: str) -> dict[str, Any]:
-        return {
-            "smartphone_usage": self._value_field(None),
-            "bank_account_status": self._value_field(None),
-            "income_range": self._value_field(None),
-            "borrowing_history": self._value_field(None),
-            "repayment_preference": self._value_field(None),
-            "loan_interest": self._value_field(None),
-            "summary": self._value_field(summary),
-            "key_quotes": [],
-            "confidence_signals": {"observed_evidence": [], "missing_or_unknown": []},
-        }
+    def _record_income_band(self, record: DashboardInterviewRecord) -> str:
+        for value in (
+            record.participant_personal_monthly_income,
+            record.total_household_monthly_income,
+            record.income_range,
+        ):
+            if value:
+                return value
+        return "Unknown"
 
-    def _display_value(self, value: str) -> str:
-        return "Unknown" if value == DEFAULT_UNKNOWN_VALUE else value
+    def _smartphone_user(self, structured: dict[str, Any]) -> bool | None:
+        if "smartphone_usage" in structured:
+            value = self._nested_value(structured, "smartphone_usage")
+            if value == "has_smartphone":
+                return True
+            if value == "no_smartphone":
+                return False
+        participant_profile = structured.get("participant_profile", {})
+        if isinstance(participant_profile, dict):
+            smartphone = participant_profile.get("smartphone_user")
+            if isinstance(smartphone, dict):
+                return smartphone.get("value")
+        return None
+
+    def _bank_account_user(self, structured: dict[str, Any]) -> bool | None:
+        if "bank_account_status" in structured:
+            value = self._nested_value(structured, "bank_account_status")
+            if value == "has_bank_account":
+                return True
+            if value == "no_bank_account":
+                return False
+        participant_profile = structured.get("participant_profile", {})
+        if isinstance(participant_profile, dict):
+            bank_account = participant_profile.get("has_bank_account")
+            if isinstance(bank_account, dict):
+                return bank_account.get("value")
+        return None
 
     def _digital_access_label(self, smartphone_user: bool | None, has_bank_account: bool | None) -> str:
         if smartphone_user is False or has_bank_account is False:

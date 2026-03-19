@@ -29,6 +29,9 @@ class StructuredResponseRecord:
     interview_id: str
     smartphone_user: bool | None
     has_bank_account: bool | None
+    per_household_earnings: str | None
+    participant_personal_monthly_income: str | None
+    total_household_monthly_income: str | None
     income_range: str | None
     borrowing_history: str | None
     repayment_preference: str | None
@@ -74,6 +77,9 @@ class DashboardInterviewRecord:
     created_at: str
     smartphone_user: bool | None
     has_bank_account: bool | None
+    per_household_earnings: str | None
+    participant_personal_monthly_income: str | None
+    total_household_monthly_income: str | None
     income_range: str | None
     borrowing_history: str | None
     repayment_preference: str | None
@@ -118,6 +124,7 @@ class PaydayRepository:
         with self._connect() as connection:
             connection.executescript(schema_sql)
             self._ensure_interview_columns(connection)
+            self._ensure_structured_response_columns(connection)
 
     def _ensure_interview_columns(self, connection: sqlite3.Connection) -> None:
         columns = {
@@ -130,6 +137,21 @@ class PaydayRepository:
             )
         if "last_error" not in columns:
             connection.execute("ALTER TABLE interviews ADD COLUMN last_error TEXT")
+
+
+    def _ensure_structured_response_columns(self, connection: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(structured_responses)").fetchall()
+        }
+        for column_name in (
+            "per_household_earnings",
+            "participant_personal_monthly_income",
+            "total_household_monthly_income",
+            "income_range",
+        ):
+            if column_name not in columns:
+                connection.execute(f"ALTER TABLE structured_responses ADD COLUMN {column_name} TEXT")
 
     def create_interview(
         self,
@@ -239,6 +261,9 @@ class PaydayRepository:
         *,
         smartphone_user: bool | None,
         has_bank_account: bool | None,
+        per_household_earnings: str | None,
+        participant_personal_monthly_income: str | None,
+        total_household_monthly_income: str | None,
         income_range: str | None,
         borrowing_history: str | None,
         repayment_preference: str | None,
@@ -248,6 +273,9 @@ class PaydayRepository:
             interview_id=interview_id,
             smartphone_user=smartphone_user,
             has_bank_account=has_bank_account,
+            per_household_earnings=per_household_earnings,
+            participant_personal_monthly_income=participant_personal_monthly_income,
+            total_household_monthly_income=total_household_monthly_income,
             income_range=income_range,
             borrowing_history=borrowing_history,
             repayment_preference=repayment_preference,
@@ -260,15 +288,21 @@ class PaydayRepository:
                     interview_id,
                     smartphone_user,
                     has_bank_account,
+                    per_household_earnings,
+                    participant_personal_monthly_income,
+                    total_household_monthly_income,
                     income_range,
                     borrowing_history,
                     repayment_preference,
                     loan_interest
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(interview_id) DO UPDATE SET
                     smartphone_user = excluded.smartphone_user,
                     has_bank_account = excluded.has_bank_account,
+                    per_household_earnings = excluded.per_household_earnings,
+                    participant_personal_monthly_income = excluded.participant_personal_monthly_income,
+                    total_household_monthly_income = excluded.total_household_monthly_income,
                     income_range = excluded.income_range,
                     borrowing_history = excluded.borrowing_history,
                     repayment_preference = excluded.repayment_preference,
@@ -278,6 +312,9 @@ class PaydayRepository:
                     record.interview_id,
                     self._bool_to_int(record.smartphone_user),
                     self._bool_to_int(record.has_bank_account),
+                    record.per_household_earnings,
+                    record.participant_personal_monthly_income,
+                    record.total_household_monthly_income,
                     record.income_range,
                     record.borrowing_history,
                     record.repayment_preference,
@@ -430,6 +467,9 @@ class PaydayRepository:
                     interviews.created_at,
                     structured_responses.smartphone_user,
                     structured_responses.has_bank_account,
+                    structured_responses.per_household_earnings,
+                    structured_responses.participant_personal_monthly_income,
+                    structured_responses.total_household_monthly_income,
                     structured_responses.income_range,
                     structured_responses.borrowing_history,
                     structured_responses.repayment_preference,
@@ -457,6 +497,9 @@ class PaydayRepository:
                     interview_id,
                     smartphone_user,
                     has_bank_account,
+                    per_household_earnings,
+                    participant_personal_monthly_income,
+                    total_household_monthly_income,
                     income_range,
                     borrowing_history,
                     repayment_preference,
@@ -479,6 +522,9 @@ class PaydayRepository:
                 interview_id=structured_row["interview_id"],
                 smartphone_user=self._int_to_bool(structured_row["smartphone_user"]),
                 has_bank_account=self._int_to_bool(structured_row["has_bank_account"]),
+                per_household_earnings=structured_row["per_household_earnings"],
+                participant_personal_monthly_income=structured_row["participant_personal_monthly_income"],
+                total_household_monthly_income=structured_row["total_household_monthly_income"],
                 income_range=structured_row["income_range"],
                 borrowing_history=structured_row["borrowing_history"],
                 repayment_preference=structured_row["repayment_preference"],
@@ -518,6 +564,9 @@ class PaydayRepository:
                     interviews.created_at,
                     structured_responses.smartphone_user,
                     structured_responses.has_bank_account,
+                    structured_responses.per_household_earnings,
+                    structured_responses.participant_personal_monthly_income,
+                    structured_responses.total_household_monthly_income,
                     structured_responses.income_range,
                     structured_responses.borrowing_history,
                     structured_responses.repayment_preference,
@@ -617,7 +666,10 @@ class PaydayRepository:
             interview_id,
             smartphone_user=self._extract_bool(structured, "participant_profile", "smartphone_user"),
             has_bank_account=self._extract_bool(structured, "participant_profile", "has_bank_account"),
-            income_range=self._extract_value(structured, "income_range"),
+            per_household_earnings=self._extract_value(structured, "per_household_earnings"),
+            participant_personal_monthly_income=self._extract_value(structured, "participant_personal_monthly_income"),
+            total_household_monthly_income=self._extract_value(structured, "total_household_monthly_income"),
+            income_range=self._preferred_income_value(structured),
             borrowing_history=self._extract_value(structured, "borrowing_history"),
             repayment_preference=self._extract_value(structured, "repayment_preference"),
             loan_interest=self._extract_value(structured, "loan_interest"),
@@ -657,6 +709,9 @@ class PaydayRepository:
             created_at=payload["created_at"],
             smartphone_user=self._int_to_bool(payload["smartphone_user"]),
             has_bank_account=self._int_to_bool(payload["has_bank_account"]),
+            per_household_earnings=payload["per_household_earnings"],
+            participant_personal_monthly_income=payload["participant_personal_monthly_income"],
+            total_household_monthly_income=payload["total_household_monthly_income"],
             income_range=payload["income_range"],
             borrowing_history=payload["borrowing_history"],
             repayment_preference=payload["repayment_preference"],
@@ -666,6 +721,18 @@ class PaydayRepository:
             persona=payload["persona"],
             confidence_score=payload["confidence_score"],
         )
+
+
+    def _preferred_income_value(self, structured: dict[str, object]) -> str | None:
+        for field_name in (
+            "participant_personal_monthly_income",
+            "total_household_monthly_income",
+            "income_range",
+        ):
+            value = self._extract_value(structured, field_name)
+            if value and value != "unknown":
+                return value
+        return None
 
     @staticmethod
     def _extract_value(structured: dict[str, object], field_name: str) -> str | None:
