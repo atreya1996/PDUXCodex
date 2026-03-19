@@ -134,7 +134,7 @@ renderer.render(
 '''
 
     app = AppTest.from_string(script)
-    app.run()
+    app.run(timeout=10)
 
     info_values = [element.value for element in app.info]
     markdown_values = [element.value for element in app.markdown]
@@ -152,3 +152,51 @@ renderer.render(
     assert not any("High-Stress Cyclical Borrower" in value for value in markdown_values)
     assert not any("WhatsApp every day" in value for value in markdown_values)
     assert not any("Open" == element.label for element in app.button)
+
+
+def test_dashboard_interview_detail_exposes_explicit_save_actions() -> None:
+    script = '''
+from payday.dashboard.views import DashboardRenderer
+from payday.models import ProcessingStatus
+from payday.repository import DashboardInterviewRecord, DashboardStatusOverview
+
+renderer = DashboardRenderer()
+record = DashboardInterviewRecord(
+    id="interview-1",
+    audio_url="audio/interview-1/repo-name.wav",
+    filename="repo-name.wav",
+    transcript="Repository transcript",
+    status=ProcessingStatus.COMPLETED.value,
+    latest_stage="persona",
+    last_error=None,
+    created_at="2026-03-18T10:00:00+00:00",
+    smartphone_user=True,
+    has_bank_account=True,
+    income_range="₹10k–15k",
+    borrowing_history="has_borrowed",
+    repayment_preference="monthly",
+    loan_interest="interested",
+    summary="Repository summary",
+    key_quotes=["Repository quote"],
+    persona="Digitally Ready but Fearful",
+    confidence_score=0.91,
+)
+
+renderer.render(
+    cached_results=[],
+    recent_interviews=[record],
+    status_overview=DashboardStatusOverview(total_interviews=1, status_counts={ProcessingStatus.COMPLETED.value: 1}),
+    interview_detail_loader=lambda interview_id: record,
+    save_interview_edits=lambda **kwargs: record,
+    sample_mode=False,
+)
+'''
+
+    app = AppTest.from_string(script)
+    app.run()
+
+    button_labels = [element.label for element in app.button]
+
+    assert "Save transcript" in button_labels
+    assert "Save structured JSON" in button_labels
+    assert "Save all edits" in button_labels

@@ -360,6 +360,76 @@ class PaydayRepository:
             )
         return record
 
+    def persist_reprocessed_interview(
+        self,
+        interview_id: str,
+        *,
+        transcript: str,
+        status: str,
+        latest_stage: str,
+        last_error: str | None,
+        structured_response: dict[str, object],
+        insight: dict[str, object],
+    ) -> DashboardInterviewRecord:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE interviews
+                SET transcript = ?, status = ?, latest_stage = ?, last_error = ?
+                WHERE id = ?
+                """,
+                (transcript, status, latest_stage, last_error, interview_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO structured_responses (
+                    interview_id,
+                    smartphone_user,
+                    has_bank_account,
+                    income_range,
+                    borrowing_history,
+                    repayment_preference,
+                    loan_interest
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(interview_id) DO UPDATE SET
+                    smartphone_user = excluded.smartphone_user,
+                    has_bank_account = excluded.has_bank_account,
+                    income_range = excluded.income_range,
+                    borrowing_history = excluded.borrowing_history,
+                    repayment_preference = excluded.repayment_preference,
+                    loan_interest = excluded.loan_interest
+                """,
+                (
+                    interview_id,
+                    self._bool_to_int(structured_response.get("smartphone_user")),
+                    self._bool_to_int(structured_response.get("has_bank_account")),
+                    structured_response.get("income_range"),
+                    structured_response.get("borrowing_history"),
+                    structured_response.get("repayment_preference"),
+                    structured_response.get("loan_interest"),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO insights (interview_id, summary, key_quotes, persona, confidence_score)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(interview_id) DO UPDATE SET
+                    summary = excluded.summary,
+                    key_quotes = excluded.key_quotes,
+                    persona = excluded.persona,
+                    confidence_score = excluded.confidence_score
+                """,
+                (
+                    interview_id,
+                    insight["summary"],
+                    json.dumps(insight["key_quotes"]),
+                    insight["persona"],
+                    insight["confidence_score"],
+                ),
+            )
+        return self.get_dashboard_interview_detail(interview_id)
+
     def list_interviews(self, *, status: str | None = None, limit: int = 100) -> list[InterviewListItem]:
         query = """
             SELECT

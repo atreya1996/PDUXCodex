@@ -11,6 +11,10 @@ from payday.context_loader import ContextMemory, build_analysis_prompt, load_con
 from payday.models import AnalysisResult, Transcript
 
 DEFAULT_UNKNOWN_VALUE = "unknown"
+SMARTPHONE_HAS_VALUE = "has_smartphone"
+SMARTPHONE_NO_VALUE = "no_smartphone"
+BANK_ACCOUNT_HAS_VALUE = "has_bank_account"
+BANK_ACCOUNT_NO_VALUE = "no_bank_account"
 FIELD_NAMES = (
     "smartphone_usage",
     "bank_account_status",
@@ -246,9 +250,17 @@ class HeuristicAnalysisAdapter:
             ("basic phone", "feature phone", "no smartphone", "without smartphone"),
         )
         if negative:
-            return _field("no_smartphone", negative, "Direct evidence that the participant lacks a smartphone.")
+            return _field(
+                SMARTPHONE_NO_VALUE,
+                negative,
+                "Direct evidence that the participant lacks a smartphone.",
+            )
         if evidence:
-            return _field("has_smartphone", evidence, "Direct evidence of smartphone or digital-app usage.")
+            return _field(
+                SMARTPHONE_HAS_VALUE,
+                evidence,
+                "Direct evidence of smartphone or digital-app usage.",
+            )
         return AnalysisField(notes="No direct transcript evidence about smartphone access.").as_dict()
 
     def _bank_account_status(self, text: str) -> dict[str, Any]:
@@ -261,9 +273,17 @@ class HeuristicAnalysisAdapter:
             ("no bank account", "without bank account", "unbanked", "do not have a bank account"),
         )
         if negative:
-            return _field("no_bank_account", negative, "Direct evidence that the participant lacks a bank account.")
+            return _field(
+                BANK_ACCOUNT_NO_VALUE,
+                negative,
+                "Direct evidence that the participant lacks a bank account.",
+            )
         if positive:
-            return _field("has_bank_account", positive, "Direct evidence of an active or available bank account.")
+            return _field(
+                BANK_ACCOUNT_HAS_VALUE,
+                positive,
+                "Direct evidence of an active or available bank account.",
+            )
         return AnalysisField(notes="No direct transcript evidence about bank-account access.").as_dict()
 
     def _income_fields(self, text: str) -> dict[str, dict[str, Any]]:
@@ -855,8 +875,17 @@ __all__ = [
     "AnalysisSchemaError",
     "AnalysisService",
     "AnthropicAnalysisAdapter",
+    "BANK_ACCOUNT_HAS_VALUE",
+    "BANK_ACCOUNT_NO_VALUE",
     "ExternalProviderError",
     "HeuristicAnalysisAdapter",
     "OpenAIAnalysisAdapter",
+    "SMARTPHONE_HAS_VALUE",
+    "SMARTPHONE_NO_VALUE",
+    "bank_account_user_from_analysis",
     "build_analysis_adapter",
+    "get_analysis_evidence_quotes",
+    "get_analysis_field",
+    "get_analysis_value",
+    "smartphone_user_from_analysis",
 ]
