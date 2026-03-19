@@ -344,14 +344,20 @@ class DashboardRenderer:
                     st.caption(f"Stored audio path: {selected.extracted_json['audio_url']}")
         with meta_col:
             st.markdown("##### Extracted flags")
-            st.write(
-                {
-                    "digital_access": selected.digital_access,
-                    "income_band": selected.income_band,
-                    "borrowing": selected.borrowing_label,
-                    "borrowing_source": selected.borrowing_source,
-                    "loan_interest": selected.loan_interest_label,
-                }
+            flag_rows = [
+                ("Digital access", selected.digital_access),
+                ("Income band", selected.income_band),
+                ("Borrowing", selected.borrowing_label),
+                ("Borrowing source", selected.borrowing_source),
+                ("Loan interest", selected.loan_interest_label),
+            ]
+            flag_markup = "".join(
+                f"<div class='detail-flag-row'><span class='detail-flag-label'>{label}</span><span class='detail-flag-value'>{value}</span></div>"
+                for label, value in flag_rows
+            )
+            st.markdown(
+                f"<div class='pd-card detail-flags-card'>{flag_markup}</div>",
+                unsafe_allow_html=True,
             )
 
         st.markdown("##### Editable transcript")
@@ -667,9 +673,9 @@ class DashboardRenderer:
             st.markdown(
                 f"""
                 <div class='pd-card interview-meta-card'>
-                    <div><strong>{interview.persona_name}</strong></div>
-                    <div>{interview.digital_access}</div>
-                    <div>Status: {interview.status}</div>
+                    <div class='interview-meta-primary'>{interview.persona_name}</div>
+                    <div class='interview-meta-secondary'>{interview.digital_access}</div>
+                    <div class='interview-meta-secondary'>Status: {interview.status}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -998,20 +1004,29 @@ class DashboardRenderer:
         st.markdown(
             """
             <style>
+            ::selection {
+                background: #1d4ed8;
+                color: #f8fafc;
+            }
             .stApp {
                 background: #f6f8fc;
+                color: #0f172a;
             }
             .block-container {
                 padding-top: 2.2rem;
                 padding-bottom: 4rem;
             }
             .pd-card {
-                background: white;
+                background: #ffffff;
                 border-radius: 20px;
                 padding: 1.15rem 1.25rem;
                 box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
                 border: 1px solid rgba(148, 163, 184, 0.16);
                 margin-bottom: 1rem;
+                color: #0f172a;
+            }
+            .pd-card div, .pd-card span, .pd-card p, .pd-card strong {
+                color: inherit;
             }
             .kpi-card {
                 min-height: 124px;
@@ -1025,17 +1040,19 @@ class DashboardRenderer:
                 flex-direction: column;
                 justify-content: space-between;
             }
-            .kpi-label, .chart-subtitle, .table-title, .interview-meta, .persona-meta {
-                color: #64748b;
+            .kpi-label, .chart-subtitle, .table-title, .interview-meta, .persona-meta,
+            .interview-meta-secondary, .detail-flag-label {
+                color: #475569;
                 font-size: 0.95rem;
+                font-weight: 500;
             }
             .kpi-value, .persona-count, .status-value {
                 font-size: 2rem;
                 font-weight: 700;
                 color: #0f172a;
             }
-            .status-label {
-                color: #475569;
+            .status-label, .detail-flag-value, .interview-meta-primary {
+                color: #1e293b;
                 font-size: 0.98rem;
                 font-weight: 600;
             }
@@ -1067,8 +1084,30 @@ class DashboardRenderer:
                 font-size: 0.98rem;
             }
             .pd-table th {
-                color: #475569;
-                font-weight: 600;
+                color: #334155;
+                font-weight: 700;
+            }
+            .pd-table td {
+                color: #0f172a;
+                font-weight: 500;
+            }
+            .detail-flags-card {
+                padding-top: 0.9rem;
+                padding-bottom: 0.9rem;
+            }
+            .detail-flag-row {
+                display: flex;
+                justify-content: space-between;
+                gap: 1rem;
+                align-items: baseline;
+                padding: 0.45rem 0;
+                border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+            }
+            .detail-flag-row:last-child {
+                border-bottom: none;
+            }
+            .detail-flag-value {
+                text-align: right;
             }
             .persona-badge {
                 border-radius: 999px;
@@ -1080,36 +1119,38 @@ class DashboardRenderer:
             }
             .badge-target {
                 background: rgba(20, 184, 166, 0.12);
-                color: #0f766e;
+                color: #115e59;
             }
             .badge-nontarget {
                 background: rgba(244, 63, 94, 0.12);
-                color: #be123c;
+                color: #9f1239;
             }
             .stTabs [data-baseweb="tab-list"] {
                 gap: 0.5rem;
             }
             .stTabs [data-baseweb="tab"] {
-                background: white;
-                color: #334155;
+                background: #ffffff;
+                color: #0f172a;
                 border-radius: 999px;
                 padding: 0.6rem 1rem;
                 box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
-                border: 1px solid rgba(148, 163, 184, 0.24);
-                transition: color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+                border: 1px solid rgba(100, 116, 139, 0.28);
+                transition: color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+                font-weight: 600;
             }
             .stTabs [data-baseweb="tab"] p {
                 color: inherit;
             }
             .stTabs [data-baseweb="tab"]:hover {
                 color: #1d4ed8;
-                border-color: rgba(79, 124, 255, 0.32);
-                box-shadow: 0 10px 24px rgba(79, 124, 255, 0.1);
+                border-color: rgba(29, 78, 216, 0.42);
+                box-shadow: 0 10px 24px rgba(79, 124, 255, 0.14);
             }
             .stTabs [data-baseweb="tab"][aria-selected="true"] {
-                color: #1d4ed8;
-                border-color: rgba(79, 124, 255, 0.38);
-                box-shadow: 0 12px 28px rgba(79, 124, 255, 0.14);
+                background: #1d4ed8;
+                color: #eff6ff;
+                border-color: #1d4ed8;
+                box-shadow: 0 12px 28px rgba(29, 78, 216, 0.26);
             }
             .stTabs [data-baseweb="tab"][aria-selected="true"] p {
                 color: inherit;
@@ -1117,6 +1158,21 @@ class DashboardRenderer:
             .stTextInput label, .stMultiSelect label, .stTextArea label {
                 font-size: 1rem !important;
                 font-weight: 600 !important;
+            }
+            .stTextInput input, .stTextArea textarea, .stMultiSelect div[data-baseweb="select"] > div {
+                color: #0f172a !important;
+            }
+            .stTextInput input::selection, .stTextArea textarea::selection {
+                background: #1d4ed8;
+                color: #f8fafc;
+            }
+            div[data-testid="stDataFrame"] * {
+                color: #0f172a !important;
+            }
+            div[data-testid="stDataFrame"] [role="columnheader"] *,
+            div[data-testid="stDataFrame"] thead * {
+                color: #334155 !important;
+                font-weight: 700 !important;
             }
             p, li, span, label {
                 font-size: 1rem;
