@@ -5,8 +5,9 @@ from dotenv import load_dotenv
 
 from payday.config import Settings, get_settings
 from payday.dashboard.views import DashboardRenderer
-from payday.models import BatchUploadItem
+from payday.models import BatchUploadItem, ProcessingStatus
 from payday.service import PaydayAppService
+from payday.transcription import describe_transcription_file_size_limit
 
 
 @st.cache_resource
@@ -28,13 +29,23 @@ def main() -> None:
         "Batch uploads, evidence-grounded analysis, persona review, and interview QA in one workspace."
     )
 
+    upload_limit_guidance = describe_transcription_file_size_limit(settings.transcription)
+
     st.sidebar.header("Upload interviews")
-    st.sidebar.caption("Start with one small audio file to validate live processing, then scale up to a full batch. Filters stay in session state for instant iteration.")
+    st.sidebar.caption(
+        "Start with one small audio file to validate live processing, then scale up to a full batch. "
+        "Filters stay in session state for instant iteration."
+    )
+    if upload_limit_guidance is not None:
+        st.sidebar.info(upload_limit_guidance)
     uploaded_files = st.sidebar.file_uploader(
         "Audio batch",
         type=["mp3", "wav", "m4a", "aac", "ogg"],
         accept_multiple_files=True,
-        help="Choose 1 to 10 interview recordings. Start with one file for a live smoke test, then try a full batch.",
+        help=(
+            "Choose 1 to 10 interview recordings. Start with one file for a live smoke test, then try a full batch. "
+            + (upload_limit_guidance or "")
+        ),
     )
 
     upload_count = len(uploaded_files) if uploaded_files else 0
@@ -64,9 +75,28 @@ def main() -> None:
             ]
             with st.spinner("Processing uploaded interviews..."):
                 batch_result = app_service.process_batch_uploads(items)
-            st.sidebar.success(
-                f"Processed batch {batch_result.batch_id[:8]} with {batch_result.completed_count} completed and {batch_result.failed_count} failed."
+
+            summary_message = (
+                f"Processed batch {batch_result.batch_id[:8]} with {batch_result.completed_count} completed and "
+                f"{batch_result.failed_count} failed."
             )
+            if batch_result.failed_count == 0:
+                st.sidebar.success(summary_message)
+            elif batch_result.completed_count == 0:
+                st.sidebar.error(summary_message)
+            else:
+                st.sidebar.warning(summary_message)
+
+            failed_results = [
+                result for result in batch_result.results if result.status is ProcessingStatus.FAILED
+            ]
+            for failed_result in failed_results:
+                error_message = (
+                    failed_result.errors[0]
+                    if failed_result.errors
+                    else "Processing failed before transcription began."
+                )
+                st.sidebar.error(f"{failed_result.filename}: {error_message}")
 
     if not settings.features.enable_analysis:
         st.warning(
