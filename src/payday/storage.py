@@ -19,8 +19,13 @@ class StorageService:
 
     def upload_audio(self, asset: UploadedAsset, interview_id: str, sample_mode: bool = False) -> str:
         object_path = self.build_audio_path(interview_id=interview_id, filename=asset.filename)
-        if sample_mode or self.storage_client is None:
+        if sample_mode:
             return object_path
+
+        if self.storage_client is None:
+            raise RuntimeError(
+                "Live storage upload requires a configured storage client or explicit upload implementation."
+            )
 
         bucket_name = self.settings.storage_bucket
         if hasattr(self.storage_client, "from_"):
@@ -47,7 +52,12 @@ class StorageService:
     ) -> bool:
         if sample_mode:
             return True
-        if interview_id is not None:
-            self.upload_audio(asset=asset, interview_id=interview_id, sample_mode=sample_mode)
-            return True
-        return bool(self.settings.url and (self.settings.anon_key or self.settings.service_role_key) and asset.raw_bytes)
+        if interview_id is None:
+            raise ValueError("interview_id is required to store assets when sample mode is disabled.")
+        return bool(
+            self.upload_audio(
+                asset=asset,
+                interview_id=interview_id,
+                sample_mode=sample_mode,
+            )
+        )

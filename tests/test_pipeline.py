@@ -12,7 +12,12 @@ from payday.personas import PersonaService
 from payday.repository import PaydayRepository
 from payday.service import PaydayAppService
 from payday.storage import StorageService
-from payday.transcription import OpenAITranscriptionAdapter, TranscriptionService
+from payday.transcription import (
+    OPENAI_TRANSCRIPTION_SAFE_FILE_LIMIT_BYTES,
+    OpenAITranscriptionAdapter,
+    TranscriptionService,
+    describe_transcription_file_size_limit,
+)
 from payday.upload import SUPPORTED_UPLOAD_EXTENSIONS, UploadService, UploadValidationError
 
 
@@ -70,6 +75,30 @@ class StaticAnalysisTransport:
         del prompt, model, api_key
         self.calls += 1
         return self.response
+
+
+class RecordingBucket:
+    def __init__(self) -> None:
+        self.upload_calls: list[dict[str, object]] = []
+
+    def upload(self, path: str, payload: bytes, file_options: dict[str, object] | None = None) -> None:
+        self.upload_calls.append(
+            {
+                "path": path,
+                "payload": payload,
+                "file_options": file_options or {},
+            }
+        )
+
+
+class RecordingSupabaseStorageClient:
+    def __init__(self) -> None:
+        self.bucket_names: list[str] = []
+        self.bucket = RecordingBucket()
+
+    def from_(self, bucket_name: str) -> RecordingBucket:
+        self.bucket_names.append(bucket_name)
+        return self.bucket
 
 
 VALID_ANALYSIS_JSON = """
@@ -616,6 +645,126 @@ def test_storage_service_builds_predictable_audio_paths() -> None:
 
     assert storage.build_audio_path("interview-123", asset.filename) == "audio/interview-123/demo_clip.wav"
     assert storage.store_asset(asset, sample_mode=True) is True
+
+
+def test_storage_service_sample_mode_succeeds_without_storage_client() -> None:
+    storage = StorageService(SupabaseSettings())
+    asset = UploadedAsset(
+        filename="sample.wav",
+        content_type="audio/wav",
+        size_bytes=4,
+        raw_bytes=b"demo",
+    )
+
+    object_path = storage.upload_audio(asset, interview_id="interview-123", sample_mode=True)
+
+    assert object_path == "audio/interview-123/sample.wav"
+    assert storage.store_asset(asset, sample_mode=True, interview_id="interview-123") is True
+
+
+def test_storage_service_live_mode_without_storage_client_fails() -> None:
+    storage = StorageService(SupabaseSettings())
+    asset = UploadedAsset(
+        filename="live.wav",
+        content_type="audio/wav",
+        size_bytes=4,
+        raw_bytes=b"demo",
+    )
+
+    with pytest.raises(RuntimeError, match="configured storage client or explicit upload implementation"):
+        storage.upload_audio(asset, interview_id="interview-123", sample_mode=False)
+
+    with pytest.raises(RuntimeError, match="configured storage client or explicit upload implementation"):
+        storage.store_asset(asset, sample_mode=False, interview_id="interview-123")
+
+
+def test_pipeline_marks_storage_persistence_failed_without_live_storage_client(tmp_path) -> None:
+    database_path = tmp_path / "storage-failure.sqlite3"
+    repository = PaydayRepository(database_path=str(database_path))
+    settings = Settings(
+        app_env="test",
+        database=DatabaseSettings(sqlite_path=str(database_path)),
+        supabase=SupabaseSettings(),
+        llm=LLMSettings(provider="openai", model="gpt-test", api_key="analysis-key"),
+        transcription=TranscriptionSettings(provider="openai", model="whisper-test", api_key="transcription-key"),
+        features=FeatureFlags(use_sample_mode=False),
+    )
+    pipeline = PaydayAppService(settings, repository=repository).pipeline
+    pipeline.transcription_service = StaticTranscriptionService(settings.transcription)
+    pipeline.analysis_service = AnalysisService(
+        adapter=OpenAIAnalysisAdapter(
+            settings.llm,
+            transport=StaticAnalysisTransport(
+                {"output": [{"content": [{"type": "output_text", "text": VALID_ANALYSIS_JSON}]}]}
+            ),
+        ),
+        settings=settings.llm,
+    )
+
+    result = pipeline.process_upload("live.wav", "audio/wav", b"audio payload")
+
+    assert result.status is ProcessingStatus.FAILED
+    assert result.current_stage is PipelineStage.STORAGE
+    assert result.persisted is False
+    assert result.errors == [
+        "Live storage upload requires a configured storage client or explicit upload implementation."
+    ]
+
+    with sqlite3.connect(database_path) as connection:
+        interview_row = connection.execute(
+            "SELECT id, status FROM interviews WHERE id = ?",
+            (result.file_id,),
+        ).fetchone()
+
+    assert interview_row == (result.file_id, ProcessingStatus.FAILED.value)
+
+
+def test_pipeline_live_storage_persists_only_after_successful_upload(tmp_path) -> None:
+    database_path = tmp_path / "storage-success.sqlite3"
+    repository = PaydayRepository(database_path=str(database_path))
+    settings = Settings(
+        app_env="test",
+        database=DatabaseSettings(sqlite_path=str(database_path)),
+        supabase=SupabaseSettings(storage_bucket="test-assets"),
+        llm=LLMSettings(provider="openai", model="gpt-test", api_key="analysis-key"),
+        transcription=TranscriptionSettings(provider="openai", model="whisper-test", api_key="transcription-key"),
+        features=FeatureFlags(use_sample_mode=False),
+    )
+    storage_client = RecordingSupabaseStorageClient()
+    pipeline = PaydayAppService(settings, repository=repository).pipeline
+    pipeline.storage_service = StorageService(settings.supabase, storage_client=storage_client)
+    pipeline.transcription_service = StaticTranscriptionService(settings.transcription)
+    pipeline.analysis_service = AnalysisService(
+        adapter=OpenAIAnalysisAdapter(
+            settings.llm,
+            transport=StaticAnalysisTransport(
+                {"output": [{"content": [{"type": "output_text", "text": VALID_ANALYSIS_JSON}]}]}
+            ),
+        ),
+        settings=settings.llm,
+    )
+
+    result = pipeline.process_upload("live.wav", "audio/wav", b"audio payload")
+
+    assert result.status is ProcessingStatus.COMPLETED
+    assert result.current_stage is PipelineStage.STORAGE
+    assert result.persisted is True
+    assert storage_client.bucket_names == ["test-assets"]
+    assert storage_client.bucket.upload_calls == [
+        {
+            "path": f"audio/{result.file_id}/live.wav",
+            "payload": b"audio payload",
+            "file_options": {"content-type": "audio/wav"},
+        }
+    ]
+
+    with sqlite3.connect(database_path) as connection:
+        interview_row = connection.execute(
+            "SELECT id, status FROM interviews WHERE id = ?",
+            (result.file_id,),
+        ).fetchone()
+
+    assert interview_row == (result.file_id, ProcessingStatus.COMPLETED.value)
 
 
 def test_persona_classifier_uses_bank_account_override() -> None:
