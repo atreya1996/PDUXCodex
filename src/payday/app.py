@@ -5,8 +5,9 @@ from dotenv import load_dotenv
 
 from payday.config import Settings, get_settings
 from payday.dashboard.views import DashboardRenderer
-from payday.models import BatchUploadItem
+from payday.models import BatchUploadItem, ProcessingStatus
 from payday.service import PaydayAppService
+from payday.upload import SUPPORTED_UPLOAD_EXTENSIONS
 
 REFRESH_STATUS_FLAG = "dashboard_status_reloaded"
 
@@ -32,19 +33,28 @@ def main() -> None:
 
     app_service, settings = build_app_service()
     dashboard = DashboardRenderer()
+    supported_formats_label = ", ".join(extension.upper() for extension in SUPPORTED_UPLOAD_EXTENSIONS)
 
     st.title("PayDay interview review")
     st.caption(
         "Batch uploads, evidence-grounded analysis, persona review, and interview QA in one workspace."
     )
 
+    upload_limit_guidance = describe_transcription_file_size_limit(settings.transcription)
+
     st.sidebar.header("Upload interviews")
-    st.sidebar.caption("Start with one small audio file to validate live processing, then scale up to a full batch. Filters stay in session state for instant iteration.")
+    st.sidebar.caption(
+        "Start with one small recording to validate live processing, then scale up to a full batch. "
+        f"Supported formats: {supported_formats_label}. Filters stay in session state for instant iteration."
+    )
     uploaded_files = st.sidebar.file_uploader(
         "Audio batch",
-        type=["mp3", "wav", "m4a", "aac", "ogg"],
+        type=list(SUPPORTED_UPLOAD_EXTENSIONS),
         accept_multiple_files=True,
-        help="Choose 1 to 10 interview recordings. Start with one file for a live smoke test, then try a full batch.",
+        help=(
+            "Choose 1 to 10 interview recordings in "
+            f"{supported_formats_label}. Start with one file for a live smoke test, then try a full batch."
+        ),
     )
 
     upload_count = len(uploaded_files) if uploaded_files else 0
@@ -81,9 +91,28 @@ def main() -> None:
             ]
             with st.spinner("Processing uploaded interviews..."):
                 batch_result = app_service.process_batch_uploads(items)
-            st.sidebar.success(
-                f"Processed batch {batch_result.batch_id[:8]} with {batch_result.completed_count} completed and {batch_result.failed_count} failed."
+
+            summary_message = (
+                f"Processed batch {batch_result.batch_id[:8]} with {batch_result.completed_count} completed and "
+                f"{batch_result.failed_count} failed."
             )
+            if batch_result.failed_count == 0:
+                st.sidebar.success(summary_message)
+            elif batch_result.completed_count == 0:
+                st.sidebar.error(summary_message)
+            else:
+                st.sidebar.warning(summary_message)
+
+            failed_results = [
+                result for result in batch_result.results if result.status is ProcessingStatus.FAILED
+            ]
+            for failed_result in failed_results:
+                error_message = (
+                    failed_result.errors[0]
+                    if failed_result.errors
+                    else "Processing failed before transcription began."
+                )
+                st.sidebar.error(f"{failed_result.filename}: {error_message}")
 
     if not settings.features.enable_analysis:
         st.warning(

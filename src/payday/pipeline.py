@@ -112,6 +112,15 @@ class PaydayPipeline:
             status=ProcessingStatus.PENDING.value,
         )
 
+        preflight_error = self._preflight_upload_error(item)
+        if preflight_error is not None:
+            result.status = ProcessingStatus.FAILED
+            result.current_stage = PipelineStage.UPLOAD
+            result.errors.append(preflight_error)
+            self.repository.save_result(result)
+            self.repository.update_interview(interview.id, status=result.status.value)
+            return result
+
         try:
             result.status = ProcessingStatus.PROCESSING
             result.current_stage = PipelineStage.UPLOAD
@@ -156,6 +165,15 @@ class PaydayPipeline:
 
     def _sync_result(self, result: PipelineResult) -> None:
         self.repository.save_result(result)
+
+    def _preflight_upload_error(self, item: BatchUploadItem) -> str | None:
+        asset = UploadedAsset(
+            filename=item.filename,
+            content_type=item.content_type,
+            size_bytes=len(item.data),
+            file_id=item.file_id,
+        )
+        return self.transcription_service.validate_asset(asset)
 
     def _sync_interview(
         self,

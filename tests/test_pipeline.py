@@ -13,6 +13,7 @@ from payday.repository import PaydayRepository
 from payday.service import PaydayAppService
 from payday.storage import StorageService
 from payday.transcription import OpenAITranscriptionAdapter, TranscriptionService
+from payday.upload import SUPPORTED_UPLOAD_EXTENSIONS, UploadService, UploadValidationError
 
 
 class FlakyTranscriptionService(TranscriptionService):
@@ -28,6 +29,25 @@ class FlakyTranscriptionService(TranscriptionService):
         if asset.filename == "fail.wav":
             raise RuntimeError("hard transcription failure")
         return super().transcribe(asset, sample_mode=sample_mode)
+
+
+class StaticTranscriptionService(TranscriptionService):
+    def __init__(self, settings: TranscriptionSettings) -> None:
+        super().__init__(settings)
+        self.calls: list[str] = []
+
+    def transcribe(self, asset: UploadedAsset, sample_mode: bool = False) -> Transcript:
+        del sample_mode
+        self.calls.append(asset.filename)
+        return Transcript(
+            text=(
+                "I use WhatsApp every day. My bank account is active. "
+                "I borrow from neighbors when money is short."
+            ),
+            provider="openai",
+            model=self.settings.model,
+            metadata={"file_id": asset.file_id, "size_bytes": asset.size_bytes},
+        )
 
 
 class ErroringTranscriptionTransport:
@@ -165,6 +185,48 @@ def test_transcription_service_timeout_propagates_for_pipeline_retries(monkeypat
 
     with pytest.raises(TimeoutError, match="timed out"):
         service.transcribe(asset, sample_mode=False)
+
+
+def test_upload_service_normalizes_supported_openai_formats() -> None:
+    service = UploadService()
+
+    mp4_asset = service.create_asset("interview.mp4", "application/octet-stream", b"mp4-bytes")
+    mpeg_asset = service.create_asset("interview.mpeg", "", b"mpeg-bytes")
+    webm_asset = service.create_asset("interview.webm", "audio/webm", b"webm-bytes")
+
+    assert mp4_asset.content_type == "video/mp4"
+    assert mpeg_asset.content_type == "audio/mpeg"
+    assert webm_asset.content_type == "audio/webm"
+    assert SUPPORTED_UPLOAD_EXTENSIONS == ("mp3", "mp4", "mpeg", "mpga", "m4a", "wav", "webm", "ogg", "aac")
+
+
+def test_upload_service_rejects_unsupported_extensions() -> None:
+    service = UploadService()
+
+    with pytest.raises(UploadValidationError, match="Unsupported upload format"):
+        service.create_asset("notes.txt", "text/plain", b"hello")
+
+
+def test_pipeline_accepts_mp4_and_mpeg_family_uploads() -> None:
+    service = PaydayAppService(build_settings())
+
+    mp4_result = service.process_upload(
+        "interview.mp4",
+        "application/octet-stream",
+        b"I use WhatsApp and my bank account is active.",
+    )
+    mpga_result = service.process_upload(
+        "interview.mpga",
+        "",
+        b"I have a smartphone and my bank account is active.",
+    )
+
+    assert mp4_result.status is ProcessingStatus.COMPLETED
+    assert mp4_result.asset is not None
+    assert mp4_result.asset.content_type == "video/mp4"
+    assert mpga_result.status is ProcessingStatus.COMPLETED
+    assert mpga_result.asset is not None
+    assert mpga_result.asset.content_type == "audio/mpeg"
 
 
 def test_pipeline_process_upload_returns_completed_result() -> None:
@@ -323,7 +385,7 @@ def test_pipeline_marks_external_analysis_provider_errors_as_failed_results() ->
     pipeline.analysis_service = AnalysisService(
         adapter=OpenAIAnalysisAdapter(
             LLMSettings(provider="openai", model="gpt-test", api_key="analysis-key"),
-            transport=StaticAnalysisTransport({"error": {"message": "provider outage"}}),
+            transport=StaticAnalysisTransport({"output": [{"content": [{"type": "output_text", "text": ""}]}]}),
         ),
         settings=LLMSettings(provider="openai", model="gpt-test", api_key="analysis-key"),
     )
@@ -333,7 +395,7 @@ def test_pipeline_marks_external_analysis_provider_errors_as_failed_results() ->
     assert result.status is ProcessingStatus.FAILED
     assert result.current_stage is PipelineStage.ANALYSIS
     assert result.errors == [
-        "analysis failed after 3 attempts: OpenAI analysis provider error: provider outage"
+        "analysis failed after 3 attempts: OpenAI analysis request succeeded but returned no text output."
     ]
 
 
@@ -680,3 +742,47 @@ def test_app_service_keeps_heuristic_analysis_adapter_in_sample_mode() -> None:
 
     assert service.pipeline.analysis_service.adapter.provider_name == "heuristic"
     assert service.pipeline.analysis_service.adapter.model_name == "heuristic-json"
+
+
+def test_pipeline_preflights_openai_batch_upload_sizes_and_keeps_other_mp3s_processing() -> None:
+    service = PaydayAppService(build_settings())
+    transcription_service = StaticTranscriptionService(TranscriptionSettings(provider="openai"))
+    service.pipeline.transcription_service = transcription_service
+
+    small_mp3 = b"ID3small-audio"
+    near_limit_mp3 = b"0" * OPENAI_TRANSCRIPTION_SAFE_FILE_LIMIT_BYTES
+    oversized_mp3 = b"1" * (OPENAI_TRANSCRIPTION_SAFE_FILE_LIMIT_BYTES + 1)
+
+    batch_result = service.process_batch_uploads(
+        [
+            BatchUploadItem(filename="small.mp3", content_type="audio/mpeg", data=small_mp3),
+            BatchUploadItem(filename="near-limit.mp3", content_type="audio/mpeg", data=near_limit_mp3),
+            BatchUploadItem(filename="oversized.mp3", content_type="audio/mpeg", data=oversized_mp3),
+        ]
+    )
+
+    assert batch_result.completed_count == 2
+    assert batch_result.failed_count == 1
+    assert transcription_service.calls == ["small.mp3", "near-limit.mp3"]
+
+    results_by_filename = {result.filename: result for result in batch_result.results}
+    assert results_by_filename["small.mp3"].status is ProcessingStatus.COMPLETED
+    assert results_by_filename["near-limit.mp3"].status is ProcessingStatus.COMPLETED
+
+    oversized_result = results_by_filename["oversized.mp3"]
+    assert oversized_result.status is ProcessingStatus.FAILED
+    assert oversized_result.current_stage is PipelineStage.UPLOAD
+    assert oversized_result.asset is None
+    assert oversized_result.errors == [
+        "oversized.mp3 is 24.0 MB, which exceeds PayDay's 24 MB OpenAI transcription safety limit. "
+        "OpenAI caps transcription requests at 25 MB including multipart upload overhead, so please "
+        "compress or split this recording and upload it again."
+    ]
+
+
+def test_describe_transcription_file_size_limit_matches_sidebar_guidance() -> None:
+    assert describe_transcription_file_size_limit(TranscriptionSettings(provider="openai")) == (
+        "OpenAI transcriptions cap requests at 25 MB, so PayDay preflights uploads at 24 MB to leave "
+        "room for multipart overhead. Compress or split larger recordings before processing."
+    )
+    assert describe_transcription_file_size_limit(TranscriptionSettings(provider="other")) is None
