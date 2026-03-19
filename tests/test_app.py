@@ -84,6 +84,13 @@ class _FakeAppService:
     def get_interview_detail(self, _file_id: str) -> object:
         return {}
 
+    def runtime_summary(self) -> dict[str, object]:
+        return {
+            "sample_mode": True,
+            "transcription": {"provider": "openai", "model": "gpt-4o-mini-transcribe", "required_key_present": False},
+            "analysis": {"provider": "openai", "model": "gpt-4.1-mini", "required_key_present": False},
+        }
+
 
 class _FakeDashboardRenderer:
     def __init__(self) -> None:

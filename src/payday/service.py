@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from payday.analysis import AnalysisService, build_analysis_adapter
 from payday.config import Settings, validate_runtime_settings
 from payday.models import BatchPipelineResult, BatchUploadItem, PipelineResult
@@ -10,12 +12,15 @@ from payday.storage import StorageService
 from payday.transcription import build_transcription_service
 from payday.upload import UploadService
 
+logger = logging.getLogger(__name__)
+
 
 class PaydayAppService:
     """Thin backend facade used by the Streamlit UI."""
 
     def __init__(self, settings: Settings, repository: PaydayRepository | None = None) -> None:
         validate_runtime_settings(settings)
+        self.settings = settings
         self.repository = repository or PaydayRepository(database_path=settings.database.sqlite_path)
         persona_service = PersonaService()
         analysis_service = AnalysisService(
@@ -34,6 +39,7 @@ class PaydayAppService:
             repository=self.repository,
             sample_mode=settings.features.use_sample_mode,
         )
+        logger.info("PayDay runtime configuration loaded: %s", self.runtime_summary())
 
     def process_upload(self, filename: str, content_type: str, data: bytes) -> PipelineResult:
         return self.pipeline.process_upload(filename=filename, content_type=content_type, data=data)
@@ -52,3 +58,18 @@ class PaydayAppService:
 
     def get_status_overview(self) -> DashboardStatusOverview:
         return self.repository.get_status_overview()
+
+    def runtime_summary(self) -> dict[str, object]:
+        return {
+            "sample_mode": self.settings.features.use_sample_mode,
+            "transcription": {
+                "provider": self.settings.transcription.provider,
+                "model": self.settings.transcription.model,
+                "required_key_present": bool(self.settings.transcription.api_key.strip()),
+            },
+            "analysis": {
+                "provider": self.settings.llm.provider,
+                "model": self.settings.llm.model,
+                "required_key_present": bool(self.settings.llm.api_key.strip()),
+            },
+        }

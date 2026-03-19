@@ -177,6 +177,8 @@ def build_sample_interviews(
                 filename=sample["filename"],
                 created_at=(now - timedelta(days=index)).date().isoformat(),
                 status=sample["status"],
+                current_stage="storage" if sample["status"] == ProcessingStatus.COMPLETED.value else "analysis",
+                last_error=None,
                 summary=transcript,
                 transcript=transcript,
                 persona_id=persona_id,

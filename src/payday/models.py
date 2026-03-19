@@ -70,6 +70,7 @@ class PipelineResult:
     filename: str
     status: ProcessingStatus = ProcessingStatus.PENDING
     current_stage: PipelineStage = PipelineStage.UPLOAD
+    last_error: str | None = None
     asset: UploadedAsset | None = None
     transcript: Transcript | None = None
     analysis: AnalysisResult | None = None
