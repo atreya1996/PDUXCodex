@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -33,6 +34,7 @@ class StructuredResponseRecord:
     borrowing_history: str | None
     repayment_preference: str | None
     loan_interest: str | None
+    segmented_dialogue: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +84,7 @@ class DashboardInterviewRecord:
     key_quotes: list[str]
     persona: str | None
     confidence_score: float | None
+    segmented_dialogue: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,16 +123,23 @@ class PaydayRepository:
             self._ensure_interview_columns(connection)
 
     def _ensure_interview_columns(self, connection: sqlite3.Connection) -> None:
-        columns = {
+        interview_columns = {
             row["name"]
             for row in connection.execute("PRAGMA table_info(interviews)").fetchall()
         }
-        if "latest_stage" not in columns:
+        if "latest_stage" not in interview_columns:
             connection.execute(
                 "ALTER TABLE interviews ADD COLUMN latest_stage TEXT NOT NULL DEFAULT 'upload'"
             )
-        if "last_error" not in columns:
+        if "last_error" not in interview_columns:
             connection.execute("ALTER TABLE interviews ADD COLUMN last_error TEXT")
+
+        structured_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(structured_responses)").fetchall()
+        }
+        if "segmented_dialogue" not in structured_columns:
+            connection.execute("ALTER TABLE structured_responses ADD COLUMN segmented_dialogue TEXT")
 
     def create_interview(
         self,
@@ -243,6 +253,7 @@ class PaydayRepository:
         borrowing_history: str | None,
         repayment_preference: str | None,
         loan_interest: str | None,
+        segmented_dialogue: list[dict[str, Any]] | None = None,
     ) -> StructuredResponseRecord:
         record = StructuredResponseRecord(
             interview_id=interview_id,
@@ -252,6 +263,7 @@ class PaydayRepository:
             borrowing_history=borrowing_history,
             repayment_preference=repayment_preference,
             loan_interest=loan_interest,
+            segmented_dialogue=segmented_dialogue or [],
         )
         with self._connect() as connection:
             connection.execute(
@@ -263,16 +275,18 @@ class PaydayRepository:
                     income_range,
                     borrowing_history,
                     repayment_preference,
-                    loan_interest
+                    loan_interest,
+                    segmented_dialogue
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(interview_id) DO UPDATE SET
                     smartphone_user = excluded.smartphone_user,
                     has_bank_account = excluded.has_bank_account,
                     income_range = excluded.income_range,
                     borrowing_history = excluded.borrowing_history,
                     repayment_preference = excluded.repayment_preference,
-                    loan_interest = excluded.loan_interest
+                    loan_interest = excluded.loan_interest,
+                    segmented_dialogue = excluded.segmented_dialogue
                 """,
                 (
                     record.interview_id,
@@ -282,6 +296,7 @@ class PaydayRepository:
                     record.borrowing_history,
                     record.repayment_preference,
                     record.loan_interest,
+                    json.dumps(record.segmented_dialogue, ensure_ascii=False),
                 ),
             )
         return record
@@ -364,6 +379,7 @@ class PaydayRepository:
                     structured_responses.borrowing_history,
                     structured_responses.repayment_preference,
                     structured_responses.loan_interest,
+                    structured_responses.segmented_dialogue,
                     insights.summary,
                     insights.key_quotes,
                     insights.persona,
@@ -390,7 +406,8 @@ class PaydayRepository:
                     income_range,
                     borrowing_history,
                     repayment_preference,
-                    loan_interest
+                    loan_interest,
+                    segmented_dialogue
                 FROM structured_responses
                 WHERE interview_id = ?
                 """,
@@ -413,6 +430,7 @@ class PaydayRepository:
                 borrowing_history=structured_row["borrowing_history"],
                 repayment_preference=structured_row["repayment_preference"],
                 loan_interest=structured_row["loan_interest"],
+                segmented_dialogue=json.loads(structured_row["segmented_dialogue"]) if structured_row["segmented_dialogue"] else [],
             )
             if structured_row is not None
             else None
@@ -452,6 +470,7 @@ class PaydayRepository:
                     structured_responses.borrowing_history,
                     structured_responses.repayment_preference,
                     structured_responses.loan_interest,
+                    structured_responses.segmented_dialogue,
                     insights.summary,
                     insights.key_quotes,
                     insights.persona,
@@ -551,6 +570,7 @@ class PaydayRepository:
             borrowing_history=self._extract_value(structured, "borrowing_history"),
             repayment_preference=self._extract_value(structured, "repayment_preference"),
             loan_interest=self._extract_value(structured, "loan_interest"),
+            segmented_dialogue=self._extract_segmented_dialogue(structured),
         )
 
     def _upsert_insight_from_result(
@@ -591,6 +611,7 @@ class PaydayRepository:
             borrowing_history=payload["borrowing_history"],
             repayment_preference=payload["repayment_preference"],
             loan_interest=payload["loan_interest"],
+            segmented_dialogue=json.loads(payload["segmented_dialogue"]) if payload["segmented_dialogue"] else [],
             summary=payload["summary"],
             key_quotes=json.loads(payload["key_quotes"]) if payload["key_quotes"] else [],
             persona=payload["persona"],
@@ -658,6 +679,13 @@ class PaydayRepository:
         if value == negative:
             return False
         return None
+
+    @staticmethod
+    def _extract_segmented_dialogue(structured: dict[str, object]) -> list[dict[str, Any]]:
+        value = structured.get("segmented_dialogue")
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+        return []
 
     @staticmethod
     def _filename_from_audio_url(audio_url: str) -> str:

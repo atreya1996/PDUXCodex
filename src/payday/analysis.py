@@ -20,8 +20,9 @@ FIELD_NAMES = (
     "loan_interest",
     "summary",
 )
-TOP_LEVEL_SCHEMA_KEYS = FIELD_NAMES + ("key_quotes", "confidence_signals")
+TOP_LEVEL_SCHEMA_KEYS = FIELD_NAMES + ("key_quotes", "confidence_signals", "segmented_dialogue")
 ALLOWED_FIELD_STATUSES = {"observed", "unknown", "missing"}
+ALLOWED_SPEAKER_CONFIDENCE = {"high", "medium", "low"}
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 OPENAI_REQUEST_TIMEOUT_SECONDS = 60
 
@@ -129,6 +130,15 @@ class OpenAIAnalysisAdapter:
 
     @staticmethod
     def _extract_output_text(response_payload: dict[str, Any]) -> str:
+        provider_error = response_payload.get("error")
+        if isinstance(provider_error, dict):
+            message = provider_error.get("message") or provider_error.get("type") or "unknown provider error"
+            raise ExternalProviderError(f"OpenAI analysis provider error: {message}")
+
+        direct_output = response_payload.get("output_text")
+        if isinstance(direct_output, str) and direct_output.strip():
+            return direct_output.strip()
+
         output_items = response_payload.get("output")
         if not isinstance(output_items, list):
             return ""
@@ -143,7 +153,7 @@ class OpenAIAnalysisAdapter:
             for content in content_items:
                 if not isinstance(content, dict):
                     continue
-                if content.get("type") in {"output_text", "text"}:
+                if content.get("type") in {None, "output_text", "text"}:
                     text_value = content.get("text")
                     if isinstance(text_value, str):
                         text_chunks.append(text_value)
@@ -155,7 +165,7 @@ class AnthropicAnalysisAdapter:
 
     def __init__(self, settings: LLMSettings) -> None:
         self.settings = settings
-        self.provider_name = "anthropic"
+        self.provider_name = settings.provider
         self.model_name = settings.model
 
     def generate_analysis(
@@ -207,6 +217,7 @@ class HeuristicAnalysisAdapter:
                 "notes": "Heuristic sample-mode summary grounded in transcript text.",
             },
             "key_quotes": key_quotes,
+            "segmented_dialogue": _heuristic_segmented_dialogue(text),
         }
         payload["confidence_signals"] = _build_confidence_signals(payload)
         extra_keys = set(payload) - set(expected_schema)
@@ -419,9 +430,18 @@ class AnalysisService:
                 "observed_evidence": ["string"],
                 "missing_or_unknown": ["string"],
             },
+            "segmented_dialogue": [
+                {
+                    "speaker_label": "participant|interviewer|unknown",
+                    "utterance_text": "string",
+                    "speaker_confidence": "high|medium|low",
+                    "speaker_uncertainty": "string",
+                }
+            ],
         }
 
     def _build_prompt(self, transcript: Transcript) -> str:
+        metadata_json = json.dumps(_prompt_metadata(transcript.metadata), ensure_ascii=False, indent=2)
         task = (
             "Analyze the interview transcript and return only valid JSON that matches the required schema.\n\n"
             "Rules:\n"
@@ -429,8 +449,13 @@ class AnalysisService:
             "- Preserve direct quotes exactly when evidence exists.\n"
             "- Do not infer unsupported facts.\n"
             "- Mark fields as unknown when the transcript does not provide evidence.\n"
+            "- Populate segmented_dialogue with ordered dialogue turns when the transcript makes speaker changes evident.\n"
+            "- Separate interviewer questions from participant answers when the transcript wording or punctuation makes that distinction evident.\n"
+            "- Use filename or interview metadata only as a weak hint for participant identity.\n"
+            "- Do not fabricate unsupported speaker names or role tags; use 'unknown' and explain uncertainty when speaker identity is unclear.\n"
             "- The no-smartphone and no-bank-account cases must be clearly surfaced for downstream Persona 3 handling.\n\n"
             f"Required schema:\n{json.dumps(self.expected_schema(), indent=2)}\n\n"
+            f"Interview metadata (weak hints only):\n{metadata_json}\n\n"
             f"Transcript:\n{transcript.text.strip() or '[empty transcript]'}"
         )
         return build_analysis_prompt(task=task, memory=self.memory)
@@ -473,6 +498,10 @@ class AnalysisService:
         normalized["confidence_signals"] = self._normalize_confidence_signals(
             payload.get("confidence_signals"),
             normalized,
+        )
+        normalized["segmented_dialogue"] = self._normalize_segmented_dialogue(
+            payload.get("segmented_dialogue"),
+            transcript_text,
         )
         return normalized
 
@@ -551,6 +580,41 @@ class AnalysisService:
             "missing_or_unknown": _dedupe_preserve_order(missing_or_unknown),
         }
 
+    def _normalize_segmented_dialogue(self, value: Any, transcript_text: str) -> list[dict[str, str]]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise AnalysisSchemaError("'segmented_dialogue' must be an array of dialogue-turn objects.")
+
+        normalized_turns: list[dict[str, str]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                raise AnalysisSchemaError("Each segmented dialogue turn must be an object.")
+
+            speaker_label = str(item.get("speaker_label", "unknown")).strip().lower() or "unknown"
+            utterance_text = str(item.get("utterance_text", "")).strip()
+            speaker_confidence = str(item.get("speaker_confidence", "low")).strip().lower() or "low"
+            speaker_uncertainty = str(item.get("speaker_uncertainty", "")).strip()
+
+            if speaker_confidence not in ALLOWED_SPEAKER_CONFIDENCE:
+                raise AnalysisSchemaError(
+                    f"Segmented dialogue speaker_confidence must be one of {sorted(ALLOWED_SPEAKER_CONFIDENCE)}."
+                )
+
+            aligned_text = _align_quote_to_transcript(utterance_text, transcript_text)
+            if not aligned_text:
+                continue
+
+            normalized_turn = {
+                "speaker_label": speaker_label,
+                "utterance_text": aligned_text,
+                "speaker_confidence": speaker_confidence,
+                "speaker_uncertainty": speaker_uncertainty,
+            }
+            if normalized_turn not in normalized_turns:
+                normalized_turns.append(normalized_turn)
+        return normalized_turns
+
 
 def build_analysis_adapter(settings: LLMSettings, *, sample_mode: bool) -> AnalysisProviderAdapter:
     if sample_mode:
@@ -560,7 +624,9 @@ def build_analysis_adapter(settings: LLMSettings, *, sample_mode: bool) -> Analy
     if provider == "openai":
         return OpenAIAnalysisAdapter(settings)
     if provider == "anthropic":
-        return AnthropicAnalysisAdapter(settings)
+        return AnthropicAnalysisAdapter(
+            LLMSettings(provider=f"{settings.provider}-heuristic", model="heuristic-json")
+        )
 
     return HeuristicAnalysisAdapter(
         LLMSettings(provider=f"{settings.provider}-heuristic", model="heuristic-json")
@@ -640,6 +706,53 @@ def _dedupe_preserve_order(values: list[str]) -> list[str]:
             deduped.append(value)
             seen.add(value)
     return deduped
+
+
+def _prompt_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    if not metadata:
+        return {}
+    allowed_keys = (
+        "filename",
+        "source",
+        "file_id",
+        "language",
+        "duration_seconds",
+        "participant_name_hint",
+        "interview_metadata",
+    )
+    return {
+        key: metadata[key]
+        for key in allowed_keys
+        if key in metadata and metadata[key] not in (None, "", {}, [])
+    }
+
+
+def _heuristic_segmented_dialogue(text: str) -> list[dict[str, str]]:
+    turns: list[dict[str, str]] = []
+    for sentence in _split_sentences(text):
+        if sentence.endswith("?"):
+            speaker_label = "interviewer"
+            speaker_confidence = "high"
+            speaker_uncertainty = ""
+        elif re.search(r"\b(i|my|me|we|our|us)\b", sentence, re.IGNORECASE):
+            speaker_label = "participant"
+            speaker_confidence = "medium"
+            speaker_uncertainty = (
+                "Speaker inferred as participant because the utterance is framed in first person, but the transcript does not explicitly tag speakers."
+            )
+        else:
+            speaker_label = "unknown"
+            speaker_confidence = "low"
+            speaker_uncertainty = "Transcript text did not clearly identify which speaker produced this utterance."
+        turns.append(
+            {
+                "speaker_label": speaker_label,
+                "utterance_text": sentence,
+                "speaker_confidence": speaker_confidence,
+                "speaker_uncertainty": speaker_uncertainty,
+            }
+        )
+    return turns
 
 
 def _build_confidence_signals(payload: dict[str, Any]) -> dict[str, list[str]]:

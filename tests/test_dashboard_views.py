@@ -61,6 +61,14 @@ def test_dashboard_renderer_prefers_durable_repository_values_for_status_rows() 
         key_quotes=["Repository quote"],
         persona="Digitally Ready but Fearful",
         confidence_score=0.91,
+        segmented_dialogue=[
+            {
+                "speaker_label": "participant",
+                "utterance_text": "Repository transcript",
+                "speaker_confidence": "medium",
+                "speaker_uncertainty": "Transcript content suggests participant narration.",
+            }
+        ],
     )
 
     interviews = renderer._build_dashboard_interviews([cached_result], [repository_record])
@@ -73,6 +81,7 @@ def test_dashboard_renderer_prefers_durable_repository_values_for_status_rows() 
     assert interviews[0].summary == "Repository summary"
     assert interviews[0].transcript == "Repository transcript"
     assert interviews[0].evidence_quotes == ("Repository quote",)
+    assert interviews[0].segmented_dialogue[0]["speaker_label"] == "participant"
     assert interviews[0].audio_bytes == b"1234"
 
 
