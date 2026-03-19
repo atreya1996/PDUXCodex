@@ -1,0 +1,29 @@
+[
+  {
+    "name": "per_home_income_only",
+    "transcript": "From one house I get ₹3,000. I work in 4 houses.",
+    "expected": {
+      "per_household_earnings": {"value": "₹3,000", "status": "observed", "evidence_type": "direct"},
+      "participant_personal_monthly_income": {"value": "₹12,000", "status": "observed", "evidence_type": "inferred_or_uncertain"},
+      "total_household_monthly_income": {"value": "unknown", "status": "missing", "evidence_type": "unknown"}
+    }
+  },
+  {
+    "name": "total_monthly_income_only",
+    "transcript": "My monthly income is ₹15,000 per month.",
+    "expected": {
+      "per_household_earnings": {"value": "unknown", "status": "missing", "evidence_type": "unknown"},
+      "participant_personal_monthly_income": {"value": "₹15,000", "status": "observed", "evidence_type": "direct"},
+      "total_household_monthly_income": {"value": "unknown", "status": "missing", "evidence_type": "unknown"}
+    }
+  },
+  {
+    "name": "both_values_present",
+    "transcript": "From one house I get ₹3,000. My monthly income is ₹12,000 per month. Our household income is ₹20,000 per month.",
+    "expected": {
+      "per_household_earnings": {"value": "₹3,000", "status": "observed", "evidence_type": "direct"},
+      "participant_personal_monthly_income": {"value": "₹12,000", "status": "observed", "evidence_type": "direct"},
+      "total_household_monthly_income": {"value": "₹20,000", "status": "observed", "evidence_type": "direct"}
+    }
+  }
+]

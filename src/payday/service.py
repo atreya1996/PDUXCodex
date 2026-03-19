@@ -41,11 +41,37 @@ class PaydayAppService:
         )
         logger.info("PayDay runtime configuration loaded: %s", self.runtime_summary())
 
+    def runtime_summary(self) -> dict[str, object]:
+        return {
+            "environment": self.settings.app_env,
+            "sample_mode": self.settings.features.use_sample_mode,
+            "analysis_provider": self.pipeline.analysis_service.adapter.provider_name,
+            "analysis_model": self.pipeline.analysis_service.adapter.model_name,
+            "transcription_provider": getattr(self.pipeline.transcription_service, "provider_name", "unknown"),
+            "transcription_model": getattr(self.pipeline.transcription_service, "model_name", "unknown"),
+            "database_path": self.repository.database_path,
+        }
+
     def process_upload(self, filename: str, content_type: str, data: bytes) -> PipelineResult:
         return self.pipeline.process_upload(filename=filename, content_type=content_type, data=data)
 
     def process_batch_uploads(self, items: list[BatchUploadItem]) -> BatchPipelineResult:
         return self.pipeline.process_batch_uploads(items)
+
+    def runtime_summary(self) -> dict[str, object]:
+        return {
+            "sample_mode": self.settings.features.use_sample_mode,
+            "transcription": {
+                "provider": self.settings.transcription.provider,
+                "model": self.settings.transcription.model,
+                "required_key_present": bool(self.settings.transcription.api_key),
+            },
+            "analysis": {
+                "provider": self.settings.llm.provider,
+                "model": self.settings.llm.model,
+                "required_key_present": bool(self.settings.llm.api_key),
+            },
+        }
 
     def list_results(self) -> list[PipelineResult]:
         return self.repository.list_results()
@@ -90,3 +116,13 @@ class PaydayAppService:
 
     def delete_interview(self, interview_id: str) -> bool:
         return self.repository.delete_interview(interview_id)
+
+    def runtime_summary(self) -> dict[str, object]:
+        return {
+            "sample_mode": self.settings.features.use_sample_mode,
+            "analysis_provider": self.pipeline.analysis_service.adapter.provider_name,
+            "analysis_model": self.pipeline.analysis_service.adapter.model_name,
+            "transcription_provider": self.pipeline.transcription_service.settings.provider,
+            "transcription_model": self.pipeline.transcription_service.settings.model,
+            "database_path": self.repository.database_path,
+        }
