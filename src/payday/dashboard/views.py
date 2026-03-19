@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from statistics import mean, median
 from typing import Any, Callable
 
 import streamlit as st
@@ -30,6 +32,7 @@ FILTER_SESSION_KEYS = {
     "json": "dashboard_json_edits",
     "detail_message": "dashboard_detail_message",
     "delete_confirm": "dashboard_delete_confirm",
+    "selection_notice": "dashboard_selection_notice",
 }
 
 
@@ -111,6 +114,7 @@ class DashboardRenderer:
         st.session_state.setdefault(FILTER_SESSION_KEYS["json"], {})
         st.session_state.setdefault(FILTER_SESSION_KEYS["detail_message"], None)
         st.session_state.setdefault(FILTER_SESSION_KEYS["delete_confirm"], None)
+        st.session_state.setdefault(FILTER_SESSION_KEYS["selection_notice"], None)
 
         selected_key = FILTER_SESSION_KEYS["selected"]
         if interviews and not st.session_state.get(selected_key):
@@ -174,21 +178,11 @@ class DashboardRenderer:
                 )
             return
 
-        left_col, right_col = st.columns(2, gap="large")
-        with left_col:
-            self._render_chart_card(
-                title="Income distribution",
-                subtitle="Current filtered set",
-                values=self._count_by(filtered, lambda item: item.income_band),
-                color="#4f7cff",
-            )
-        with right_col:
-            self._render_chart_card(
-                title="Borrowing sources",
-                subtitle="Where participants say they borrow from",
-                values=self._count_by(filtered, lambda item: item.borrowing_source),
-                color="#14b8a6",
-            )
+        income_col, borrowing_col = st.columns(2, gap="large")
+        with income_col:
+            self._render_income_summary(filtered)
+        with borrowing_col:
+            self._render_borrowing_sources_summary(filtered)
 
         top_quotes = [quote for interview in filtered for quote in interview.evidence_quotes][:4]
         if top_quotes:
@@ -271,6 +265,7 @@ class DashboardRenderer:
 
     def _render_interviews(self, filtered: list[DashboardInterview], *, sample_mode: bool) -> None:
         st.markdown("### Searchable interview list")
+        st.caption("Click an interview card to open an inline preview immediately. The Interview Detail tab stays synced to the same selection.")
         if not filtered:
             self._render_empty_state(
                 "No interview cards yet",
@@ -279,8 +274,10 @@ class DashboardRenderer:
             )
             return
 
+        selected_id = st.session_state.get(FILTER_SESSION_KEYS["selected"])
         for interview in filtered:
-            self._render_interview_row(interview)
+            if self._render_interview_row(interview, selected_id=selected_id):
+                selected_id = interview.id
 
     def _render_interview_detail(
         self,
@@ -328,6 +325,10 @@ class DashboardRenderer:
                 st.error(message)
             st.session_state[FILTER_SESSION_KEYS["detail_message"]] = None
 
+        selection_notice = st.session_state.get(FILTER_SESSION_KEYS["selection_notice"])
+        if selection_notice == selected.id:
+            st.info(f"Interview selection synced from the Interviews tab: {selected.filename} is now active in Interview Detail.")
+
         header_col, badge_col = st.columns([3, 1])
         with header_col:
             st.markdown(f"#### {selected.filename}")
@@ -350,14 +351,20 @@ class DashboardRenderer:
                     st.caption(f"Stored audio path: {selected.extracted_json['audio_url']}")
         with meta_col:
             st.markdown("##### Extracted flags")
-            st.write(
-                {
-                    "digital_access": selected.digital_access,
-                    "income_band": selected.income_band,
-                    "borrowing": selected.borrowing_label,
-                    "borrowing_source": selected.borrowing_source,
-                    "loan_interest": selected.loan_interest_label,
-                }
+            flag_rows = [
+                ("Digital access", selected.digital_access),
+                ("Income band", selected.income_band),
+                ("Borrowing", selected.borrowing_label),
+                ("Borrowing source", selected.borrowing_source),
+                ("Loan interest", selected.loan_interest_label),
+            ]
+            flag_markup = "".join(
+                f"<div class='detail-flag-row'><span class='detail-flag-label'>{label}</span><span class='detail-flag-value'>{value}</span></div>"
+                for label, value in flag_rows
+            )
+            st.markdown(
+                f"<div class='pd-card detail-flags-card'>{flag_markup}</div>",
+                unsafe_allow_html=True,
             )
 
         st.markdown("##### Editable transcript")
@@ -383,44 +390,87 @@ class DashboardRenderer:
         transcript_changed = updated_transcript != selected.transcript
         structured_json_changed = updated_json != original_json
 
-        action_col, delete_col = st.columns([1.2, 1], gap="medium")
-        with action_col:
-            save_disabled = save_interview_edits is None
+        transcript_col, json_col, save_all_col, delete_col = st.columns([1.1, 1.2, 1.1, 1], gap="medium")
+        with transcript_col:
+            transcript_save_disabled = save_interview_edits is None or not transcript_changed
             if st.button(
-                "Save transcript + JSON",
-                key=f"save_interview_{selected.id}",
+                "Save transcript",
+                key=f"save_transcript_{selected.id}",
                 type="primary",
                 use_container_width=True,
-                disabled=save_disabled,
+                disabled=transcript_save_disabled,
             ):
-                try:
-                    save_interview_edits(
-                        selected.id,
-                        transcript=updated_transcript,
-                        extracted_json=updated_json,
-                        transcript_changed=transcript_changed,
-                        structured_json_changed=structured_json_changed,
-                    )
-                except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
-                    st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                        "kind": "error",
-                        "message": f"Save failed: {exc}",
-                    }
-                else:
-                    transcript_edits.pop(selected.id, None)
-                    json_edits.pop(selected.id, None)
-                    st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
-                    st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                        "kind": "success",
-                        "message": "Interview saved. Analysis, persona, and dashboard aggregates were refreshed from durable storage.",
-                    }
-                    st.rerun()
-            if save_disabled:
-                st.caption("Save is unavailable because no backend save handler was provided.")
-            elif not transcript_changed and not structured_json_changed:
-                st.caption("No unsaved transcript or JSON edits detected.")
+                self._save_interview_detail_edits(
+                    interview_id=selected.id,
+                    transcript=updated_transcript,
+                    extracted_json=original_json,
+                    transcript_changed=True,
+                    structured_json_changed=False,
+                    save_interview_edits=save_interview_edits,
+                    transcript_edits=transcript_edits,
+                    json_edits=json_edits,
+                    success_message="Transcript saved. Downstream analysis, persona derivation, and dashboard views were refreshed from SQLite.",
+                )
+            if save_interview_edits is None:
+                st.caption("Transcript save is unavailable because no backend save handler was provided.")
+            elif not transcript_changed:
+                st.caption("No transcript edits to save.")
             else:
-                st.caption("Saving persists transcript edits, refreshes analysis/persona outputs, and reloads overview counts.")
+                st.caption("Saves only the transcript, then reruns analysis/persona and reloads dashboard summaries.")
+
+        with json_col:
+            json_save_disabled = save_interview_edits is None or not structured_json_changed
+            if st.button(
+                "Save structured JSON",
+                key=f"save_json_{selected.id}",
+                use_container_width=True,
+                disabled=json_save_disabled,
+            ):
+                self._save_interview_detail_edits(
+                    interview_id=selected.id,
+                    transcript=selected.transcript or "",
+                    extracted_json=updated_json,
+                    transcript_changed=False,
+                    structured_json_changed=True,
+                    save_interview_edits=save_interview_edits,
+                    transcript_edits=transcript_edits,
+                    json_edits=json_edits,
+                    success_message="Structured JSON saved. Persona outputs and dashboard summaries were refreshed from SQLite.",
+                )
+            if save_interview_edits is None:
+                st.caption("Structured JSON save is unavailable because no backend save handler was provided.")
+            elif not structured_json_changed:
+                st.caption("No structured JSON edits to save.")
+            else:
+                st.caption("Validates the JSON, persists it to SQLite, and reruns persona derivation from the edited values.")
+
+        with save_all_col:
+            save_all_disabled = save_interview_edits is None or (not transcript_changed and not structured_json_changed)
+            if st.button(
+                "Save all edits",
+                key=f"save_all_{selected.id}",
+                use_container_width=True,
+                disabled=save_all_disabled,
+            ):
+                self._save_interview_detail_edits(
+                    interview_id=selected.id,
+                    transcript=updated_transcript,
+                    extracted_json=updated_json,
+                    transcript_changed=transcript_changed,
+                    structured_json_changed=structured_json_changed,
+                    save_interview_edits=save_interview_edits,
+                    transcript_edits=transcript_edits,
+                    json_edits=json_edits,
+                    success_message="Transcript and structured JSON saved. Analysis, persona outputs, and dashboard summaries were refreshed from SQLite.",
+                )
+            if save_interview_edits is None:
+                st.caption("Save all is unavailable because no backend save handler was provided.")
+            elif not transcript_changed and not structured_json_changed:
+                st.caption("No unsaved interview detail edits detected.")
+            elif transcript_changed and structured_json_changed:
+                st.caption("Recommended when both transcript and JSON drafts changed, so both edits persist together.")
+            else:
+                st.caption("Saves whichever interview detail drafts are currently unsaved.")
 
         with delete_col:
             delete_disabled = delete_interview is None
@@ -480,6 +530,44 @@ class DashboardRenderer:
                 ):
                     st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
                     st.rerun()
+
+    def _save_interview_detail_edits(
+        self,
+        *,
+        interview_id: str,
+        transcript: str,
+        extracted_json: str,
+        transcript_changed: bool,
+        structured_json_changed: bool,
+        save_interview_edits: Callable[..., DashboardInterviewRecord] | None,
+        transcript_edits: dict[str, str],
+        json_edits: dict[str, str],
+        success_message: str,
+    ) -> None:
+        if save_interview_edits is None:
+            return
+        try:
+            save_interview_edits(
+                interview_id,
+                transcript=transcript,
+                extracted_json=extracted_json,
+                transcript_changed=transcript_changed,
+                structured_json_changed=structured_json_changed,
+            )
+        except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                "kind": "error",
+                "message": f"Save failed: {exc}",
+            }
+        else:
+            transcript_edits.pop(interview_id, None)
+            json_edits.pop(interview_id, None)
+            st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                "kind": "success",
+                "message": success_message,
+            }
+            st.rerun()
 
     def _render_filter_summary(
         self,
@@ -621,7 +709,7 @@ class DashboardRenderer:
             st.info("No chart data available.")
             return
         st.vega_lite_chart(
-            {"values": chart_data},
+            chart_data,
             {
                 "mark": {"type": "bar", "cornerRadiusTopLeft": 10, "cornerRadiusTopRight": 10, "color": color},
                 "encoding": {
@@ -656,33 +744,71 @@ class DashboardRenderer:
             unsafe_allow_html=True,
         )
 
-    def _render_interview_row(self, interview: DashboardInterview) -> None:
-        col_main, col_meta, col_action = st.columns([3.2, 1.4, 0.9], gap="medium")
+    def _render_interview_row(self, interview: DashboardInterview, *, selected_id: str | None) -> bool:
+        button_label = (
+            f"**{interview.filename}**  \n"
+            f"{self._truncate_text(interview.summary, limit=140)}  \n"
+            f"Borrowing: {interview.borrowing_source} · Income: {interview.income_band}"
+        )
+        row_selected = interview.id == selected_id
+
+        col_main, col_meta = st.columns([3.2, 1.4], gap="medium")
         with col_main:
-            st.markdown(
-                f"""
-                <div class='pd-card interview-row'>
-                    <div class='interview-title'>{interview.filename}</div>
-                    <div class='interview-summary'>{interview.summary}</div>
-                    <div class='interview-meta'>Borrowing: {interview.borrowing_source} · Income: {interview.income_band}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
+            clicked = st.button(
+                button_label,
+                key=f"select_interview_{interview.id}",
+                use_container_width=True,
+                type="primary" if row_selected else "secondary",
             )
         with col_meta:
             st.markdown(
                 f"""
                 <div class='pd-card interview-meta-card'>
-                    <div><strong>{interview.persona_name}</strong></div>
-                    <div>{interview.digital_access}</div>
-                    <div>Status: {interview.status}</div>
+                    <div class='interview-meta-primary'>{interview.persona_name}</div>
+                    <div class='interview-meta-secondary'>{interview.digital_access}</div>
+                    <div class='interview-meta-secondary'>Status: {interview.status}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
-        with col_action:
-            if st.button("Open", key=f"open_interview_{interview.id}", use_container_width=True):
-                st.session_state[FILTER_SESSION_KEYS["selected"]] = interview.id
+
+        if clicked:
+            st.session_state[FILTER_SESSION_KEYS["selected"]] = interview.id
+            st.session_state[FILTER_SESSION_KEYS["selection_notice"]] = interview.id
+            row_selected = True
+
+        if row_selected:
+            self._render_inline_interview_detail(interview)
+
+        return clicked
+
+    def _render_inline_interview_detail(self, interview: DashboardInterview) -> None:
+        st.success(f"Showing inline detail for {interview.filename}. The Interview Detail tab was updated to this selection.")
+
+        quote_markup = "".join(
+            f"<li>{quote}</li>" for quote in interview.evidence_quotes[:3]
+        ) or "<li>No direct quote captured yet.</li>"
+        transcript_preview = self._truncate_text(interview.transcript, limit=320)
+        st.markdown(
+            f"""
+            <div class='pd-card interview-detail-inline'>
+                <div class='interview-detail-inline-header'>Selected interview snapshot</div>
+                <div class='interview-meta'>Interview ID: {interview.id} · Persona: {interview.persona_name} · Status: {interview.status}</div>
+                <div class='interview-summary'>{interview.summary}</div>
+                <div class='interview-inline-grid'>
+                    <div>
+                        <div class='interview-inline-label'>Evidence quotes</div>
+                        <ul class='interview-inline-list'>{quote_markup}</ul>
+                    </div>
+                    <div>
+                        <div class='interview-inline-label'>Transcript preview</div>
+                        <div class='interview-inline-preview'>{transcript_preview}</div>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     def _next_selected_id(self, interviews: list[DashboardInterview], *, deleted_id: str) -> str | None:
         remaining_ids = [item.id for item in interviews if item.id != deleted_id]
@@ -694,6 +820,35 @@ class DashboardRenderer:
         counts = self._count_by(interviews, lambda item: getattr(item, attribute))
         total = len(interviews)
         return [(label, count, self._percent(count, total)) for label, count in counts.items()]
+
+    def _numeric_income_values(self, interviews: list[DashboardInterview]) -> list[int]:
+        values: list[int] = []
+        for interview in interviews:
+            income_value = self._parse_direct_income_value(interview.income_band)
+            if income_value is not None:
+                values.append(income_value)
+        return values
+
+    def _parse_direct_income_value(self, income_band: str) -> int | None:
+        normalized = income_band.strip()
+        if not normalized:
+            return None
+        if any(separator in normalized for separator in ("-", "–", "to")):
+            return None
+        if any(term in normalized.lower() for term in ("below", "under", "less than", "unknown")):
+            return None
+
+        match = re.search(r"(\d[\d,]*)(?:\s*([kK]))?", normalized)
+        if match is None:
+            return None
+
+        amount = int(match.group(1).replace(",", ""))
+        if match.group(2):
+            amount *= 1000
+        return amount
+
+    def _format_currency(self, amount: int) -> str:
+        return f"₹{amount:,}"
 
     def _count_by(self, interviews: list[DashboardInterview], key_func: Any) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -1003,20 +1158,29 @@ class DashboardRenderer:
         st.markdown(
             """
             <style>
+            ::selection {
+                background: #1d4ed8;
+                color: #f8fafc;
+            }
             .stApp {
                 background: #f6f8fc;
+                color: #0f172a;
             }
             .block-container {
                 padding-top: 2.2rem;
                 padding-bottom: 4rem;
             }
             .pd-card {
-                background: white;
+                background: #ffffff;
                 border-radius: 20px;
                 padding: 1.15rem 1.25rem;
                 box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
                 border: 1px solid rgba(148, 163, 184, 0.16);
                 margin-bottom: 1rem;
+                color: #0f172a;
+            }
+            .pd-card div, .pd-card span, .pd-card p, .pd-card strong {
+                color: inherit;
             }
             .kpi-card {
                 min-height: 124px;
@@ -1030,17 +1194,19 @@ class DashboardRenderer:
                 flex-direction: column;
                 justify-content: space-between;
             }
-            .kpi-label, .chart-subtitle, .table-title, .interview-meta, .persona-meta {
-                color: #64748b;
+            .kpi-label, .chart-subtitle, .table-title, .interview-meta, .persona-meta,
+            .interview-meta-secondary, .detail-flag-label {
+                color: #475569;
                 font-size: 0.95rem;
+                font-weight: 500;
             }
             .kpi-value, .persona-count, .status-value {
                 font-size: 2rem;
                 font-weight: 700;
                 color: #0f172a;
             }
-            .status-label {
-                color: #475569;
+            .status-label, .detail-flag-value, .interview-meta-primary {
+                color: #1e293b;
                 font-size: 0.98rem;
                 font-weight: 600;
             }
@@ -1050,7 +1216,7 @@ class DashboardRenderer:
                 color: #0f172a;
                 margin-bottom: 0.2rem;
             }
-            .persona-label, .interview-title {
+            .persona-label, .interview-title, .interview-detail-inline-header {
                 font-size: 1.1rem;
                 font-weight: 650;
                 color: #0f172a;
@@ -1060,6 +1226,32 @@ class DashboardRenderer:
                 font-size: 1rem;
                 line-height: 1.6;
                 color: #1e293b;
+            }
+            .interview-detail-inline {
+                margin: 0.5rem 0 1.25rem 0;
+                border: 1px solid rgba(79, 124, 255, 0.18);
+                background: linear-gradient(180deg, rgba(239, 246, 255, 0.95), rgba(255, 255, 255, 1));
+            }
+            .interview-inline-grid {
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 1rem;
+                margin-top: 0.9rem;
+            }
+            .interview-inline-label {
+                font-size: 0.95rem;
+                font-weight: 700;
+                color: #1d4ed8;
+                margin-bottom: 0.45rem;
+            }
+            .interview-inline-list {
+                margin: 0;
+                padding-left: 1.2rem;
+                color: #1e293b;
+            }
+            .interview-inline-preview {
+                color: #1e293b;
+                line-height: 1.6;
             }
             .pd-table {
                 width: 100%;
@@ -1072,8 +1264,30 @@ class DashboardRenderer:
                 font-size: 0.98rem;
             }
             .pd-table th {
-                color: #475569;
-                font-weight: 600;
+                color: #334155;
+                font-weight: 700;
+            }
+            .pd-table td {
+                color: #0f172a;
+                font-weight: 500;
+            }
+            .detail-flags-card {
+                padding-top: 0.9rem;
+                padding-bottom: 0.9rem;
+            }
+            .detail-flag-row {
+                display: flex;
+                justify-content: space-between;
+                gap: 1rem;
+                align-items: baseline;
+                padding: 0.45rem 0;
+                border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+            }
+            .detail-flag-row:last-child {
+                border-bottom: none;
+            }
+            .detail-flag-value {
+                text-align: right;
             }
             .persona-badge {
                 border-radius: 999px;
@@ -1085,36 +1299,38 @@ class DashboardRenderer:
             }
             .badge-target {
                 background: rgba(20, 184, 166, 0.12);
-                color: #0f766e;
+                color: #115e59;
             }
             .badge-nontarget {
                 background: rgba(244, 63, 94, 0.12);
-                color: #be123c;
+                color: #9f1239;
             }
             .stTabs [data-baseweb="tab-list"] {
                 gap: 0.5rem;
             }
             .stTabs [data-baseweb="tab"] {
-                background: white;
-                color: #334155;
+                background: #ffffff;
+                color: #0f172a;
                 border-radius: 999px;
                 padding: 0.6rem 1rem;
                 box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
-                border: 1px solid rgba(148, 163, 184, 0.24);
-                transition: color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+                border: 1px solid rgba(100, 116, 139, 0.28);
+                transition: color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+                font-weight: 600;
             }
             .stTabs [data-baseweb="tab"] p {
                 color: inherit;
             }
             .stTabs [data-baseweb="tab"]:hover {
                 color: #1d4ed8;
-                border-color: rgba(79, 124, 255, 0.32);
-                box-shadow: 0 10px 24px rgba(79, 124, 255, 0.1);
+                border-color: rgba(29, 78, 216, 0.42);
+                box-shadow: 0 10px 24px rgba(79, 124, 255, 0.14);
             }
             .stTabs [data-baseweb="tab"][aria-selected="true"] {
-                color: #1d4ed8;
-                border-color: rgba(79, 124, 255, 0.38);
-                box-shadow: 0 12px 28px rgba(79, 124, 255, 0.14);
+                background: #1d4ed8;
+                color: #eff6ff;
+                border-color: #1d4ed8;
+                box-shadow: 0 12px 28px rgba(29, 78, 216, 0.26);
             }
             .stTabs [data-baseweb="tab"][aria-selected="true"] p {
                 color: inherit;
@@ -1122,6 +1338,21 @@ class DashboardRenderer:
             .stTextInput label, .stMultiSelect label, .stTextArea label {
                 font-size: 1rem !important;
                 font-weight: 600 !important;
+            }
+            .stTextInput input, .stTextArea textarea, .stMultiSelect div[data-baseweb="select"] > div {
+                color: #0f172a !important;
+            }
+            .stTextInput input::selection, .stTextArea textarea::selection {
+                background: #1d4ed8;
+                color: #f8fafc;
+            }
+            div[data-testid="stDataFrame"] * {
+                color: #0f172a !important;
+            }
+            div[data-testid="stDataFrame"] [role="columnheader"] *,
+            div[data-testid="stDataFrame"] thead * {
+                color: #334155 !important;
+                font-weight: 700 !important;
             }
             p, li, span, label {
                 font-size: 1rem;

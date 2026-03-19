@@ -620,7 +620,8 @@ def test_app_service_uses_sqlite_for_durable_dashboard_reads(tmp_path) -> None:
 
 
 def test_app_service_save_interview_edits_persists_transcript_and_refreshes_outputs(tmp_path) -> None:
-    service = PaydayAppService(build_settings(str(tmp_path / "edit-save.db")))
+    database_path = str(tmp_path / "edit-save.db")
+    service = PaydayAppService(build_settings(database_path))
     result = service.process_upload(
         "editable.wav",
         "audio/wav",
@@ -664,9 +665,18 @@ def test_app_service_save_interview_edits_persists_transcript_and_refreshes_outp
     assert saved_detail.persona == "Offline / Excluded"
     assert service.get_status_overview().status_counts == {ProcessingStatus.COMPLETED.value: 1}
 
+    reloaded_service = PaydayAppService(build_settings(database_path))
+    reloaded_detail = reloaded_service.get_interview_detail(result.file_id)
+
+    assert reloaded_detail.transcript == "I use WhatsApp but I do not have a bank account."
+    assert reloaded_detail.has_bank_account is False
+    assert reloaded_detail.persona == "Offline / Excluded"
+    assert reloaded_service.get_status_overview().status_counts == {ProcessingStatus.COMPLETED.value: 1}
+
 
 def test_app_service_save_interview_edits_accepts_dashboard_json_and_rederives_persona(tmp_path) -> None:
-    service = PaydayAppService(build_settings(str(tmp_path / "edit-json.db")))
+    database_path = str(tmp_path / "edit-json.db")
+    service = PaydayAppService(build_settings(database_path))
     result = service.process_upload(
         "json-edit.wav",
         "audio/wav",
@@ -698,6 +708,15 @@ def test_app_service_save_interview_edits_accepts_dashboard_json_and_rederives_p
     assert saved_detail.summary == "Participant lacks a smartphone and avoids borrowing."
     assert saved_detail.key_quotes == ["I use a basic phone now."]
     assert service.get_status_overview().status_counts == {ProcessingStatus.COMPLETED.value: 1}
+
+    reloaded_service = PaydayAppService(build_settings(database_path))
+    reloaded_detail = reloaded_service.get_interview_detail(result.file_id)
+
+    assert reloaded_detail.smartphone_user is False
+    assert reloaded_detail.persona == "Offline / Excluded"
+    assert reloaded_detail.summary == "Participant lacks a smartphone and avoids borrowing."
+    assert reloaded_detail.key_quotes == ["I use a basic phone now."]
+    assert reloaded_service.get_status_overview().status_counts == {ProcessingStatus.COMPLETED.value: 1}
 
 
 def test_batch_uploads_persist_mixed_statuses_for_durable_dashboard_refresh(tmp_path) -> None:

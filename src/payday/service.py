@@ -58,6 +58,21 @@ class PaydayAppService:
     def process_batch_uploads(self, items: list[BatchUploadItem]) -> BatchPipelineResult:
         return self.pipeline.process_batch_uploads(items)
 
+    def runtime_summary(self) -> dict[str, object]:
+        return {
+            "sample_mode": self.settings.features.use_sample_mode,
+            "transcription": {
+                "provider": self.settings.transcription.provider,
+                "model": self.settings.transcription.model,
+                "required_key_present": bool(self.settings.transcription.api_key),
+            },
+            "analysis": {
+                "provider": self.settings.llm.provider,
+                "model": self.settings.llm.model,
+                "required_key_present": bool(self.settings.llm.api_key),
+            },
+        }
+
     def list_results(self) -> list[PipelineResult]:
         return self.repository.list_results()
 

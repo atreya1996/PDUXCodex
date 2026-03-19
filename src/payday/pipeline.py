@@ -157,6 +157,8 @@ class PaydayPipeline:
             interview_id,
             transcript=transcript_text,
             status=ProcessingStatus.PROCESSING.value,
+            latest_stage=PipelineStage.ANALYSIS.value,
+            last_error=None,
         )
 
         try:
@@ -172,23 +174,34 @@ class PaydayPipeline:
             result.persona = self.classify_persona(transcript, analysis)
             result.status = ProcessingStatus.COMPLETED
             result.persisted = True
-            self._sync_result(result)
-            self._persist_analysis_outputs(result)
-            self.repository.update_interview(
+            self.repository.persist_reprocessed_interview(
                 interview_id,
                 transcript=transcript_text,
                 status=ProcessingStatus.COMPLETED.value,
+                latest_stage=result.current_stage.value,
+                last_error=None,
+                structured_response=self._structured_response_fields(result.analysis.structured_output),
+                insight={
+                    "summary": result.analysis.summary,
+                    "key_quotes": list(result.analysis.evidence_quotes),
+                    "persona": result.persona.persona_name,
+                    "confidence_score": self._confidence_score(result.analysis.structured_output),
+                },
             )
+            self.repository.save_result(result)
             return result
         except Exception as exc:
             result.status = ProcessingStatus.FAILED
+            result.last_error = str(exc)
             result.errors.append(str(exc))
-            self._sync_result(result)
             self.repository.update_interview(
                 interview_id,
                 transcript=transcript_text,
                 status=ProcessingStatus.FAILED.value,
+                latest_stage=result.current_stage.value,
+                last_error=str(exc),
             )
+            self.repository.save_result(result)
             raise
 
     def _process_item(self, item: BatchUploadItem) -> PipelineResult:
