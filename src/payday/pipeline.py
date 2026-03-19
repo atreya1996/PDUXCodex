@@ -541,6 +541,8 @@ class PaydayPipeline:
         )
 
     def _structured_response_fields(self, structured_output: dict[str, Any]) -> dict[str, Any]:
+        smartphone_user = smartphone_user_from_analysis(structured_output)
+        has_bank_account = bank_account_user_from_analysis(structured_output)
         return {
             "smartphone_user": smartphone_user,
             "has_bank_account": has_bank_account,

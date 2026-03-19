@@ -26,8 +26,14 @@ FIELD_NAMES = (
     "loan_interest",
     "summary",
 )
+INCOME_FIELD_NAMES = (
+    "per_household_earnings",
+    "participant_personal_monthly_income",
+    "total_household_monthly_income",
+)
 TOP_LEVEL_SCHEMA_KEYS = FIELD_NAMES + ("key_quotes", "confidence_signals", "segmented_dialogue")
 ALLOWED_FIELD_STATUSES = {"observed", "unknown", "missing"}
+ALLOWED_EVIDENCE_TYPES = {"direct", "inferred_or_uncertain", "unknown"}
 ALLOWED_SPEAKER_CONFIDENCE = {"high", "medium", "low"}
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 OPENAI_REQUEST_TIMEOUT_SECONDS = 60
@@ -963,6 +969,50 @@ def _extract_openai_output_text(payload: dict[str, Any]) -> str:
             if isinstance(text, str) and text.strip() and content_type in {None, "output_text"}:
                 collected.append(text)
     return "\n".join(collected)
+
+
+def get_analysis_field(structured_output: dict[str, Any], field_name: str) -> dict[str, Any]:
+    value = structured_output.get(field_name)
+    if isinstance(value, dict):
+        return value
+    if value is None:
+        return AnalysisField().as_dict()
+    normalized_status = "unknown" if str(value).strip().lower() == DEFAULT_UNKNOWN_VALUE else "observed"
+    return AnalysisField(value=str(value).strip() or DEFAULT_UNKNOWN_VALUE, status=normalized_status).as_dict()
+
+
+def get_analysis_value(structured_output: dict[str, Any], field_name: str, default: str = DEFAULT_UNKNOWN_VALUE) -> str:
+    field = get_analysis_field(structured_output, field_name)
+    value = field.get("value")
+    if isinstance(value, str) and value.strip():
+        return value
+    return default
+
+
+def get_analysis_evidence_quotes(structured_output: dict[str, Any], field_name: str) -> list[str]:
+    field = get_analysis_field(structured_output, field_name)
+    evidence_quotes = field.get("evidence_quotes")
+    if not isinstance(evidence_quotes, list):
+        return []
+    return [quote for quote in evidence_quotes if isinstance(quote, str) and quote.strip()]
+
+
+def smartphone_user_from_analysis(structured_output: dict[str, Any]) -> bool | None:
+    value = get_analysis_value(structured_output, "smartphone_usage")
+    if value == SMARTPHONE_HAS_VALUE:
+        return True
+    if value == SMARTPHONE_NO_VALUE:
+        return False
+    return None
+
+
+def bank_account_user_from_analysis(structured_output: dict[str, Any]) -> bool | None:
+    value = get_analysis_value(structured_output, "bank_account_status")
+    if value == BANK_ACCOUNT_HAS_VALUE:
+        return True
+    if value == BANK_ACCOUNT_NO_VALUE:
+        return False
+    return None
 
 
 __all__ = [

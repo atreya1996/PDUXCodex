@@ -4,7 +4,7 @@ import logging
 
 from payday.analysis import AnalysisService, build_analysis_adapter
 from payday.config import Settings, validate_runtime_settings
-from payday.models import BatchPipelineResult, BatchUploadItem, PipelineResult
+from payday.models import BatchPipelineResult, BatchUploadItem, PipelineResult, ProcessingStatus
 from payday.personas import PersonaService
 from payday.pipeline import PaydayPipeline
 from payday.repository import DashboardInterviewRecord, DashboardStatusOverview, PaydayRepository
@@ -41,51 +41,14 @@ class PaydayAppService:
         )
         logger.info("PayDay runtime configuration loaded: %s", self.runtime_summary())
 
-    def runtime_summary(self) -> dict[str, object]:
-        return {
-            "environment": self.settings.app_env,
-            "sample_mode": self.settings.features.use_sample_mode,
-            "analysis_provider": self.pipeline.analysis_service.adapter.provider_name,
-            "analysis_model": self.pipeline.analysis_service.adapter.model_name,
-            "transcription_provider": getattr(self.pipeline.transcription_service, "provider_name", "unknown"),
-            "transcription_model": getattr(self.pipeline.transcription_service, "model_name", "unknown"),
-            "database_path": self.repository.database_path,
-        }
-
     def process_upload(self, filename: str, content_type: str, data: bytes) -> PipelineResult:
         return self.pipeline.process_upload(filename=filename, content_type=content_type, data=data)
 
     def process_batch_uploads(self, items: list[BatchUploadItem]) -> BatchPipelineResult:
         return self.pipeline.process_batch_uploads(items)
 
-    def runtime_summary(self) -> dict[str, object]:
-        return {
-            "sample_mode": self.settings.features.use_sample_mode,
-            "transcription": {
-                "provider": self.settings.transcription.provider,
-                "model": self.settings.transcription.model,
-                "required_key_present": bool(self.settings.transcription.api_key),
-            },
-            "analysis": {
-                "provider": self.settings.llm.provider,
-                "model": self.settings.llm.model,
-                "required_key_present": bool(self.settings.llm.api_key),
-            },
-        }
-
     def list_results(self) -> list[PipelineResult]:
         return self.repository.list_results()
-
-    def runtime_summary(self) -> dict[str, object]:
-        return {
-            "app_env": self.settings.app_env,
-            "sample_mode": self.settings.features.use_sample_mode,
-            "analysis_provider": self.settings.llm.provider,
-            "analysis_model": self.settings.llm.model,
-            "transcription_provider": self.settings.transcription.provider,
-            "transcription_model": self.settings.transcription.model,
-            "sqlite_path": self.settings.database.sqlite_path,
-        }
 
     def list_recent_interviews(self, *, limit: int = 100) -> list[DashboardInterviewRecord]:
         return self.repository.list_recent_interviews(limit=limit)
@@ -115,7 +78,17 @@ class PaydayAppService:
         return self.repository.get_dashboard_interview_detail(interview_id)
 
     def delete_interview(self, interview_id: str) -> bool:
-        return self.repository.delete_interview(interview_id)
+        try:
+            interview = self.repository.get_interview(interview_id)
+        except KeyError:
+            return False
+
+        deleted = self.repository.delete_interview(interview_id)
+        if not deleted:
+            return False
+
+        self._delete_stored_audio_if_needed(interview_id=interview.id, audio_url=interview.audio_url, status=interview.status)
+        return True
 
     def runtime_summary(self) -> dict[str, object]:
         return {
@@ -126,3 +99,23 @@ class PaydayAppService:
             "transcription_model": self.pipeline.transcription_service.settings.model,
             "database_path": self.repository.database_path,
         }
+
+    def _delete_stored_audio_if_needed(self, *, interview_id: str, audio_url: str, status: str) -> None:
+        if self.settings.features.use_sample_mode:
+            return
+        if status != ProcessingStatus.COMPLETED.value:
+            return
+        if not audio_url.strip():
+            return
+
+        try:
+            self.pipeline.storage_service.delete_asset(audio_url, sample_mode=False)
+        except FileNotFoundError:
+            logger.warning("Stored audio for interview %s was already missing at %s.", interview_id, audio_url)
+        except RuntimeError:
+            logger.warning(
+                "Skipped stored audio deletion for interview %s because no live storage delete client is configured.",
+                interview_id,
+            )
+        except Exception:
+            logger.exception("Failed to delete stored audio for interview %s at %s.", interview_id, audio_url)
