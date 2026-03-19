@@ -81,6 +81,7 @@ class PaydayPipeline:
             raise ValueError("Cannot store results without an uploaded asset.")
         result.current_stage = PipelineStage.STORAGE
         result.status = ProcessingStatus.PROCESSING
+        result.persisted = False
         result.persisted = self.storage_service.store_asset(
             result.asset,
             sample_mode=self.sample_mode,
