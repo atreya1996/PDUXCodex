@@ -11,6 +11,10 @@ from payday.context_loader import ContextMemory, build_analysis_prompt, load_con
 from payday.models import AnalysisResult, Transcript
 
 DEFAULT_UNKNOWN_VALUE = "unknown"
+SMARTPHONE_HAS_VALUE = "has_smartphone"
+SMARTPHONE_NO_VALUE = "no_smartphone"
+BANK_ACCOUNT_HAS_VALUE = "has_bank_account"
+BANK_ACCOUNT_NO_VALUE = "no_bank_account"
 FIELD_NAMES = (
     "smartphone_usage",
     "bank_account_status",
@@ -129,6 +133,16 @@ class OpenAIAnalysisAdapter:
 
     @staticmethod
     def _extract_output_text(response_payload: dict[str, Any]) -> str:
+        error_payload = response_payload.get("error")
+        if isinstance(error_payload, dict):
+            message = error_payload.get("message")
+            if isinstance(message, str) and message.strip():
+                raise ExternalProviderError(message.strip())
+
+        direct_output_text = response_payload.get("output_text")
+        if isinstance(direct_output_text, str) and direct_output_text.strip():
+            return direct_output_text.strip()
+
         output_items = response_payload.get("output")
         if not isinstance(output_items, list):
             return ""
@@ -143,7 +157,7 @@ class OpenAIAnalysisAdapter:
             for content in content_items:
                 if not isinstance(content, dict):
                     continue
-                if content.get("type") in {"output_text", "text"}:
+                if content.get("type") in {None, "output_text", "text"}:
                     text_value = content.get("text")
                     if isinstance(text_value, str):
                         text_chunks.append(text_value)
@@ -155,8 +169,8 @@ class AnthropicAnalysisAdapter:
 
     def __init__(self, settings: LLMSettings) -> None:
         self.settings = settings
-        self.provider_name = "anthropic"
-        self.model_name = settings.model
+        self.provider_name = "anthropic-heuristic"
+        self.model_name = "heuristic-json"
 
     def generate_analysis(
         self,
@@ -226,9 +240,17 @@ class HeuristicAnalysisAdapter:
             ("basic phone", "feature phone", "no smartphone", "without smartphone"),
         )
         if negative:
-            return _field("no_smartphone", negative, "Direct evidence that the participant lacks a smartphone.")
+            return _field(
+                SMARTPHONE_NO_VALUE,
+                negative,
+                "Direct evidence that the participant lacks a smartphone.",
+            )
         if evidence:
-            return _field("has_smartphone", evidence, "Direct evidence of smartphone or digital-app usage.")
+            return _field(
+                SMARTPHONE_HAS_VALUE,
+                evidence,
+                "Direct evidence of smartphone or digital-app usage.",
+            )
         return AnalysisField(notes="No direct transcript evidence about smartphone access.").as_dict()
 
     def _bank_account_status(self, text: str) -> dict[str, Any]:
@@ -241,9 +263,17 @@ class HeuristicAnalysisAdapter:
             ("no bank account", "without bank account", "unbanked", "do not have a bank account"),
         )
         if negative:
-            return _field("no_bank_account", negative, "Direct evidence that the participant lacks a bank account.")
+            return _field(
+                BANK_ACCOUNT_NO_VALUE,
+                negative,
+                "Direct evidence that the participant lacks a bank account.",
+            )
         if positive:
-            return _field("has_bank_account", positive, "Direct evidence of an active or available bank account.")
+            return _field(
+                BANK_ACCOUNT_HAS_VALUE,
+                positive,
+                "Direct evidence of an active or available bank account.",
+            )
         return AnalysisField(notes="No direct transcript evidence about bank-account access.").as_dict()
 
     def _income_range(self, text: str) -> dict[str, Any]:
@@ -567,6 +597,58 @@ def build_analysis_adapter(settings: LLMSettings, *, sample_mode: bool) -> Analy
     )
 
 
+def get_analysis_field(structured_output: dict[str, Any], field_name: str) -> dict[str, Any]:
+    value = structured_output.get(field_name)
+    if isinstance(value, dict):
+        return {
+            "value": str(value.get("value", DEFAULT_UNKNOWN_VALUE)).strip() or DEFAULT_UNKNOWN_VALUE,
+            "status": str(value.get("status", "unknown")).strip().lower() or "unknown",
+            "evidence_quotes": [
+                str(item).strip()
+                for item in value.get("evidence_quotes", [])
+                if isinstance(item, str) and item.strip()
+            ],
+            "notes": str(value.get("notes", "")).strip(),
+        }
+    if isinstance(value, str):
+        normalized = value.strip() or DEFAULT_UNKNOWN_VALUE
+        return {
+            "value": normalized,
+            "status": "unknown" if normalized == DEFAULT_UNKNOWN_VALUE else "observed",
+            "evidence_quotes": [],
+            "notes": "",
+        }
+    return AnalysisField().as_dict()
+
+
+def get_analysis_value(structured_output: dict[str, Any], field_name: str) -> str:
+    return str(get_analysis_field(structured_output, field_name)["value"])
+
+
+def get_analysis_evidence_quotes(structured_output: dict[str, Any], field_name: str) -> tuple[str, ...]:
+    field = get_analysis_field(structured_output, field_name)
+    evidence_quotes = field.get("evidence_quotes", [])
+    return tuple(str(item) for item in evidence_quotes if item)
+
+
+def smartphone_user_from_analysis(structured_output: dict[str, Any]) -> bool | None:
+    value = get_analysis_value(structured_output, "smartphone_usage")
+    if value == SMARTPHONE_HAS_VALUE:
+        return True
+    if value == SMARTPHONE_NO_VALUE:
+        return False
+    return None
+
+
+def bank_account_user_from_analysis(structured_output: dict[str, Any]) -> bool | None:
+    value = get_analysis_value(structured_output, "bank_account_status")
+    if value == BANK_ACCOUNT_HAS_VALUE:
+        return True
+    if value == BANK_ACCOUNT_NO_VALUE:
+        return False
+    return None
+
+
 def _field(value: str, evidence_quotes: list[str], notes: str) -> dict[str, Any]:
     return AnalysisField(
         value=value,
@@ -682,8 +764,17 @@ __all__ = [
     "AnalysisSchemaError",
     "AnalysisService",
     "AnthropicAnalysisAdapter",
+    "BANK_ACCOUNT_HAS_VALUE",
+    "BANK_ACCOUNT_NO_VALUE",
     "ExternalProviderError",
     "HeuristicAnalysisAdapter",
     "OpenAIAnalysisAdapter",
+    "SMARTPHONE_HAS_VALUE",
+    "SMARTPHONE_NO_VALUE",
+    "bank_account_user_from_analysis",
     "build_analysis_adapter",
+    "get_analysis_evidence_quotes",
+    "get_analysis_field",
+    "get_analysis_value",
+    "smartphone_user_from_analysis",
 ]

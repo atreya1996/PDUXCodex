@@ -8,6 +8,7 @@ import pytest
 
 from payday.analysis import AnalysisService, OpenAIAnalysisAdapter
 from payday.config import DatabaseSettings, FeatureFlags, LLMSettings, Settings, SupabaseSettings, TranscriptionSettings
+from payday.dashboard.views import DashboardRenderer
 from payday.models import AnalysisResult, BatchUploadItem, PipelineResult, PipelineStage, ProcessingStatus, Transcript, UploadedAsset
 from payday.personas import PersonaService
 from payday.repository import PaydayRepository
@@ -339,7 +340,7 @@ def test_pipeline_process_upload_persists_interview_structured_response_and_insi
     assert insight_row is not None
     assert insight_row[0] == result.file_id
     assert "WhatsApp every day" in insight_row[1]
-    assert insight_row[2] == "Self-Reliant Non-Borrower"
+    assert insight_row[2] == "High-Stress Cyclical Borrower"
     assert insight_row[3] == 1.0
 
     reloaded_repository = PaydayRepository(database_path=str(database_path))
@@ -361,7 +362,7 @@ def test_pipeline_process_upload_persists_interview_structured_response_and_insi
     assert detail.structured_response.loan_interest == result.analysis.structured_output["loan_interest"]["value"]
     assert detail.insight is not None
     assert detail.insight.summary == result.analysis.summary
-    assert detail.insight.persona == "Self-Reliant Non-Borrower"
+    assert detail.insight.persona == "High-Stress Cyclical Borrower"
     assert detail.insight.confidence_score == 1.0
 
 
@@ -629,19 +630,25 @@ def test_app_service_save_interview_edits_persists_transcript_and_refreshes_outp
 
     current_detail = service.get_interview_detail(result.file_id)
     current_payload = {
-        "audio_url": current_detail.audio_url,
-        "participant_profile": {
-            "smartphone_user": {"value": current_detail.smartphone_user},
-            "has_bank_account": {"value": current_detail.has_bank_account},
+        "smartphone_usage": {
+            "value": "has_smartphone" if current_detail.smartphone_user else "no_smartphone",
+            "status": "observed",
+            "evidence_quotes": [],
+            "notes": "",
         },
-        "income_range": {"value": current_detail.income_range},
-        "borrowing_history": {"value": current_detail.borrowing_history},
-        "repayment_preference": {"value": current_detail.repayment_preference},
-        "loan_interest": {"value": current_detail.loan_interest},
-        "insight": {
-            "summary": current_detail.summary,
-            "key_quotes": current_detail.key_quotes,
+        "bank_account_status": {
+            "value": "has_bank_account" if current_detail.has_bank_account else "no_bank_account",
+            "status": "observed",
+            "evidence_quotes": [],
+            "notes": "",
         },
+        "income_range": {"value": current_detail.income_range or "unknown", "status": "unknown", "evidence_quotes": [], "notes": ""},
+        "borrowing_history": {"value": current_detail.borrowing_history or "unknown", "status": "unknown", "evidence_quotes": [], "notes": ""},
+        "repayment_preference": {"value": current_detail.repayment_preference or "unknown", "status": "unknown", "evidence_quotes": [], "notes": ""},
+        "loan_interest": {"value": current_detail.loan_interest or "unknown", "status": "unknown", "evidence_quotes": [], "notes": ""},
+        "summary": {"value": current_detail.summary or "unknown", "status": "observed", "evidence_quotes": current_detail.key_quotes, "notes": ""},
+        "key_quotes": current_detail.key_quotes,
+        "confidence_signals": {"observed_evidence": [], "missing_or_unknown": []},
     }
 
     saved_detail = service.save_interview_edits(
@@ -677,19 +684,15 @@ def test_app_service_save_interview_edits_accepts_dashboard_json_and_rederives_p
     )
 
     edited_payload = {
-        "audio_url": service.get_interview_detail(result.file_id).audio_url,
-        "participant_profile": {
-            "smartphone_user": {"value": False},
-            "has_bank_account": {"value": True},
-        },
+        "smartphone_usage": {"value": "no_smartphone", "status": "observed", "evidence_quotes": ["I use a basic phone now."], "notes": ""},
+        "bank_account_status": {"value": "has_bank_account", "status": "observed", "evidence_quotes": [], "notes": ""},
         "income_range": {"value": "₹9,000", "status": "observed", "evidence_quotes": ["₹9,000"], "notes": ""},
         "borrowing_history": {"value": "has_not_borrowed_recently", "status": "observed", "evidence_quotes": ["I avoid loans"], "notes": ""},
         "repayment_preference": {"value": "monthly", "status": "observed", "evidence_quotes": ["monthly"], "notes": ""},
         "loan_interest": {"value": "not_interested", "status": "observed", "evidence_quotes": ["not interested"], "notes": ""},
-        "insight": {
-            "summary": "Participant lacks a smartphone and avoids borrowing.",
-            "key_quotes": ["I use a basic phone now."],
-        },
+        "summary": {"value": "Participant lacks a smartphone and avoids borrowing.", "status": "observed", "evidence_quotes": ["I use a basic phone now."], "notes": ""},
+        "key_quotes": ["I use a basic phone now."],
+        "confidence_signals": {"observed_evidence": [], "missing_or_unknown": []},
     }
 
     saved_detail = service.save_interview_edits(
@@ -758,6 +761,58 @@ def test_batch_uploads_persist_mixed_statuses_for_durable_dashboard_refresh(tmp_
     assert refreshed_overview.status_counts == {
         ProcessingStatus.COMPLETED.value: 2,
         ProcessingStatus.FAILED.value: 1,
+    }
+
+
+def test_processed_interviews_populate_dashboard_cohorts_personas_and_status(tmp_path) -> None:
+    database_path = str(tmp_path / "dashboard-cohorts.db")
+    service = PaydayAppService(build_settings(database_path))
+    service.process_upload(
+        "fearful-borrower.wav",
+        "audio/wav",
+        (
+            b"I use WhatsApp every day. My bank account is active. "
+            b"I borrow from neighbors sometimes. I repay monthly after salary. I am worried about scams."
+        ),
+    )
+    service.process_upload(
+        "excluded.wav",
+        "audio/wav",
+        b"I use a basic phone. I do not have a bank account.",
+    )
+
+    renderer = DashboardRenderer()
+    dashboard_interviews = renderer._build_dashboard_interviews([], service.list_recent_interviews())
+    completed_interviews = [item for item in dashboard_interviews if item.status == ProcessingStatus.COMPLETED.value]
+
+    digital_access_rows = {
+        label: count for label, count, _percent in renderer._build_cohort_rows(completed_interviews, "digital_access")
+    }
+    borrowing_rows = {
+        label: count for label, count, _percent in renderer._build_cohort_rows(completed_interviews, "borrowing_label")
+    }
+    persona_rows = {
+        label: count for label, count, _percent in renderer._build_cohort_rows(completed_interviews, "persona_name")
+    }
+    status_counts = renderer._status_counts(dashboard_interviews, service.get_status_overview())
+
+    assert digital_access_rows == {
+        "Smartphone + bank account": 1,
+        "Excluded / offline": 1,
+    }
+    assert borrowing_rows == {
+        "Borrower": 1,
+        "Non-borrower": 1,
+    }
+    assert persona_rows == {
+        "High-Stress Cyclical Borrower": 1,
+        "Offline / Excluded": 1,
+    }
+    assert status_counts == {
+        ProcessingStatus.PENDING.value: 0,
+        ProcessingStatus.PROCESSING.value: 0,
+        ProcessingStatus.COMPLETED.value: 2,
+        ProcessingStatus.FAILED.value: 0,
     }
 
 
@@ -909,21 +964,15 @@ def test_persona_classifier_uses_bank_account_override() -> None:
         build_transcript(),
         build_analysis(
             {
-                "participant_profile": {
-                    "smartphone_user": {"value": True, "evidence": ["whatsapp"]},
-                    "has_bank_account": {"value": False, "evidence": ["no bank account"]},
-                },
-                "persona_signals": {
-                    "digital_readiness": {"value": True, "evidence": ["uses apps"]},
-                    "trust_fear_barrier": {"value": True, "evidence": ["worried"]},
-                },
+                "smartphone_usage": {"value": "has_smartphone", "status": "observed", "evidence_quotes": ["whatsapp"], "notes": ""},
+                "bank_account_status": {"value": "no_bank_account", "status": "observed", "evidence_quotes": ["no bank account"], "notes": ""},
             }
         ),
     )
 
     assert persona.persona_id == "persona_3"
     assert persona.is_non_target is True
-    assert persona.explanation_payload["triggered_fields"] == ["participant_profile.has_bank_account"]
+    assert persona.explanation_payload["triggered_fields"] == ["bank_account_status"]
 
 
 def test_persona_classifier_uses_smartphone_override() -> None:
@@ -931,70 +980,56 @@ def test_persona_classifier_uses_smartphone_override() -> None:
         build_transcript(),
         build_analysis(
             {
-                "participant_profile": {
-                    "smartphone_user": {"value": False, "evidence": ["basic phone"]},
-                    "has_bank_account": {"value": True, "evidence": ["bank account"]},
-                },
-                "persona_signals": {
-                    "cyclical_borrowing": {"value": True, "evidence": ["every month"]},
-                    "repayment_stress": {"value": True, "evidence": ["repay pressure"]},
-                },
+                "smartphone_usage": {"value": "no_smartphone", "status": "observed", "evidence_quotes": ["basic phone"], "notes": ""},
+                "bank_account_status": {"value": "has_bank_account", "status": "observed", "evidence_quotes": ["bank account"], "notes": ""},
             }
         ),
     )
 
     assert persona.persona_id == "persona_3"
     assert persona.is_non_target is True
-    assert persona.explanation_payload["triggered_fields"] == ["participant_profile.smartphone_user"]
+    assert persona.explanation_payload["triggered_fields"] == ["smartphone_usage"]
 
 
 def test_persona_classifier_uses_structured_fields_for_persona_one() -> None:
     persona = PersonaService().classify(
-        build_transcript(),
+        build_transcript("My employer helps when I need money. I use WhatsApp. My bank account is active. I borrowed last month."),
         build_analysis(
             {
-                "participant_profile": {
-                    "smartphone_user": {"value": True, "evidence": ["whatsapp"]},
-                    "has_bank_account": {"value": True, "evidence": ["bank account"]},
-                },
-                "persona_signals": {
-                    "employer_dependency": {"value": True, "evidence": ["madam helped"]},
-                    "digital_borrowing": {"value": True, "evidence": ["loan app"]},
-                },
+                "smartphone_usage": {"value": "has_smartphone", "status": "observed", "evidence_quotes": ["whatsapp"], "notes": ""},
+                "bank_account_status": {"value": "has_bank_account", "status": "observed", "evidence_quotes": ["bank account"], "notes": ""},
+                "borrowing_history": {"value": "has_borrowed", "status": "observed", "evidence_quotes": ["I borrowed last month"], "notes": ""},
             }
         ),
     )
 
     assert persona.persona_id == "persona_1"
     assert persona.explanation_payload["triggered_fields"] == [
-        "persona_signals.employer_dependency",
-        "persona_signals.digital_borrowing",
+        "borrowing_history",
+        "smartphone_usage",
     ]
-    assert persona.evidence_quotes == ("madam helped", "loan app")
+    assert persona.evidence_quotes[0] == "I borrowed last month"
 
 
 def test_persona_classifier_matches_persona_five_before_lower_priority_rules() -> None:
     persona = PersonaService().classify(
-        build_transcript(),
+        build_transcript("I use WhatsApp. My bank account is active. I borrow every month and feel repayment pressure."),
         build_analysis(
             {
-                "participant_profile": {
-                    "smartphone_user": {"value": True, "evidence": ["whatsapp"]},
-                    "has_bank_account": {"value": True, "evidence": ["bank account"]},
-                },
-                "persona_signals": {
-                    "cyclical_borrowing": {"value": True, "evidence": ["every month"]},
-                    "repayment_stress": {"value": True, "evidence": ["repayment pressure"]},
-                    "self_reliance_non_borrowing": {"value": True, "evidence": ["use my savings"]},
-                },
+                "smartphone_usage": {"value": "has_smartphone", "status": "observed", "evidence_quotes": ["whatsapp"], "notes": ""},
+                "bank_account_status": {"value": "has_bank_account", "status": "observed", "evidence_quotes": ["bank account"], "notes": ""},
+                "borrowing_history": {"value": "has_borrowed", "status": "observed", "evidence_quotes": ["I borrow every month"], "notes": ""},
+                "repayment_preference": {"value": "monthly", "status": "observed", "evidence_quotes": ["every month"], "notes": ""},
+                "loan_interest": {"value": "fearful_or_uncertain", "status": "observed", "evidence_quotes": ["repayment pressure"], "notes": ""},
             }
         ),
     )
 
     assert persona.persona_id == "persona_5"
     assert persona.explanation_payload["triggered_fields"] == [
-        "persona_signals.cyclical_borrowing",
-        "persona_signals.repayment_stress",
+        "borrowing_history",
+        "repayment_preference",
+        "loan_interest",
     ]
 
 

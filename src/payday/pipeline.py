@@ -6,8 +6,18 @@ from collections.abc import Callable, Iterable
 from typing import Any, TypeVar
 from uuid import uuid4
 
-from payday.analysis import DEFAULT_UNKNOWN_VALUE
-from payday.analysis import AnalysisSchemaError, AnalysisService
+from payday.analysis import (
+    BANK_ACCOUNT_HAS_VALUE,
+    BANK_ACCOUNT_NO_VALUE,
+    DEFAULT_UNKNOWN_VALUE,
+    SMARTPHONE_HAS_VALUE,
+    SMARTPHONE_NO_VALUE,
+    AnalysisSchemaError,
+    AnalysisService,
+    bank_account_user_from_analysis,
+    get_analysis_value,
+    smartphone_user_from_analysis,
+)
 from payday.models import (
     AnalysisResult,
     BatchPipelineResult,
@@ -159,7 +169,6 @@ class PaydayPipeline:
                 transcript_changed=transcript_changed,
                 structured_json_changed=structured_json_changed,
             )
-            analysis.structured_output = self._augment_structured_output(analysis.structured_output)
             result.analysis = analysis
             result.current_stage = PipelineStage.PERSONA
             result.persona = self.classify_persona(transcript, analysis)
@@ -239,7 +248,6 @@ class PaydayPipeline:
                 message="analysis started",
             )
             result.analysis, analysis_attempts = self.analyze_transcript(result.transcript)
-            result.analysis.structured_output = self._augment_structured_output(result.analysis.structured_output)
             result.attempts[PipelineStage.ANALYSIS.value] = analysis_attempts
             self._log_stage("analysis succeeded", result, attempts=analysis_attempts)
             self._sync_result(result)
@@ -290,7 +298,6 @@ class PaydayPipeline:
         except AnalysisSchemaError as exc:
             raise ValueError(str(exc)) from exc
 
-        structured_output = self._augment_structured_output(structured_output)
         return AnalysisResult(
             summary=structured_output["summary"]["value"],
             metrics={
@@ -319,14 +326,14 @@ class PaydayPipeline:
         return {
             "smartphone_usage": self._field_from_bool(
                 value=self._bool_from_value(participant_profile.get("smartphone_user")),
-                true_value="has_smartphone",
-                false_value="no_smartphone",
+                true_value=SMARTPHONE_HAS_VALUE,
+                false_value=SMARTPHONE_NO_VALUE,
                 fallback=payload.get("smartphone_usage"),
             ),
             "bank_account_status": self._field_from_bool(
                 value=self._bool_from_value(participant_profile.get("has_bank_account")),
-                true_value="has_bank_account",
-                false_value="no_bank_account",
+                true_value=BANK_ACCOUNT_HAS_VALUE,
+                false_value=BANK_ACCOUNT_NO_VALUE,
                 fallback=payload.get("bank_account_status"),
             ),
             "income_range": self._field_from_unknownable(payload.get("income_range")),
@@ -398,20 +405,27 @@ class PaydayPipeline:
 
     def _dashboard_payload_from_record(self, detail: DashboardInterviewRecord) -> dict[str, Any]:
         return {
-            "audio_url": detail.audio_url,
-            "participant_profile": {
-                "smartphone_user": {"value": detail.smartphone_user},
-                "has_bank_account": {"value": detail.has_bank_account},
-            },
-            "income_range": {"value": detail.income_range},
-            "borrowing_history": {"value": detail.borrowing_history},
-            "repayment_preference": {"value": detail.repayment_preference},
-            "loan_interest": {"value": detail.loan_interest},
-            "insight": {
-                "summary": detail.summary,
-                "persona": detail.persona,
-                "confidence_score": detail.confidence_score,
-                "key_quotes": detail.key_quotes,
+            "smartphone_usage": self._field_from_bool(
+                value=detail.smartphone_user,
+                true_value=SMARTPHONE_HAS_VALUE,
+                false_value=SMARTPHONE_NO_VALUE,
+                fallback=None,
+            ),
+            "bank_account_status": self._field_from_bool(
+                value=detail.has_bank_account,
+                true_value=BANK_ACCOUNT_HAS_VALUE,
+                false_value=BANK_ACCOUNT_NO_VALUE,
+                fallback=None,
+            ),
+            "income_range": self._field_from_unknownable(detail.income_range),
+            "borrowing_history": self._field_from_unknownable(detail.borrowing_history),
+            "repayment_preference": self._field_from_unknownable(detail.repayment_preference),
+            "loan_interest": self._field_from_unknownable(detail.loan_interest),
+            "summary": self._field_from_unknownable(detail.summary),
+            "key_quotes": list(detail.key_quotes),
+            "confidence_signals": {
+                "observed_evidence": [],
+                "missing_or_unknown": [],
             },
         }
 
@@ -463,6 +477,53 @@ class PaydayPipeline:
                 last_error=result.last_error if last_error is not None else None,
             )
 
+    def _set_stage(
+        self,
+        result: PipelineResult,
+        *,
+        stage: PipelineStage,
+        status: ProcessingStatus | None = None,
+        message: str | None = None,
+    ) -> None:
+        result.current_stage = stage
+        if status is not None:
+            result.status = status
+        if status is not ProcessingStatus.FAILED:
+            result.last_error = None
+        if message:
+            self._log_stage(message, result)
+        self._sync_result(result)
+
+    def _record_failure(
+        self,
+        result: PipelineResult,
+        *,
+        stage: PipelineStage,
+        error: str,
+        message: str | None = None,
+    ) -> None:
+        result.current_stage = stage
+        result.status = ProcessingStatus.FAILED
+        result.last_error = error
+        if not result.errors or result.errors[-1] != error:
+            result.errors.append(error)
+        if message:
+            self._log_stage(message, result)
+        self._sync_result(result)
+
+    def _log_stage(self, message: str, result: PipelineResult, *, attempts: int | None = None) -> None:
+        payload = {
+            "file_id": result.file_id,
+            "filename": result.filename,
+            "stage": result.current_stage.value,
+            "status": result.status.value,
+        }
+        if attempts is not None:
+            payload["attempts"] = attempts
+        if result.last_error:
+            payload["last_error"] = result.last_error
+        logger.info("%s: %s", message, payload)
+
     def _persist_analysis_outputs(self, result: PipelineResult) -> None:
         if result.analysis is None or result.persona is None:
             raise ValueError("Cannot persist analysis outputs without both analysis and persona results.")
@@ -481,56 +542,14 @@ class PaydayPipeline:
         )
 
     def _structured_response_fields(self, structured_output: dict[str, Any]) -> dict[str, Any]:
-        smartphone_user = self._read_bool(structured_output, "participant_profile.smartphone_user")
-        if smartphone_user is None:
-            smartphone_user = self._smartphone_bool_from_flat(structured_output)
-
-        has_bank_account = self._read_bool(structured_output, "participant_profile.has_bank_account")
-        if has_bank_account is None:
-            has_bank_account = self._bank_account_bool_from_flat(structured_output)
-
         return {
-            "smartphone_user": smartphone_user,
-            "has_bank_account": has_bank_account,
+            "smartphone_user": smartphone_user_from_analysis(structured_output),
+            "has_bank_account": bank_account_user_from_analysis(structured_output),
             "income_range": self._read_value(structured_output, "income_range"),
             "borrowing_history": self._read_value(structured_output, "borrowing_history"),
             "repayment_preference": self._read_value(structured_output, "repayment_preference"),
             "loan_interest": self._read_value(structured_output, "loan_interest"),
         }
-
-    def _augment_structured_output(self, structured_output: dict[str, Any]) -> dict[str, Any]:
-        normalized = dict(structured_output)
-        participant_profile = dict(normalized.get("participant_profile", {})) if isinstance(normalized.get("participant_profile"), dict) else {}
-
-        smartphone_user = self._read_bool(normalized, "participant_profile.smartphone_user")
-        if smartphone_user is None:
-            smartphone_user = self._smartphone_bool_from_flat(normalized)
-        if smartphone_user is not None:
-            participant_profile["smartphone_user"] = {
-                "value": smartphone_user,
-                "evidence": self._read_evidence_quotes(normalized, "smartphone_usage"),
-            }
-
-        has_bank_account = self._read_bool(normalized, "participant_profile.has_bank_account")
-        if has_bank_account is None:
-            has_bank_account = self._bank_account_bool_from_flat(normalized)
-        if has_bank_account is not None:
-            participant_profile["has_bank_account"] = {
-                "value": has_bank_account,
-                "evidence": self._read_evidence_quotes(normalized, "bank_account_status"),
-            }
-
-        if participant_profile:
-            normalized["participant_profile"] = participant_profile
-        return normalized
-
-    def _read_evidence_quotes(self, structured_output: dict[str, Any], key: str) -> list[str]:
-        value = structured_output.get(key)
-        if isinstance(value, dict):
-            evidence_quotes = value.get("evidence_quotes")
-            if isinstance(evidence_quotes, list):
-                return [str(item) for item in evidence_quotes if item]
-        return []
 
     def _confidence_score(self, structured_output: dict[str, Any]) -> float:
         confidence_signals = structured_output.get("confidence_signals")
@@ -563,98 +582,10 @@ class PaydayPipeline:
         return round(observed / total, 2)
 
     def _read_value(self, structured_output: dict[str, Any], key: str) -> str | None:
-        value = structured_output.get(key)
-        if isinstance(value, dict):
-            candidate = value.get("value")
-        else:
-            candidate = value
-        if candidate is None:
-            return None
-        normalized = str(candidate).strip()
+        normalized = get_analysis_value(structured_output, key).strip()
         if not normalized or normalized == DEFAULT_UNKNOWN_VALUE:
             return None
         return normalized
-
-    def _read_bool(self, structured_output: dict[str, Any], dotted_path: str) -> bool | None:
-        current: Any = structured_output
-        for key in dotted_path.split("."):
-            if not isinstance(current, dict):
-                return None
-            current = current.get(key)
-        if isinstance(current, dict) and isinstance(current.get("value"), bool):
-            return current["value"]
-        if isinstance(current, bool):
-            return current
-        return None
-
-    def _smartphone_bool_from_flat(self, structured_output: dict[str, Any]) -> bool | None:
-        value = self._read_value(structured_output, "smartphone_usage")
-        if value == "has_smartphone":
-            return True
-        if value == "no_smartphone":
-            return False
-        return None
-
-    def _bank_account_bool_from_flat(self, structured_output: dict[str, Any]) -> bool | None:
-        value = self._read_value(structured_output, "bank_account_status")
-        if value == "has_bank_account":
-            return True
-        if value == "no_bank_account":
-            return False
-        return None
-
-    def _set_stage(
-        self,
-        result: PipelineResult,
-        *,
-        stage: PipelineStage,
-        status: ProcessingStatus | None = None,
-        message: str | None = None,
-    ) -> None:
-        result.current_stage = stage
-        if status is not None:
-            result.status = status
-        self._sync_result(result)
-        if message:
-            self._log_stage(message, result)
-
-    def _record_failure(
-        self,
-        result: PipelineResult,
-        *,
-        stage: PipelineStage,
-        error: str,
-        message: str = "pipeline stage failed",
-    ) -> None:
-        result.current_stage = stage
-        result.status = ProcessingStatus.FAILED
-        result.last_error = error
-        if error not in result.errors:
-            result.errors.append(error)
-        self._log_stage(message, result, error=error)
-        self._sync_result(result)
-
-    def _log_stage(
-        self,
-        message: str,
-        result: PipelineResult,
-        *,
-        attempts: int | None = None,
-        error: str | None = None,
-    ) -> None:
-        payload = {
-            "file_id": result.file_id,
-            "filename": result.filename,
-            "stage": result.current_stage.value,
-            "status": result.status.value,
-        }
-        if attempts is not None:
-            payload["attempts"] = attempts
-        if error is not None:
-            payload["error"] = error
-            logger.error("%s: %s", message, payload)
-            return
-        logger.info("%s: %s", message, payload)
 
     def _run_with_retries(self, stage: PipelineStage, operation: Callable[[], T]) -> tuple[T, int]:
         last_error: Exception | None = None
