@@ -123,6 +123,7 @@ def test_dashboard_renderer_prefers_durable_repository_values_for_status_rows() 
     assert interviews[0].last_error is None
     assert interviews[0].summary == "Repository summary"
     assert interviews[0].transcript == "Repository transcript"
+    assert interviews[0].income_band == "Participant monthly income: ₹10k–15k"
     assert interviews[0].evidence_quotes == ("Repository quote",)
     assert interviews[0].segmented_dialogue[0]["speaker_label"] == "participant"
     assert interviews[0].audio_bytes == b"1234"

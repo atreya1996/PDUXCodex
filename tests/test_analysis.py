@@ -58,12 +58,14 @@ VALID_ANALYSIS_PAYLOAD = {
         "status": "observed",
         "evidence_quotes": ["I use WhatsApp every day"],
         "notes": "Directly stated.",
+        "english_translation": "I use WhatsApp every day",
     },
     "bank_account_status": {
         "value": "has_bank_account",
         "status": "observed",
         "evidence_quotes": ["My bank account is active"],
         "notes": "Directly stated.",
+        "english_translation": "My bank account is active",
     },
     "per_household_earnings": {
         "value": "unknown",
@@ -71,6 +73,7 @@ VALID_ANALYSIS_PAYLOAD = {
         "evidence_quotes": [],
         "notes": "No per-household quote.",
         "evidence_type": "unknown",
+        "english_translation": "",
     },
     "participant_personal_monthly_income": {
         "value": "₹12,000",
@@ -78,6 +81,7 @@ VALID_ANALYSIS_PAYLOAD = {
         "evidence_quotes": ["I earn ₹12,000 per month"],
         "notes": "Directly stated.",
         "evidence_type": "direct",
+        "english_translation": "I earn ₹12,000 per month",
     },
     "total_household_monthly_income": {
         "value": "unknown",
@@ -85,34 +89,64 @@ VALID_ANALYSIS_PAYLOAD = {
         "evidence_quotes": [],
         "notes": "No household total quote.",
         "evidence_type": "unknown",
+        "english_translation": "",
     },
     "borrowing_history": {
         "value": "has_borrowed",
         "status": "observed",
         "evidence_quotes": ["I borrow from neighbors sometimes"],
         "notes": "Directly stated.",
+        "english_translation": "I borrow from neighbors sometimes",
     },
     "repayment_preference": {
         "value": "monthly",
         "status": "observed",
         "evidence_quotes": ["I repay monthly after salary"],
         "notes": "Directly stated.",
+        "english_translation": "I repay monthly after salary",
     },
     "loan_interest": {
         "value": "fearful_or_uncertain",
         "status": "observed",
         "evidence_quotes": ["I am worried about scams"],
         "notes": "Trust barrier present.",
+        "english_translation": "I am worried about scams",
     },
     "summary": {
         "value": "The participant uses WhatsApp, has a bank account, earns ₹12,000, and worries about scams.",
         "status": "observed",
         "evidence_quotes": ["I use WhatsApp every day", "I am worried about scams"],
         "notes": "Grounded in transcript.",
+        "english_translation": "The participant uses WhatsApp, has a bank account, earns ₹12,000, and worries about scams.",
     },
     "key_quotes": [
         "I use WhatsApp every day",
         "I am worried about scams",
+    ],
+    "key_quote_details": [
+        {
+            "original_text": "I use WhatsApp every day",
+            "english_translation": "I use WhatsApp every day",
+            "speaker_label": "participant",
+            "turn_index": 0,
+        },
+        {
+            "original_text": "I am worried about scams",
+            "english_translation": "I am worried about scams",
+            "speaker_label": "participant",
+            "turn_index": 1,
+        },
+    ],
+    "income_mentions": [
+        {
+            "meaning_label": "participant_personal_monthly_income",
+            "amount": "₹12,000",
+            "evidence_quote": "I earn ₹12,000 per month",
+            "english_translation": "I earn ₹12,000 per month",
+            "speaker_label": "unknown",
+            "turn_index": None,
+            "evidence_type": "direct",
+        }
     ],
     "confidence_signals": {
         "observed_evidence": ["trust barrier mentioned"],
@@ -120,14 +154,18 @@ VALID_ANALYSIS_PAYLOAD = {
     },
     "segmented_dialogue": [
         {
+            "turn_index": 0,
             "speaker_label": "participant",
             "utterance_text": "I use WhatsApp every day",
+            "english_translation": "I use WhatsApp every day",
             "speaker_confidence": "medium",
             "speaker_uncertainty": "First-person phrasing suggests the participant is speaking.",
         },
         {
+            "turn_index": 1,
             "speaker_label": "participant",
             "utterance_text": "I am worried about scams",
+            "english_translation": "I am worried about scams",
             "speaker_confidence": "medium",
             "speaker_uncertainty": "First-person phrasing suggests the participant is speaking.",
         },
@@ -163,6 +201,7 @@ def test_analysis_service_retries_invalid_json_and_returns_validated_output() ->
     assert result.structured_output["bank_account_status"]["value"] == "has_bank_account"
     assert result.evidence_quotes == ["I use WhatsApp every day", "I am worried about scams"]
     assert result.structured_output["segmented_dialogue"][0]["speaker_label"] == "participant"
+    assert result.structured_output["key_quote_details"][0]["english_translation"] == "I use WhatsApp every day"
 
 
 def test_openai_analysis_adapter_retries_invalid_json_until_valid_payload() -> None:
@@ -220,6 +259,8 @@ def test_heuristic_analysis_separates_income_fields(case: dict[str, object]) -> 
         assert field["evidence_type"] == field_expected["evidence_type"]
         if field["status"] == "observed":
             assert field["evidence_quotes"]
+    assert result.structured_output["income_mentions"]
+    assert all("meaning_label" in item for item in result.structured_output["income_mentions"])
 
 
 def test_analysis_service_applies_defaults_and_tracks_missing_values() -> None:
@@ -253,6 +294,7 @@ def test_analysis_service_applies_defaults_and_tracks_missing_values() -> None:
     assert result.structured_output["bank_account_status"]["status"] == "missing"
     assert "smartphone_usage: unknown" in result.structured_output["confidence_signals"]["missing_or_unknown"]
     assert result.structured_output["segmented_dialogue"] == []
+    assert result.structured_output["key_quote_details"] == [{"original_text": "I use a basic phone", "english_translation": "I use a basic phone", "speaker_label": "unknown", "turn_index": None}]
 
 
 def test_analysis_prompt_includes_weak_metadata_hints_and_separates_dialogue_when_evident() -> None:
@@ -269,6 +311,7 @@ def test_analysis_prompt_includes_weak_metadata_hints_and_separates_dialogue_whe
     assert "Use filename or interview metadata only as a weak hint for participant identity." in prompt
     assert '"participant_name_hint": "Meena"' in prompt
     assert "Separate interviewer questions from participant answers" in prompt
+    assert "Never treat wages from one house/home as the participant's full monthly income" in prompt
 
 
 class FakeHTTPResponse:

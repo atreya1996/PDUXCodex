@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
+from payday.analysis import DEFAULT_UNKNOWN_VALUE
 from payday.models import AnalysisResult, PersonaClassification, PipelineResult
 
 _UNSET = object()
@@ -393,15 +394,21 @@ class PaydayRepository:
                     interview_id,
                     smartphone_user,
                     has_bank_account,
+                    per_household_earnings,
+                    participant_personal_monthly_income,
+                    total_household_monthly_income,
                     income_range,
                     borrowing_history,
                     repayment_preference,
                     loan_interest
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(interview_id) DO UPDATE SET
                     smartphone_user = excluded.smartphone_user,
                     has_bank_account = excluded.has_bank_account,
+                    per_household_earnings = excluded.per_household_earnings,
+                    participant_personal_monthly_income = excluded.participant_personal_monthly_income,
+                    total_household_monthly_income = excluded.total_household_monthly_income,
                     income_range = excluded.income_range,
                     borrowing_history = excluded.borrowing_history,
                     repayment_preference = excluded.repayment_preference,
@@ -411,6 +418,9 @@ class PaydayRepository:
                     interview_id,
                     self._bool_to_int(structured_response.get("smartphone_user")),
                     self._bool_to_int(structured_response.get("has_bank_account")),
+                    structured_response.get("per_household_earnings"),
+                    structured_response.get("participant_personal_monthly_income"),
+                    structured_response.get("total_household_monthly_income"),
                     structured_response.get("income_range"),
                     structured_response.get("borrowing_history"),
                     structured_response.get("repayment_preference"),
@@ -737,14 +747,17 @@ class PaydayRepository:
 
 
     def _preferred_income_value(self, structured: dict[str, object]) -> str | None:
-        for field_name in (
-            "participant_personal_monthly_income",
-            "total_household_monthly_income",
-            "income_range",
+        for field_name, label in (
+            ("participant_personal_monthly_income", "Participant monthly income"),
+            ("total_household_monthly_income", "Household monthly income"),
+            ("per_household_earnings", "Per-household earnings"),
         ):
             value = self._extract_value(structured, field_name)
-            if value and value != "unknown":
-                return value
+            if value and value != DEFAULT_UNKNOWN_VALUE:
+                return f"{label}: {value}"
+        legacy_value = self._extract_value(structured, "income_range")
+        if legacy_value and legacy_value != DEFAULT_UNKNOWN_VALUE:
+            return legacy_value
         return None
 
     @staticmethod
