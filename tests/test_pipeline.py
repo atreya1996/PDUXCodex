@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import types
+from pathlib import Path
 
 import pytest
 
@@ -145,6 +146,12 @@ def build_transcript(text: str = "test transcript") -> Transcript:
 
 def build_analysis(structured_output: dict) -> AnalysisResult:
     return AnalysisResult(summary="summary", structured_output=structured_output)
+
+
+def load_sample_case(case_filename: str) -> tuple[str, dict[str, object]]:
+    transcript = (Path("sample_data/mock_uploads") / case_filename).read_text(encoding="utf-8")
+    payload = json.loads((Path("sample_data/structured_outputs") / case_filename.replace(".txt", ".json")).read_text(encoding="utf-8"))
+    return transcript, payload["structured_output"]
 
 
 def test_transcription_service_sample_mode_preserves_demo_behavior() -> None:
@@ -753,6 +760,59 @@ def test_app_service_save_interview_edits_accepts_dashboard_json_and_rederives_p
     assert reloaded_service.get_status_overview().status_counts == {ProcessingStatus.COMPLETED.value: 1}
 
 
+def test_dashboard_tabs_reflect_legacy_reprocessed_persona_examples_one_to_five(tmp_path) -> None:
+    database_path = str(tmp_path / "legacy-dashboard.db")
+    service = PaydayAppService(build_settings(database_path))
+
+    cases = [
+        "demo_01_employer_digital_borrower.txt",
+        "demo_02_fearful_but_ready.txt",
+        "demo_03_no_smartphone.txt",
+        "demo_05_self_reliant.txt",
+        "demo_06_cyclical_stress.txt",
+    ]
+
+    for index, case_filename in enumerate(cases, start=1):
+        transcript_text, structured_output = load_sample_case(case_filename)
+        result = service.process_upload(
+            f"legacy-case-{index}.wav",
+            "audio/wav",
+            transcript_text.encode("utf-8"),
+        )
+
+        service.save_interview_edits(
+            result.file_id,
+            transcript=transcript_text,
+            extracted_json=json.dumps(structured_output, ensure_ascii=False),
+            transcript_changed=False,
+            structured_json_changed=True,
+        )
+
+    reloaded_service = PaydayAppService(build_settings(database_path))
+    renderer = DashboardRenderer()
+    dashboard_interviews = renderer._build_dashboard_interviews([], reloaded_service.list_recent_interviews())
+    completed_interviews = [item for item in dashboard_interviews if item.status == ProcessingStatus.COMPLETED.value]
+
+    persona_rows = {
+        label: count for label, count, _percent in renderer._build_cohort_rows(completed_interviews, "persona_name")
+    }
+    digital_access_rows = {
+        label: count for label, count, _percent in renderer._build_cohort_rows(completed_interviews, "digital_access")
+    }
+
+    assert persona_rows == {
+        "Employer-Dependent Digital Borrower": 1,
+        "Digitally Ready but Fearful": 1,
+        "Offline / Excluded": 1,
+        "Self-Reliant Non-Borrower": 1,
+        "High-Stress Cyclical Borrower": 1,
+    }
+    assert digital_access_rows == {
+        "Smartphone + bank account": 4,
+        "Excluded / offline": 1,
+    }
+
+
 def test_batch_uploads_persist_mixed_statuses_for_durable_dashboard_refresh(tmp_path) -> None:
     database_path = str(tmp_path / "payday-batch-dashboard.db")
     service = PaydayAppService(build_settings(database_path))
@@ -1121,6 +1181,24 @@ def test_persona_classifier_matches_persona_five_before_lower_priority_rules() -
         "repayment_preference",
         "loan_interest",
     ]
+
+
+def test_persona_classifier_supports_legacy_nested_structured_output_for_personas_one_to_five() -> None:
+    expected_personas = {
+        "demo_01_employer_digital_borrower.txt": "persona_1",
+        "demo_02_fearful_but_ready.txt": "persona_2",
+        "demo_03_no_smartphone.txt": "persona_3",
+        "demo_05_self_reliant.txt": "persona_4",
+        "demo_06_cyclical_stress.txt": "persona_5",
+    }
+
+    service = PersonaService()
+
+    for filename, expected_persona in expected_personas.items():
+        transcript_text, structured_output = load_sample_case(filename)
+        persona = service.classify(build_transcript(transcript_text), build_analysis(structured_output))
+
+        assert persona.persona_id == expected_persona
 
 
 def test_app_service_uses_live_openai_analysis_adapter_when_sample_mode_disabled() -> None:

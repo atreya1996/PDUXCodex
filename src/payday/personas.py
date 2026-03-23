@@ -7,6 +7,8 @@ from payday.analysis import (
     DEFAULT_UNKNOWN_VALUE,
     bank_account_user_from_analysis,
     get_analysis_evidence_quotes,
+    get_persona_signal_evidence_quotes,
+    get_persona_signal_value,
     get_analysis_value,
     smartphone_user_from_analysis,
 )
@@ -125,10 +127,14 @@ class PersonaService:
             return None
 
         borrowing_history = get_analysis_value(structured_output, "borrowing_history")
+        employer_dependency = get_persona_signal_value(structured_output, "employer_dependency")
+        digital_borrowing = get_persona_signal_value(structured_output, "digital_borrowing")
         lowered_transcript = transcript.text.lower()
         mentions_employer = any(token in lowered_transcript for token in ("employer", "madam", "sir", "boss"))
-        if borrowing_history == "has_borrowed" and mentions_employer:
+        if borrowing_history == "has_borrowed" and (mentions_employer or employer_dependency is True):
             borrowing_quotes = list(get_analysis_evidence_quotes(structured_output, "borrowing_history"))
+            borrowing_quotes.extend(get_persona_signal_evidence_quotes(structured_output, "digital_borrowing"))
+            borrowing_quotes.extend(get_persona_signal_evidence_quotes(structured_output, "employer_dependency"))
             employer_quotes = [
                 sentence
                 for sentence in transcript.text.split(".")
@@ -158,7 +164,8 @@ class PersonaService:
             return None
 
         loan_interest = get_analysis_value(structured_output, "loan_interest")
-        if loan_interest == "fearful_or_uncertain":
+        trust_fear_barrier = get_persona_signal_value(structured_output, "trust_fear_barrier")
+        if loan_interest == "fearful_or_uncertain" or trust_fear_barrier is True:
             return PersonaDecision(
                 persona_key="persona_2",
                 rationale=(
@@ -173,6 +180,7 @@ class PersonaService:
                     (
                         list(get_analysis_evidence_quotes(structured_output, "smartphone_usage"))
                         + list(get_analysis_evidence_quotes(structured_output, "loan_interest"))
+                        + list(get_persona_signal_evidence_quotes(structured_output, "trust_fear_barrier"))
                     )[:2]
                 ),
             )
@@ -183,14 +191,20 @@ class PersonaService:
         structured_output: dict[str, Any],
     ) -> PersonaDecision | None:
         borrowing_history = get_analysis_value(structured_output, "borrowing_history")
-        if borrowing_history == "has_not_borrowed_recently":
+        self_reliance_non_borrowing = get_persona_signal_value(structured_output, "self_reliance_non_borrowing")
+        if borrowing_history == "has_not_borrowed_recently" or self_reliance_non_borrowing is True:
             return PersonaDecision(
                 persona_key="persona_4",
                 rationale=(
                     "Persona 4 matched because the participant explicitly reports not borrowing recently."
                 ),
                 triggered_fields=("borrowing_history",),
-                evidence_quotes=get_analysis_evidence_quotes(structured_output, "borrowing_history")[:2],
+                evidence_quotes=tuple(
+                    (
+                        list(get_analysis_evidence_quotes(structured_output, "borrowing_history"))
+                        + list(get_persona_signal_evidence_quotes(structured_output, "self_reliance_non_borrowing"))
+                    )[:2]
+                ),
             )
         return None
 
@@ -207,20 +221,27 @@ class PersonaService:
         borrowing_history = get_analysis_value(structured_output, "borrowing_history")
         repayment_preference = get_analysis_value(structured_output, "repayment_preference")
         loan_interest = get_analysis_value(structured_output, "loan_interest")
+        cyclical_borrowing = get_persona_signal_value(structured_output, "cyclical_borrowing")
+        repayment_stress = get_persona_signal_value(structured_output, "repayment_stress")
         lowered_transcript = transcript.text.lower()
         stress_markers = ("pressure", "stress", "tension", "cycle", "again", "every month")
         has_stress_evidence = any(marker in lowered_transcript for marker in stress_markers)
 
         if (
-            borrowing_history == "has_borrowed"
-            and repayment_preference != DEFAULT_UNKNOWN_VALUE
-            and (loan_interest == "fearful_or_uncertain" or has_stress_evidence)
+            (borrowing_history == "has_borrowed" or cyclical_borrowing is True)
+            and (
+                repayment_preference != DEFAULT_UNKNOWN_VALUE
+                or cyclical_borrowing is True
+                or repayment_stress is True
+                or has_stress_evidence
+            )
+            and (loan_interest == "fearful_or_uncertain" or has_stress_evidence or repayment_stress is True)
         ):
             return PersonaDecision(
                 persona_key="persona_5",
                 rationale=(
-                    "Persona 5 matched because the participant reports borrowing, a concrete repayment cadence, "
-                    "and stress or fear around the borrowing cycle."
+                    "Persona 5 matched because the participant reports borrowing plus stress around repeated "
+                    "repayment, including legacy cyclical-borrowing signals when present."
                 ),
                 triggered_fields=(
                     "borrowing_history",
@@ -232,6 +253,8 @@ class PersonaService:
                         list(get_analysis_evidence_quotes(structured_output, "borrowing_history"))
                         + list(get_analysis_evidence_quotes(structured_output, "repayment_preference"))
                         + list(get_analysis_evidence_quotes(structured_output, "loan_interest"))
+                        + list(get_persona_signal_evidence_quotes(structured_output, "cyclical_borrowing"))
+                        + list(get_persona_signal_evidence_quotes(structured_output, "repayment_stress"))
                     )[:2]
                 ),
             )
