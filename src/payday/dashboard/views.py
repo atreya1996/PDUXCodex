@@ -35,6 +35,7 @@ FILTER_SESSION_KEYS = {
     "digital_access": "dashboard_filter_digital_access",
     "search": "dashboard_search_query",
     "selected": "dashboard_selected_interview_id",
+    "detail_open": "dashboard_detail_overlay_open",
     "transcripts": "dashboard_transcript_edits",
     "json": "dashboard_json_edits",
     "detail_message": "dashboard_detail_message",
@@ -102,7 +103,14 @@ class DashboardRenderer:
         with tabs[2]:
             self._render_personas(filtered, sample_mode=sample_mode)
         with tabs[3]:
-            self._render_interviews(filtered, sample_mode=sample_mode)
+            self._render_interviews(
+                filtered,
+                interviews,
+                interview_detail_loader,
+                save_interview_edits=save_interview_edits,
+                delete_interview=delete_interview,
+                sample_mode=sample_mode,
+            )
         with tabs[4]:
             self._render_interview_detail(
                 filtered,
@@ -119,6 +127,7 @@ class DashboardRenderer:
         st.session_state.setdefault(FILTER_SESSION_KEYS["persona"], [])
         st.session_state.setdefault(FILTER_SESSION_KEYS["digital_access"], [])
         st.session_state.setdefault(FILTER_SESSION_KEYS["search"], "")
+        st.session_state.setdefault(FILTER_SESSION_KEYS["detail_open"], False)
         st.session_state.setdefault(FILTER_SESSION_KEYS["transcripts"], {})
         st.session_state.setdefault(FILTER_SESSION_KEYS["json"], {})
         st.session_state.setdefault(FILTER_SESSION_KEYS["detail_message"], None)
@@ -261,9 +270,20 @@ class DashboardRenderer:
                     unsafe_allow_html=True,
                 )
 
-    def _render_interviews(self, filtered: list[DashboardInterview], *, sample_mode: bool) -> None:
+    def _render_interviews(
+        self,
+        filtered: list[DashboardInterview],
+        all_interviews: list[DashboardInterview],
+        interview_detail_loader: Callable[[str], DashboardInterviewRecord],
+        *,
+        save_interview_edits: Callable[..., DashboardInterviewRecord] | None,
+        delete_interview: Callable[[str], bool] | None,
+        sample_mode: bool,
+    ) -> None:
         st.markdown("### Searchable interview list")
-        st.caption("Click an interview card to open an inline preview immediately. The Interview Detail tab stays synced to the same selection.")
+        st.caption(
+            "Click an interview card or its Open button to reveal the selected interview here without leaving the Interviews view."
+        )
         if not filtered:
             self._render_empty_state(
                 "No interview cards yet",
@@ -272,10 +292,35 @@ class DashboardRenderer:
             )
             return
 
+        overlay_host = st.container()
         selected_id = st.session_state.get(FILTER_SESSION_KEYS["selected"])
         for interview in filtered:
             if self._render_interview_row(interview, selected_id=selected_id):
                 selected_id = interview.id
+
+        overlay_open = bool(st.session_state.get(FILTER_SESSION_KEYS["detail_open"]))
+        selected = self._selected_interview(all_interviews)
+        with overlay_host:
+            if overlay_open and selected is not None:
+                if filtered and selected.id not in {item.id for item in filtered}:
+                    st.warning("The selected interview is outside the current filter set, but remains open for review.")
+                st.markdown(
+                    """
+                    <div class='pd-card interview-overlay-intro'>
+                        <div class='interview-overlay-eyebrow'>Interview overlay</div>
+                        <div class='interview-overlay-title'>Review the selected interview without leaving this tab.</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                self._render_interview_detail_panel(
+                    self._merge_detail_record(selected, interview_detail_loader),
+                    all_interviews,
+                    save_interview_edits=save_interview_edits,
+                    delete_interview=delete_interview,
+                    show_close_button=True,
+                    panel_context="overlay",
+                )
 
     def _render_interview_detail(
         self,
@@ -296,8 +341,7 @@ class DashboardRenderer:
             )
             return
 
-        selected_id = st.session_state[FILTER_SESSION_KEYS["selected"]]
-        selected = next((item for item in all_interviews if item.id == selected_id), None)
+        selected = self._selected_interview(all_interviews)
         if selected is None:
             st.info("Select an interview from the list to inspect it here.")
             return
@@ -305,249 +349,14 @@ class DashboardRenderer:
         if filtered and selected.id not in {item.id for item in filtered}:
             st.warning("The selected interview is outside the current filter set, but remains available for review.")
 
-        selected = self._merge_detail_record(selected, interview_detail_loader)
-
-        transcript_edits: dict[str, str] = st.session_state[FILTER_SESSION_KEYS["transcripts"]]
-        json_edits: dict[str, str] = st.session_state[FILTER_SESSION_KEYS["json"]]
-        original_json = json.dumps(selected.extracted_json, indent=2, ensure_ascii=False)
-        transcript_edits.setdefault(selected.id, selected.transcript)
-        json_edits.setdefault(selected.id, original_json)
-
-        detail_message = st.session_state.get(FILTER_SESSION_KEYS["detail_message"])
-        if isinstance(detail_message, dict):
-            kind = detail_message.get("kind")
-            message = str(detail_message.get("message", "")).strip()
-            if kind == "success" and message:
-                st.success(message)
-            elif kind == "error" and message:
-                st.error(message)
-            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = None
-
-        selection_notice = st.session_state.get(FILTER_SESSION_KEYS["selection_notice"])
-        if selection_notice == selected.id:
-            st.info(f"Interview selection synced from the Interviews tab: {selected.filename} is now active in Interview Detail.")
-
-        header_col, badge_col = st.columns([3, 1])
-        with header_col:
-            st.markdown(f"#### {selected.filename}")
-            st.caption(f"Interview ID: {selected.id} · Created: {selected.created_at} · Status: {selected.status}")
-        with badge_col:
-            badge_class = "badge-nontarget" if selected.is_non_target else "badge-target"
-            st.markdown(
-                f"<div class='persona-badge {badge_class}'>{selected.persona_name}</div>",
-                unsafe_allow_html=True,
-            )
-
-        audio_col, meta_col = st.columns([2, 1], gap="large")
-        with audio_col:
-            st.markdown("##### Audio")
-            if selected.audio_bytes:
-                st.audio(selected.audio_bytes, format=selected.audio_format)
-            else:
-                st.info("Audio bytes are unavailable after restart, but the durable interview record remains available.")
-                if selected.extracted_json.get("audio_url"):
-                    st.caption(f"Stored audio path: {selected.extracted_json['audio_url']}")
-        with meta_col:
-            st.markdown("##### Extracted flags")
-            flag_rows = [
-                ("Digital access", selected.digital_access),
-                ("Income band", selected.income_band),
-                ("Borrowing", selected.borrowing_label),
-                ("Borrowing source", selected.borrowing_source),
-                ("Loan interest", selected.loan_interest_label),
-            ]
-            flag_markup = "".join(
-                f"<div class='detail-flag-row'><span class='detail-flag-label'>{label}</span><span class='detail-flag-value'>{value}</span></div>"
-                for label, value in flag_rows
-            )
-            st.markdown(
-                f"<div class='pd-card detail-flags-card'>{flag_markup}</div>",
-                unsafe_allow_html=True,
-            )
-
-        dialogue_turns = self._segmented_dialogue_for(selected)
-        st.markdown("##### Transcript view")
-        if dialogue_turns:
-            self._render_segmented_dialogue(dialogue_turns)
-        else:
-            st.markdown(
-                f"<div class='pd-card dialogue-fallback'>{html.escape(selected.transcript)}</div>",
-                unsafe_allow_html=True,
-            )
-
-        dialogue_turns = self._segmented_dialogue_for(selected)
-        st.markdown("##### Transcript view")
-        if dialogue_turns:
-            self._render_segmented_dialogue(dialogue_turns)
-        else:
-            st.markdown(
-                f"<div class='pd-card dialogue-fallback'>{html.escape(selected.transcript)}</div>",
-                unsafe_allow_html=True,
-            )
-
-        st.markdown("##### Editable transcript")
-        updated_transcript = st.text_area(
-            "Transcript",
-            key=f"detail_transcript_{selected.id}",
-            value=transcript_edits[selected.id],
-            height=220,
-            label_visibility="collapsed",
+        self._render_interview_detail_panel(
+            self._merge_detail_record(selected, interview_detail_loader),
+            all_interviews,
+            save_interview_edits=save_interview_edits,
+            delete_interview=delete_interview,
+            show_close_button=False,
+            panel_context="detail_tab",
         )
-        transcript_edits[selected.id] = updated_transcript
-
-        st.markdown("##### Extracted JSON")
-        updated_json = st.text_area(
-            "Extracted JSON",
-            key=f"detail_json_{selected.id}",
-            value=json_edits[selected.id],
-            height=260,
-            label_visibility="collapsed",
-        )
-        json_edits[selected.id] = updated_json
-
-        transcript_changed = updated_transcript != selected.transcript
-        structured_json_changed = updated_json != original_json
-
-        transcript_col, json_col, save_all_col, delete_col = st.columns([1.1, 1.2, 1.1, 1], gap="medium")
-        with transcript_col:
-            transcript_save_disabled = save_interview_edits is None or not transcript_changed
-            if st.button(
-                "Save transcript",
-                key=f"save_transcript_{selected.id}",
-                type="primary",
-                use_container_width=True,
-                disabled=transcript_save_disabled,
-            ):
-                self._save_interview_detail_edits(
-                    interview_id=selected.id,
-                    transcript=updated_transcript,
-                    extracted_json=original_json,
-                    transcript_changed=True,
-                    structured_json_changed=False,
-                    save_interview_edits=save_interview_edits,
-                    transcript_edits=transcript_edits,
-                    json_edits=json_edits,
-                    success_message="Transcript saved. Downstream analysis, persona derivation, and dashboard views were refreshed from SQLite.",
-                )
-            if save_interview_edits is None:
-                st.caption("Transcript save is unavailable because no backend save handler was provided.")
-            elif not transcript_changed:
-                st.caption("No transcript edits to save.")
-            else:
-                st.caption("Saves only the transcript, then reruns analysis/persona and reloads dashboard summaries.")
-
-        with json_col:
-            json_save_disabled = save_interview_edits is None or not structured_json_changed
-            if st.button(
-                "Save structured JSON",
-                key=f"save_json_{selected.id}",
-                use_container_width=True,
-                disabled=json_save_disabled,
-            ):
-                self._save_interview_detail_edits(
-                    interview_id=selected.id,
-                    transcript=selected.transcript or "",
-                    extracted_json=updated_json,
-                    transcript_changed=False,
-                    structured_json_changed=True,
-                    save_interview_edits=save_interview_edits,
-                    transcript_edits=transcript_edits,
-                    json_edits=json_edits,
-                    success_message="Structured JSON saved. Persona outputs and dashboard summaries were refreshed from SQLite.",
-                )
-            if save_interview_edits is None:
-                st.caption("Structured JSON save is unavailable because no backend save handler was provided.")
-            elif not structured_json_changed:
-                st.caption("No structured JSON edits to save.")
-            else:
-                st.caption("Validates the JSON, persists it to SQLite, and reruns persona derivation from the edited values.")
-
-        with save_all_col:
-            save_all_disabled = save_interview_edits is None or (not transcript_changed and not structured_json_changed)
-            if st.button(
-                "Save all edits",
-                key=f"save_all_{selected.id}",
-                use_container_width=True,
-                disabled=save_all_disabled,
-            ):
-                self._save_interview_detail_edits(
-                    interview_id=selected.id,
-                    transcript=updated_transcript,
-                    extracted_json=updated_json,
-                    transcript_changed=transcript_changed,
-                    structured_json_changed=structured_json_changed,
-                    save_interview_edits=save_interview_edits,
-                    transcript_edits=transcript_edits,
-                    json_edits=json_edits,
-                    success_message="Transcript and structured JSON saved. Analysis, persona outputs, and dashboard summaries were refreshed from SQLite.",
-                )
-            if save_interview_edits is None:
-                st.caption("Save all is unavailable because no backend save handler was provided.")
-            elif not transcript_changed and not structured_json_changed:
-                st.caption("No unsaved interview detail edits detected.")
-            elif transcript_changed and structured_json_changed:
-                st.caption("Recommended when both transcript and JSON drafts changed, so both edits persist together.")
-            else:
-                st.caption("Saves whichever interview detail drafts are currently unsaved.")
-
-        with delete_col:
-            delete_disabled = delete_interview is None
-            if st.button(
-                "Delete interview",
-                key=f"delete_interview_{selected.id}",
-                use_container_width=True,
-                disabled=delete_disabled,
-            ):
-                st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = selected.id
-            if delete_disabled:
-                st.caption("Delete is unavailable because no backend delete handler was provided.")
-
-        if st.session_state.get(FILTER_SESSION_KEYS["delete_confirm"]) == selected.id and delete_interview is not None:
-            st.warning(
-                "Delete this interview from durable storage? This removes linked structured responses and insights, and deletes the stored audio asset when live storage is enabled."
-            )
-            confirm_col, cancel_col = st.columns(2, gap="medium")
-            with confirm_col:
-                if st.button(
-                    "Confirm delete",
-                    key=f"confirm_delete_interview_{selected.id}",
-                    type="secondary",
-                    use_container_width=True,
-                ):
-                    try:
-                        deleted = delete_interview(selected.id)
-                    except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
-                        st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                            "kind": "error",
-                            "message": f"Delete failed: {exc}",
-                        }
-                    else:
-                        if deleted:
-                            transcript_edits.pop(selected.id, None)
-                            json_edits.pop(selected.id, None)
-                            st.session_state[FILTER_SESSION_KEYS["selected"]] = self._next_selected_id(
-                                all_interviews,
-                                deleted_id=selected.id,
-                            )
-                            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                                "kind": "success",
-                                "message": "Interview deleted. Interview lists and overview counts were refreshed from durable storage.",
-                            }
-                        else:
-                            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                                "kind": "error",
-                                "message": f"Interview {selected.id} could not be deleted because it no longer exists.",
-                            }
-                        st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
-                        st.rerun()
-            with cancel_col:
-                if st.button(
-                    "Cancel delete",
-                    key=f"cancel_delete_interview_{selected.id}",
-                    use_container_width=True,
-                ):
-                    st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
-                    st.rerun()
 
     def _save_interview_detail_edits(
         self,
@@ -586,6 +395,303 @@ class DashboardRenderer:
                 "message": success_message,
             }
             st.rerun()
+
+    def _selected_interview(self, interviews: list[DashboardInterview]) -> DashboardInterview | None:
+        selected_id = st.session_state.get(FILTER_SESSION_KEYS["selected"])
+        return next((item for item in interviews if item.id == selected_id), None)
+
+    def _render_interview_detail_panel(
+        self,
+        selected: DashboardInterview,
+        all_interviews: list[DashboardInterview],
+        *,
+        save_interview_edits: Callable[..., DashboardInterviewRecord] | None,
+        delete_interview: Callable[[str], bool] | None,
+        show_close_button: bool,
+        panel_context: str,
+    ) -> None:
+        transcript_edits: dict[str, str] = st.session_state[FILTER_SESSION_KEYS["transcripts"]]
+        json_edits: dict[str, str] = st.session_state[FILTER_SESSION_KEYS["json"]]
+        original_json = json.dumps(selected.extracted_json, indent=2, ensure_ascii=False)
+        transcript_edits.setdefault(selected.id, selected.transcript)
+        json_edits.setdefault(selected.id, original_json)
+
+        self._render_detail_messages(selected, panel_context=panel_context)
+
+        header_col, badge_col = st.columns([3, 1], gap="large")
+        with header_col:
+            st.markdown(f"#### {selected.filename}")
+            st.caption(f"Interview ID: {selected.id} · Created: {selected.created_at} · Status: {selected.status}")
+        with badge_col:
+            badge_class = "badge-nontarget" if selected.is_non_target else "badge-target"
+            st.markdown(
+                f"<div class='persona-badge {badge_class}'>{selected.persona_name}</div>",
+                unsafe_allow_html=True,
+            )
+            if show_close_button and st.button(
+                "Close overlay",
+                key=f"close_overlay_{selected.id}",
+                use_container_width=True,
+            ):
+                st.session_state[FILTER_SESSION_KEYS["detail_open"]] = False
+                st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+                st.rerun()
+
+        audio_col, meta_col = st.columns([2, 1], gap="large")
+        with audio_col:
+            st.markdown("##### Audio")
+            if selected.audio_bytes:
+                st.audio(selected.audio_bytes, format=selected.audio_format)
+            else:
+                st.info("Audio bytes are unavailable after restart, but the durable interview record remains available.")
+                if selected.extracted_json.get("audio_url"):
+                    st.caption(f"Stored audio path: {selected.extracted_json['audio_url']}")
+        with meta_col:
+            self._render_interview_flags(selected)
+
+        st.markdown("##### Formatted insights")
+        self._render_formatted_insights(selected)
+
+        dialogue_turns = self._segmented_dialogue_for(selected)
+        st.markdown("##### Transcript view")
+        if dialogue_turns:
+            self._render_segmented_dialogue(dialogue_turns)
+        else:
+            st.markdown(
+                f"<div class='pd-card dialogue-fallback'>{html.escape(selected.transcript)}</div>",
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("##### Editable transcript")
+        updated_transcript = st.text_area(
+            "Transcript",
+            key=f"{panel_context}_transcript_{selected.id}",
+            value=transcript_edits[selected.id],
+            height=220,
+            label_visibility="collapsed",
+        )
+        transcript_edits[selected.id] = updated_transcript
+
+        st.markdown("##### Extracted JSON")
+        updated_json = st.text_area(
+            "Extracted JSON",
+            key=f"{panel_context}_json_{selected.id}",
+            value=json_edits[selected.id],
+            height=260,
+            label_visibility="collapsed",
+        )
+        json_edits[selected.id] = updated_json
+
+        transcript_changed = updated_transcript != selected.transcript
+        structured_json_changed = updated_json != original_json
+
+        transcript_col, json_col, save_all_col, delete_col = st.columns([1.1, 1.2, 1.1, 1], gap="medium")
+        with transcript_col:
+            transcript_save_disabled = save_interview_edits is None or not transcript_changed
+            if st.button(
+                "Save transcript",
+                key=f"{panel_context}_save_transcript_{selected.id}",
+                type="primary",
+                use_container_width=True,
+                disabled=transcript_save_disabled,
+            ):
+                self._save_interview_detail_edits(
+                    interview_id=selected.id,
+                    transcript=updated_transcript,
+                    extracted_json=original_json,
+                    transcript_changed=True,
+                    structured_json_changed=False,
+                    save_interview_edits=save_interview_edits,
+                    transcript_edits=transcript_edits,
+                    json_edits=json_edits,
+                    success_message="Transcript saved. Downstream analysis, persona derivation, and dashboard views were refreshed from SQLite.",
+                )
+            if save_interview_edits is None:
+                st.caption("Transcript save is unavailable because no backend save handler was provided.")
+            elif not transcript_changed:
+                st.caption("No transcript edits to save.")
+            else:
+                st.caption("Saves only the transcript, then reruns analysis/persona and reloads dashboard summaries.")
+
+        with json_col:
+            json_save_disabled = save_interview_edits is None or not structured_json_changed
+            if st.button(
+                "Save structured JSON",
+                key=f"{panel_context}_save_json_{selected.id}",
+                use_container_width=True,
+                disabled=json_save_disabled,
+            ):
+                self._save_interview_detail_edits(
+                    interview_id=selected.id,
+                    transcript=selected.transcript or "",
+                    extracted_json=updated_json,
+                    transcript_changed=False,
+                    structured_json_changed=True,
+                    save_interview_edits=save_interview_edits,
+                    transcript_edits=transcript_edits,
+                    json_edits=json_edits,
+                    success_message="Structured JSON saved. Persona outputs and dashboard summaries were refreshed from SQLite.",
+                )
+            if save_interview_edits is None:
+                st.caption("Structured JSON save is unavailable because no backend save handler was provided.")
+            elif not structured_json_changed:
+                st.caption("No structured JSON edits to save.")
+            else:
+                st.caption("Validates the JSON, persists it to SQLite, and reruns persona derivation from the edited values.")
+
+        with save_all_col:
+            save_all_disabled = save_interview_edits is None or (not transcript_changed and not structured_json_changed)
+            if st.button(
+                "Save all edits",
+                key=f"{panel_context}_save_all_{selected.id}",
+                use_container_width=True,
+                disabled=save_all_disabled,
+            ):
+                self._save_interview_detail_edits(
+                    interview_id=selected.id,
+                    transcript=updated_transcript,
+                    extracted_json=updated_json,
+                    transcript_changed=transcript_changed,
+                    structured_json_changed=structured_json_changed,
+                    save_interview_edits=save_interview_edits,
+                    transcript_edits=transcript_edits,
+                    json_edits=json_edits,
+                    success_message="Transcript and structured JSON saved. Analysis, persona outputs, and dashboard summaries were refreshed from SQLite.",
+                )
+            if save_interview_edits is None:
+                st.caption("Save all is unavailable because no backend save handler was provided.")
+            elif not transcript_changed and not structured_json_changed:
+                st.caption("No unsaved interview detail edits detected.")
+            elif transcript_changed and structured_json_changed:
+                st.caption("Recommended when both transcript and JSON drafts changed, so both edits persist together.")
+            else:
+                st.caption("Saves whichever interview detail drafts are currently unsaved.")
+
+        with delete_col:
+            delete_disabled = delete_interview is None
+            if st.button(
+                "Delete interview",
+                key=f"{panel_context}_delete_interview_{selected.id}",
+                use_container_width=True,
+                disabled=delete_disabled,
+            ):
+                st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = selected.id
+            if delete_disabled:
+                st.caption("Delete is unavailable because no backend delete handler was provided.")
+
+        if st.session_state.get(FILTER_SESSION_KEYS["delete_confirm"]) == selected.id and delete_interview is not None:
+            st.warning(
+                "Delete this interview from durable storage? This removes linked structured responses and insights, and deletes the stored audio asset when live storage is enabled."
+            )
+            confirm_col, cancel_col = st.columns(2, gap="medium")
+            with confirm_col:
+                if st.button(
+                    "Confirm delete",
+                    key=f"{panel_context}_confirm_delete_interview_{selected.id}",
+                    type="secondary",
+                    use_container_width=True,
+                ):
+                    try:
+                        deleted = delete_interview(selected.id)
+                    except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+                        st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                            "kind": "error",
+                            "message": f"Delete failed: {exc}",
+                        }
+                    else:
+                        if deleted:
+                            transcript_edits.pop(selected.id, None)
+                            json_edits.pop(selected.id, None)
+                            st.session_state[FILTER_SESSION_KEYS["selected"]] = self._next_selected_id(
+                                all_interviews,
+                                deleted_id=selected.id,
+                            )
+                            st.session_state[FILTER_SESSION_KEYS["detail_open"]] = False
+                            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                                "kind": "success",
+                                "message": "Interview deleted. Interview lists and overview counts were refreshed from durable storage.",
+                            }
+                        else:
+                            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                                "kind": "error",
+                                "message": f"Interview {selected.id} could not be deleted because it no longer exists.",
+                            }
+                        st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+                        st.rerun()
+            with cancel_col:
+                if st.button(
+                    "Cancel delete",
+                    key=f"{panel_context}_cancel_delete_interview_{selected.id}",
+                    use_container_width=True,
+                ):
+                    st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+                    st.rerun()
+
+    def _render_detail_messages(self, selected: DashboardInterview, *, panel_context: str) -> None:
+        detail_message = st.session_state.get(FILTER_SESSION_KEYS["detail_message"])
+        if isinstance(detail_message, dict):
+            kind = detail_message.get("kind")
+            message = str(detail_message.get("message", "")).strip()
+            if kind == "success" and message:
+                st.success(message)
+            elif kind == "error" and message:
+                st.error(message)
+            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = None
+
+        selection_notice = st.session_state.get(FILTER_SESSION_KEYS["selection_notice"])
+        if selection_notice != selected.id:
+            return
+        if panel_context == "overlay":
+            st.success(f"{selected.filename} opened in the Interviews overlay. Audio, transcript, and insights are ready below.")
+        else:
+            st.info(f"Interview selection synced from the Interviews tab: {selected.filename} is now active in Interview Detail.")
+        st.session_state[FILTER_SESSION_KEYS["selection_notice"]] = None
+
+    def _render_interview_flags(self, selected: DashboardInterview) -> None:
+        st.markdown("##### Extracted flags")
+        flag_rows = [
+            ("Digital access", selected.digital_access),
+            ("Income band", selected.income_band),
+            ("Borrowing", selected.borrowing_label),
+            ("Borrowing source", selected.borrowing_source),
+            ("Loan interest", selected.loan_interest_label),
+        ]
+        flag_markup = "".join(
+            f"<div class='detail-flag-row'><span class='detail-flag-label'>{label}</span><span class='detail-flag-value'>{value}</span></div>"
+            for label, value in flag_rows
+        )
+        st.markdown(
+            f"<div class='pd-card detail-flags-card'>{flag_markup}</div>",
+            unsafe_allow_html=True,
+        )
+
+    def _render_formatted_insights(self, selected: DashboardInterview) -> None:
+        quote_markup = "".join(f"<li>{html.escape(quote)}</li>" for quote in selected.evidence_quotes[:4])
+        if not quote_markup:
+            quote_markup = "<li>No direct quote captured yet.</li>"
+        summary_text = html.escape(selected.summary or "Analysis pending.")
+        st.markdown(
+            f"""
+            <div class='pd-card formatted-insights-card'>
+                <div class='interview-summary'>{summary_text}</div>
+                <div class='insight-grid'>
+                    <div>
+                        <div class='interview-inline-label'>Evidence quotes</div>
+                        <ul class='interview-inline-list'>{quote_markup}</ul>
+                    </div>
+                    <div>
+                        <div class='interview-inline-label'>Persona and access</div>
+                        <div class='insight-pill-row'>
+                            <span class='insight-pill'>{html.escape(selected.persona_name)}</span>
+                            <span class='insight-pill'>{html.escape(selected.digital_access)}</span>
+                            <span class='insight-pill'>{html.escape(selected.borrowing_label)}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     def _render_filter_summary(
         self,
@@ -791,11 +897,18 @@ class DashboardRenderer:
         )
         row_selected = interview.id == selected_id
 
-        col_main, col_meta = st.columns([3.2, 1.4], gap="medium")
+        col_main, col_action, col_meta = st.columns([3.0, 0.8, 1.4], gap="medium")
         with col_main:
-            clicked = st.button(
+            card_clicked = st.button(
                 button_label,
                 key=f"select_interview_{interview.id}",
+                use_container_width=True,
+                type="primary" if row_selected else "secondary",
+            )
+        with col_action:
+            open_clicked = st.button(
+                "Open",
+                key=f"open_interview_{interview.id}",
                 use_container_width=True,
                 type="primary" if row_selected else "secondary",
             )
@@ -811,71 +924,12 @@ class DashboardRenderer:
                 unsafe_allow_html=True,
             )
 
+        clicked = card_clicked or open_clicked
         if clicked:
             st.session_state[FILTER_SESSION_KEYS["selected"]] = interview.id
+            st.session_state[FILTER_SESSION_KEYS["detail_open"]] = True
             st.session_state[FILTER_SESSION_KEYS["selection_notice"]] = interview.id
-            row_selected = True
-
-        if row_selected:
-            self._render_inline_interview_detail(interview)
-
         return clicked
-
-    def _render_inline_interview_detail(self, interview: DashboardInterview) -> None:
-        st.success(f"Showing inline detail for {interview.filename}. The Interview Detail tab was updated to this selection.")
-
-        quote_markup = "".join(
-            f"<li>{quote}</li>" for quote in interview.evidence_quotes[:3]
-        ) or "<li>No direct quote captured yet.</li>"
-        transcript_preview = self._truncate_text(interview.transcript, limit=320)
-        st.markdown(
-            f"""
-            <div class='pd-card interview-detail-inline'>
-                <div class='interview-detail-inline-header'>Selected interview snapshot</div>
-                <div class='interview-meta'>Interview ID: {interview.id} · Persona: {interview.persona_name} · Status: {interview.status}</div>
-                <div class='interview-summary'>{interview.summary}</div>
-                <div class='interview-inline-grid'>
-                    <div>
-                        <div class='interview-inline-label'>Evidence quotes</div>
-                        <ul class='interview-inline-list'>{quote_markup}</ul>
-                    </div>
-                    <div>
-                        <div class='interview-inline-label'>Transcript preview</div>
-                        <div class='interview-inline-preview'>{transcript_preview}</div>
-                    </div>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    def _segmented_dialogue_for(self, interview: DashboardInterview) -> tuple[dict[str, Any], ...]:
-        if interview.segmented_dialogue:
-            return interview.segmented_dialogue
-        fallback = interview.extracted_json.get("segmented_dialogue")
-        if isinstance(fallback, list):
-            return tuple(item for item in fallback if isinstance(item, dict))
-        return ()
-
-    def _render_segmented_dialogue(self, turns: tuple[dict[str, Any], ...]) -> None:
-        for turn in turns:
-            speaker_label = html.escape(str(turn.get("speaker_label", "unknown")).replace("_", " ").title())
-            utterance_text = html.escape(str(turn.get("utterance_text", "")).strip())
-            speaker_confidence = html.escape(str(turn.get("speaker_confidence", "low")).strip().title())
-            speaker_uncertainty = html.escape(str(turn.get("speaker_uncertainty", "")).strip())
-            if not utterance_text:
-                continue
-            st.markdown(
-                f"""
-                <div class='pd-card dialogue-turn'>
-                    <div class='dialogue-speaker'>{speaker_label}</div>
-                    <div class='dialogue-utterance'>{utterance_text}</div>
-                    <div class='dialogue-meta'>Speaker confidence: {speaker_confidence}</div>
-                    {f"<div class='dialogue-uncertainty'>{speaker_uncertainty}</div>" if speaker_uncertainty else ""}
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
 
     def _segmented_dialogue_for(self, interview: DashboardInterview) -> tuple[dict[str, Any], ...]:
         if interview.segmented_dialogue:
@@ -1429,7 +1483,7 @@ class DashboardRenderer:
                 color: #0f172a;
                 margin-bottom: 0.2rem;
             }
-            .persona-label, .interview-title, .interview-detail-inline-header {
+            .persona-label, .interview-title, .interview-detail-inline-header, .interview-overlay-title {
                 font-size: 1.1rem;
                 font-weight: 650;
                 color: #0f172a;
@@ -1499,6 +1553,48 @@ class DashboardRenderer:
             }
             .detail-flag-value {
                 text-align: right;
+            }
+            .interview-overlay-intro {
+                background: linear-gradient(135deg, rgba(29, 78, 216, 0.08), rgba(79, 70, 229, 0.14));
+                border: 1px solid rgba(79, 70, 229, 0.16);
+                margin-bottom: 1.25rem;
+            }
+            .interview-overlay-eyebrow, .interview-inline-label {
+                font-size: 0.82rem;
+                font-weight: 700;
+                letter-spacing: 0.06em;
+                text-transform: uppercase;
+                color: #4338ca;
+                margin-bottom: 0.35rem;
+            }
+            .formatted-insights-card {
+                margin-bottom: 1.25rem;
+            }
+            .insight-grid, .interview-inline-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+                gap: 1rem;
+                margin-top: 1rem;
+            }
+            .interview-inline-list {
+                margin: 0;
+                padding-left: 1.1rem;
+                color: #0f172a;
+            }
+            .insight-pill-row {
+                display: flex;
+                gap: 0.5rem;
+                flex-wrap: wrap;
+            }
+            .insight-pill {
+                display: inline-flex;
+                align-items: center;
+                border-radius: 999px;
+                background: rgba(37, 99, 235, 0.08);
+                color: #1d4ed8;
+                font-size: 0.9rem;
+                font-weight: 600;
+                padding: 0.45rem 0.75rem;
             }
             .persona-badge {
                 border-radius: 999px;
