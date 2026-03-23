@@ -753,6 +753,56 @@ def test_app_service_save_interview_edits_accepts_dashboard_json_and_rederives_p
     assert reloaded_service.get_status_overview().status_counts == {ProcessingStatus.COMPLETED.value: 1}
 
 
+def test_app_service_reprocess_interview_refreshes_outputs_from_saved_transcript(tmp_path) -> None:
+    database_path = str(tmp_path / "reprocess.db")
+    service = PaydayAppService(build_settings(database_path))
+    result = service.process_upload(
+        "reprocess.wav",
+        "audio/wav",
+        b"I use WhatsApp and my bank account is active.",
+    )
+
+    edited_payload = {
+        "audio_url": service.get_interview_detail(result.file_id).audio_url,
+        "participant_profile": {
+            "smartphone_user": {"value": False},
+            "has_bank_account": {"value": False},
+        },
+        "participant_personal_monthly_income": {"value": "unknown", "status": "unknown", "evidence_quotes": [], "notes": "", "evidence_type": "unknown"},
+        "per_household_earnings": {"value": "unknown", "status": "unknown", "evidence_quotes": [], "notes": "", "evidence_type": "unknown"},
+        "total_household_monthly_income": {"value": "unknown", "status": "unknown", "evidence_quotes": [], "notes": "", "evidence_type": "unknown"},
+        "borrowing_history": {"value": "has_not_borrowed_recently", "status": "observed", "evidence_quotes": ["I avoid loans"], "notes": ""},
+        "repayment_preference": {"value": "monthly", "status": "observed", "evidence_quotes": ["monthly"], "notes": ""},
+        "loan_interest": {"value": "not_interested", "status": "observed", "evidence_quotes": ["not interested"], "notes": ""},
+        "summary": {"value": "Stale edited summary.", "status": "observed", "evidence_quotes": ["stale quote"], "notes": ""},
+        "key_quotes": ["stale quote"],
+        "confidence_signals": {"observed_evidence": [], "missing_or_unknown": []},
+    }
+    service.save_interview_edits(
+        result.file_id,
+        transcript="I use WhatsApp and my bank account is active.",
+        extracted_json=json.dumps(edited_payload, ensure_ascii=False),
+        transcript_changed=False,
+        structured_json_changed=True,
+    )
+
+    reprocessed_detail = service.reprocess_interview(result.file_id)
+
+    assert reprocessed_detail.smartphone_user is True
+    assert reprocessed_detail.has_bank_account is True
+    assert reprocessed_detail.persona != "Offline / Excluded"
+    assert reprocessed_detail.summary != "Stale edited summary."
+    assert reprocessed_detail.key_quotes != ["stale quote"]
+
+    reloaded_service = PaydayAppService(build_settings(database_path))
+    reloaded_detail = reloaded_service.get_interview_detail(result.file_id)
+
+    assert reloaded_detail.smartphone_user is True
+    assert reloaded_detail.has_bank_account is True
+    assert reloaded_detail.persona != "Offline / Excluded"
+    assert reloaded_detail.summary != "Stale edited summary."
+
+
 def test_batch_uploads_persist_mixed_statuses_for_durable_dashboard_refresh(tmp_path) -> None:
     database_path = str(tmp_path / "payday-batch-dashboard.db")
     service = PaydayAppService(build_settings(database_path))

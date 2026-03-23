@@ -77,6 +77,21 @@ class PaydayAppService:
         )
         return self.repository.get_dashboard_interview_detail(interview_id)
 
+    def reprocess_interview(self, interview_id: str) -> DashboardInterviewRecord:
+        detail = self.repository.get_dashboard_interview_detail(interview_id)
+        transcript_text = (detail.transcript or "").strip()
+        if not transcript_text:
+            raise ValueError("Cannot reprocess an interview without a saved transcript.")
+
+        self.pipeline.reprocess_interview_detail(
+            interview_id,
+            transcript_text=transcript_text,
+            extracted_json="{}",
+            transcript_changed=True,
+            structured_json_changed=False,
+        )
+        return self.repository.get_dashboard_interview_detail(interview_id)
+
     def delete_interview(self, interview_id: str) -> bool:
         try:
             interview = self.repository.get_interview(interview_id)
