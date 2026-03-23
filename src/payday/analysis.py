@@ -975,6 +975,9 @@ def get_analysis_field(structured_output: dict[str, Any], field_name: str) -> di
     value = structured_output.get(field_name)
     if isinstance(value, dict):
         return value
+    legacy_field = _legacy_field_from_nested_sections(structured_output, field_name)
+    if legacy_field is not None:
+        return legacy_field
     if value is None:
         return AnalysisField().as_dict()
     normalized_status = "unknown" if str(value).strip().lower() == DEFAULT_UNKNOWN_VALUE else "observed"
@@ -1015,6 +1018,133 @@ def bank_account_user_from_analysis(structured_output: dict[str, Any]) -> bool |
     return None
 
 
+def get_persona_signal_value(structured_output: dict[str, Any], signal_name: str) -> bool | None:
+    signal = _nested_object(structured_output, "persona_signals", signal_name)
+    value = signal.get("value")
+    if isinstance(value, bool):
+        return value
+    return None
+
+
+def get_persona_signal_evidence_quotes(structured_output: dict[str, Any], signal_name: str) -> list[str]:
+    signal = _nested_object(structured_output, "persona_signals", signal_name)
+    evidence = signal.get("evidence_quotes")
+    if not isinstance(evidence, list):
+        evidence = signal.get("evidence")
+    if not isinstance(evidence, list):
+        return []
+    return [quote for quote in evidence if isinstance(quote, str) and quote.strip()]
+
+
+def _legacy_field_from_nested_sections(structured_output: dict[str, Any], field_name: str) -> dict[str, Any] | None:
+    if field_name == "smartphone_usage":
+        legacy_value = _nested_boolean(structured_output, "participant_profile", "smartphone_user")
+        if legacy_value is None:
+            return None
+        return _legacy_boolean_field(
+            value=legacy_value,
+            positive_value=SMARTPHONE_HAS_VALUE,
+            negative_value=SMARTPHONE_NO_VALUE,
+            evidence_quotes=_nested_evidence_quotes(structured_output, "participant_profile", "smartphone_user"),
+        )
+
+    if field_name == "bank_account_status":
+        legacy_value = _nested_boolean(structured_output, "participant_profile", "has_bank_account")
+        if legacy_value is None:
+            return None
+        return _legacy_boolean_field(
+            value=legacy_value,
+            positive_value=BANK_ACCOUNT_HAS_VALUE,
+            negative_value=BANK_ACCOUNT_NO_VALUE,
+            evidence_quotes=_nested_evidence_quotes(structured_output, "participant_profile", "has_bank_account"),
+        )
+
+    if field_name == "borrowing_history":
+        if get_persona_signal_value(structured_output, "cyclical_borrowing") is True:
+            return _legacy_boolean_field(
+                value=True,
+                positive_value="has_borrowed",
+                negative_value="has_not_borrowed_recently",
+                evidence_quotes=get_persona_signal_evidence_quotes(structured_output, "cyclical_borrowing"),
+            )
+        if get_persona_signal_value(structured_output, "digital_borrowing") is True:
+            return _legacy_boolean_field(
+                value=True,
+                positive_value="has_borrowed",
+                negative_value="has_not_borrowed_recently",
+                evidence_quotes=get_persona_signal_evidence_quotes(structured_output, "digital_borrowing"),
+            )
+        if get_persona_signal_value(structured_output, "self_reliance_non_borrowing") is True:
+            return _legacy_boolean_field(
+                value=False,
+                positive_value="has_borrowed",
+                negative_value="has_not_borrowed_recently",
+                evidence_quotes=get_persona_signal_evidence_quotes(structured_output, "self_reliance_non_borrowing"),
+            )
+        return None
+
+    if field_name == "loan_interest":
+        if get_persona_signal_value(structured_output, "trust_fear_barrier") is True:
+            return _legacy_boolean_field(
+                value=True,
+                positive_value="fearful_or_uncertain",
+                negative_value=DEFAULT_UNKNOWN_VALUE,
+                evidence_quotes=get_persona_signal_evidence_quotes(structured_output, "trust_fear_barrier"),
+            )
+        if get_persona_signal_value(structured_output, "repayment_stress") is True:
+            return _legacy_boolean_field(
+                value=True,
+                positive_value="fearful_or_uncertain",
+                negative_value=DEFAULT_UNKNOWN_VALUE,
+                evidence_quotes=get_persona_signal_evidence_quotes(structured_output, "repayment_stress"),
+            )
+        return None
+
+    return None
+
+
+def _legacy_boolean_field(
+    *,
+    value: bool,
+    positive_value: str,
+    negative_value: str,
+    evidence_quotes: list[str],
+) -> dict[str, Any]:
+    return AnalysisField(
+        value=positive_value if value else negative_value,
+        status="observed",
+        evidence_quotes=tuple(evidence_quotes),
+        notes="Derived from legacy nested structured output.",
+    ).as_dict()
+
+
+def _nested_object(structured_output: dict[str, Any], section: str, field_name: str) -> dict[str, Any]:
+    parent = structured_output.get(section)
+    if not isinstance(parent, dict):
+        return {}
+    nested = parent.get(field_name)
+    if not isinstance(nested, dict):
+        return {}
+    return nested
+
+
+def _nested_boolean(structured_output: dict[str, Any], section: str, field_name: str) -> bool | None:
+    value = _nested_object(structured_output, section, field_name).get("value")
+    if isinstance(value, bool):
+        return value
+    return None
+
+
+def _nested_evidence_quotes(structured_output: dict[str, Any], section: str, field_name: str) -> list[str]:
+    nested = _nested_object(structured_output, section, field_name)
+    evidence = nested.get("evidence_quotes")
+    if not isinstance(evidence, list):
+        evidence = nested.get("evidence")
+    if not isinstance(evidence, list):
+        return []
+    return [quote for quote in evidence if isinstance(quote, str) and quote.strip()]
+
+
 __all__ = [
     "AnalysisProviderAdapter",
     "AnalysisSchemaError",
@@ -1031,6 +1161,8 @@ __all__ = [
     "build_analysis_adapter",
     "get_analysis_evidence_quotes",
     "get_analysis_field",
+    "get_persona_signal_evidence_quotes",
+    "get_persona_signal_value",
     "get_analysis_value",
     "smartphone_user_from_analysis",
 ]

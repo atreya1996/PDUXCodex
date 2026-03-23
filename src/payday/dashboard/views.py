@@ -38,6 +38,7 @@ FILTER_SESSION_KEYS = {
     "digital_access": "dashboard_filter_digital_access",
     "search": "dashboard_search_query",
     "selected": "dashboard_selected_interview_id",
+    "detail_open": "dashboard_detail_overlay_open",
     "transcripts": "dashboard_transcript_edits",
     "detail_message": "dashboard_detail_message",
     "delete_confirm": "dashboard_delete_confirm",
@@ -58,6 +59,7 @@ class DashboardInterview:
     persona_id: str
     persona_name: str
     is_non_target: bool
+    participant_income_value: str
     income_band: str
     borrowing_source: str
     borrowing_label: str
@@ -83,6 +85,7 @@ class DashboardRenderer:
         status_overview: DashboardStatusOverview,
         interview_detail_loader: Callable[[str], DashboardInterviewRecord],
         save_interview_edits: Callable[..., DashboardInterviewRecord] | None = None,
+        reprocess_interview: Callable[[str], DashboardInterviewRecord] | None = None,
         delete_interview: Callable[[str], bool] | None = None,
         sample_mode: bool = False,
     ) -> None:
@@ -109,6 +112,7 @@ class DashboardRenderer:
                 all_interviews=interviews,
                 interview_detail_loader=interview_detail_loader,
                 save_interview_edits=save_interview_edits,
+                reprocess_interview=reprocess_interview,
                 delete_interview=delete_interview,
                 sample_mode=sample_mode,
             )
@@ -119,6 +123,7 @@ class DashboardRenderer:
         st.session_state.setdefault(FILTER_SESSION_KEYS["persona"], [])
         st.session_state.setdefault(FILTER_SESSION_KEYS["digital_access"], [])
         st.session_state.setdefault(FILTER_SESSION_KEYS["search"], "")
+        st.session_state.setdefault(FILTER_SESSION_KEYS["detail_open"], False)
         st.session_state.setdefault(FILTER_SESSION_KEYS["transcripts"], {})
         st.session_state.setdefault(FILTER_SESSION_KEYS["detail_message"], None)
         st.session_state.setdefault(FILTER_SESSION_KEYS["delete_confirm"], None)
@@ -679,6 +684,7 @@ class DashboardRenderer:
         all_interviews: list[DashboardInterview],
         interview_detail_loader: Callable[[str], DashboardInterviewRecord],
         save_interview_edits: Callable[..., DashboardInterviewRecord] | None,
+        reprocess_interview: Callable[[str], DashboardInterviewRecord] | None,
         delete_interview: Callable[[str], bool] | None,
     ) -> None:
         if not st.session_state.get(FILTER_SESSION_KEYS["overlay_open"]):
@@ -993,31 +999,84 @@ class DashboardRenderer:
         total = len(interviews)
         return [(label, count, self._percent(count, total)) for label, count in counts.items()]
 
-    def _numeric_income_values(self, interviews: list[DashboardInterview]) -> list[int]:
+    def _normalized_participant_income_values(self, interviews: list[DashboardInterview]) -> list[int]:
         values: list[int] = []
         for interview in interviews:
-            income_value = self._parse_direct_income_value(interview.income_band)
+            income_value = self._parse_income_value(interview.participant_income_value)
             if income_value is not None:
                 values.append(income_value)
         return values
 
-    def _parse_direct_income_value(self, income_band: str) -> int | None:
-        normalized = income_band.strip()
+    def _parse_income_value(self, income_value: str) -> int | None:
+        normalized = income_value.strip()
         if not normalized:
             return None
-        if any(separator in normalized for separator in ("-", "–", "to")):
+        lowered = normalized.lower()
+        if "unknown" in lowered:
             return None
-        if any(term in normalized.lower() for term in ("below", "under", "less than", "unknown")):
-            return None
+        if any(term in lowered for term in ("below", "under", "less than")):
+            match = re.search(r"(\d[\d,]*)(?:\s*([kK]))?", normalized)
+            if match is None:
+                return None
+            return self._amount_from_match(match) - 1
+        range_match = re.search(
+            r"(\d[\d,]*)(?:\s*([kK]))?\s*(?:-|–|to)\s*(\d[\d,]*)(?:\s*([kK]))?",
+            normalized,
+        )
+        if range_match is not None:
+            lower_amount = self._amount_from_match(range_match, group_index=1, suffix_index=2)
+            upper_amount = self._amount_from_match(range_match, group_index=3, suffix_index=4)
+            return round((lower_amount + upper_amount) / 2)
 
         match = re.search(r"(\d[\d,]*)(?:\s*([kK]))?", normalized)
         if match is None:
             return None
 
-        amount = int(match.group(1).replace(",", ""))
-        if match.group(2):
+        return self._amount_from_match(match)
+
+    def _amount_from_match(
+        self,
+        match: re.Match[str],
+        *,
+        group_index: int = 1,
+        suffix_index: int = 2,
+    ) -> int:
+        amount = int(match.group(group_index).replace(",", ""))
+        if match.group(suffix_index):
             amount *= 1000
         return amount
+
+    def _normalized_income_bucket(self, income_value: str) -> str | None:
+        parsed_value = self._parse_income_value(income_value)
+        if parsed_value is None:
+            return None
+        for lower_bound, upper_bound, label in NORMALIZED_INCOME_BUCKETS:
+            if parsed_value < lower_bound:
+                continue
+            if upper_bound is None or parsed_value < upper_bound:
+                return label
+        return None
+
+    def _income_bucket_rows(self, interviews: list[DashboardInterview]) -> list[tuple[str, int, str]]:
+        counts = {label: 0 for _, _, label in NORMALIZED_INCOME_BUCKETS}
+        total_normalized = 0
+        for interview in interviews:
+            bucket = self._normalized_income_bucket(interview.participant_income_value)
+            if bucket is None:
+                continue
+            counts[bucket] += 1
+            total_normalized += 1
+        return [
+            (label, count, self._percent(count, total_normalized))
+            for _, _, label in NORMALIZED_INCOME_BUCKETS
+            if (count := counts[label]) > 0
+        ]
+
+    def _normalized_borrowing_rows(self, interviews: list[DashboardInterview]) -> list[tuple[str, int, str]]:
+        comparable = [item for item in interviews if item.borrowing_source != "Unknown"]
+        counts = self._count_by(comparable, lambda item: item.borrowing_source)
+        total = len(comparable)
+        return [(label, count, self._percent(count, total)) for label, count in counts.items()]
 
     def _format_currency(self, amount: int) -> str:
         return f"₹{amount:,}"
@@ -1078,6 +1137,7 @@ class DashboardRenderer:
             persona_id=persona_id,
             persona_name=persona_name,
             is_non_target=bool(result.persona.is_non_target) if result.persona is not None else False,
+            participant_income_value=get_analysis_value(structured, "participant_personal_monthly_income"),
             income_band=self._preferred_income_band(structured),
             borrowing_source=self._borrowing_source_label(transcript, borrowing_value),
             borrowing_label="Borrower" if self._is_borrower_value(borrowing_value, transcript) else "Non-borrower",
@@ -1138,6 +1198,7 @@ class DashboardRenderer:
             persona_id=persona_id,
             persona_name=persona_name,
             is_non_target=record.smartphone_user is False or record.has_bank_account is False,
+            participant_income_value=record.participant_personal_monthly_income or "Unknown",
             income_band=self._record_income_band(record),
             borrowing_source=self._borrowing_source_label(transcript, borrowing_value),
             borrowing_label="Borrower" if self._is_borrower_value(borrowing_value, transcript) else "Non-borrower",
@@ -1173,6 +1234,11 @@ class DashboardRenderer:
             persona_id=repository_interview.persona_id if repository_interview.persona_name else cached_result.persona_id,
             persona_name=persona_name,
             is_non_target=repository_interview.is_non_target,
+            participant_income_value=(
+                repository_interview.participant_income_value
+                if repository_interview.participant_income_value != "Unknown"
+                else cached_result.participant_income_value
+            ),
             income_band=repository_interview.income_band if repository_interview.income_band != "Unknown" else cached_result.income_band,
             borrowing_source=repository_interview.borrowing_source
             if repository_interview.borrowing_source != "Unknown"
@@ -1348,6 +1414,34 @@ class DashboardRenderer:
         if len(normalized) <= limit:
             return normalized
         return f"{normalized[: limit - 1].rstrip()}…"
+
+    def _evidence_quotes_for(
+        self,
+        interviews: list[DashboardInterview],
+        *,
+        predicate: Callable[[DashboardInterview], bool],
+        limit: int = 3,
+    ) -> list[str]:
+        quotes: list[str] = []
+        for interview in interviews:
+            if not predicate(interview):
+                continue
+            for quote in interview.evidence_quotes:
+                if quote not in quotes:
+                    quotes.append(quote)
+                if len(quotes) >= limit:
+                    return quotes
+        return quotes
+
+    def _render_evidence_quotes(self, title: str, quotes: list[str]) -> None:
+        if not quotes:
+            return
+        st.markdown(f"##### {title}")
+        for quote in quotes:
+            st.markdown(
+                f"<div class='pd-card quote-card'>“{quote}”</div>",
+                unsafe_allow_html=True,
+            )
 
     def _inject_styles(self) -> None:
         st.markdown(
