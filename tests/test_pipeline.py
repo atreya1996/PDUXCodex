@@ -348,7 +348,7 @@ def test_pipeline_process_upload_persists_interview_structured_response_and_insi
     assert structured_row[3] is None
     assert structured_row[4] == "₹12,000"
     assert structured_row[5] is None
-    assert structured_row[6] == "₹12,000"
+    assert structured_row[6] == "Participant monthly income: ₹12,000"
     assert structured_row[7] == result.analysis.structured_output["borrowing_history"]["value"]
     assert structured_row[8] == result.analysis.structured_output["repayment_preference"]["value"]
     assert structured_row[9] == result.analysis.structured_output["loan_interest"]["value"]
@@ -372,7 +372,7 @@ def test_pipeline_process_upload_persists_interview_structured_response_and_insi
     assert detail.structured_response.per_household_earnings is None
     assert detail.structured_response.participant_personal_monthly_income == "₹12,000"
     assert detail.structured_response.total_household_monthly_income is None
-    assert detail.structured_response.income_range == "₹12,000"
+    assert detail.structured_response.income_range == "Participant monthly income: ₹12,000"
     assert detail.structured_response.borrowing_history == result.analysis.structured_output["borrowing_history"]["value"]
     assert (
         detail.structured_response.repayment_preference

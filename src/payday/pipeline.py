@@ -15,6 +15,7 @@ from payday.analysis import (
     AnalysisSchemaError,
     AnalysisService,
     bank_account_user_from_analysis,
+    get_income_display_value,
     get_analysis_value,
     smartphone_user_from_analysis,
 )
@@ -415,7 +416,7 @@ class PaydayPipeline:
                 "has_bank_account": {"value": detail.has_bank_account},
             },
             "per_household_earnings": {"value": detail.per_household_earnings},
-            "participant_personal_monthly_income": {"value": detail.participant_personal_monthly_income or detail.income_range},
+            "participant_personal_monthly_income": {"value": detail.participant_personal_monthly_income},
             "total_household_monthly_income": {"value": detail.total_household_monthly_income},
             "borrowing_history": {"value": detail.borrowing_history},
             "repayment_preference": {"value": detail.repayment_preference},
@@ -589,15 +590,10 @@ class PaydayPipeline:
 
 
     def _preferred_dashboard_income(self, structured_output: dict[str, Any]) -> str | None:
-        for field_name in (
-            "participant_personal_monthly_income",
-            "total_household_monthly_income",
-            "income_range",
-        ):
-            value = self._read_value(structured_output, field_name)
-            if value is not None:
-                return value
-        return None
+        corrected_value = get_income_display_value(structured_output)
+        if corrected_value is not None:
+            return corrected_value
+        return self._read_value(structured_output, "income_range")
 
     def _read_value(self, structured_output: dict[str, Any], key: str) -> str | None:
         normalized = get_analysis_value(structured_output, key).strip()

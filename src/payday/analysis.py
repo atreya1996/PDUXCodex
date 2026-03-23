@@ -31,7 +31,13 @@ INCOME_FIELD_NAMES = (
     "participant_personal_monthly_income",
     "total_household_monthly_income",
 )
-TOP_LEVEL_SCHEMA_KEYS = FIELD_NAMES + ("key_quotes", "confidence_signals", "segmented_dialogue")
+TOP_LEVEL_SCHEMA_KEYS = FIELD_NAMES + (
+    "key_quotes",
+    "key_quote_details",
+    "income_mentions",
+    "confidence_signals",
+    "segmented_dialogue",
+)
 ALLOWED_FIELD_STATUSES = {"observed", "unknown", "missing"}
 ALLOWED_EVIDENCE_TYPES = {"direct", "inferred_or_uncertain", "unknown"}
 ALLOWED_SPEAKER_CONFIDENCE = {"high", "medium", "low"}
@@ -63,6 +69,7 @@ class AnalysisField:
     evidence_quotes: tuple[str, ...] = ()
     notes: str = ""
     evidence_type: str = "unknown"
+    english_translation: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -71,6 +78,7 @@ class AnalysisField:
             "evidence_quotes": list(self.evidence_quotes),
             "notes": self.notes,
             "evidence_type": self.evidence_type,
+            "english_translation": self.english_translation,
         }
 
 
@@ -223,6 +231,7 @@ class HeuristicAnalysisAdapter:
         text = transcript.text.strip()
         sentences = _split_sentences(text)
         key_quotes = sentences[:2]
+        segmented_dialogue = _heuristic_segmented_dialogue(text)
         payload: dict[str, Any] = {
             "smartphone_usage": self._smartphone_usage(text),
             "bank_account_status": self._bank_account_status(text),
@@ -235,10 +244,19 @@ class HeuristicAnalysisAdapter:
                 "status": "observed" if text else "missing",
                 "evidence_quotes": key_quotes,
                 "notes": "Heuristic sample-mode summary grounded in transcript text.",
+                "english_translation": self._summary(text),
             },
             "key_quotes": key_quotes,
-            "segmented_dialogue": _heuristic_segmented_dialogue(text),
+            "key_quote_details": _build_key_quote_details(
+                key_quotes,
+                segmented_dialogue=segmented_dialogue,
+            ),
+            "segmented_dialogue": segmented_dialogue,
         }
+        payload["income_mentions"] = _build_income_mentions(
+            payload,
+            segmented_dialogue=segmented_dialogue,
+        )
         payload["confidence_signals"] = _build_confidence_signals(payload)
         extra_keys = set(payload) - set(expected_schema)
         if extra_keys:
@@ -295,7 +313,6 @@ class HeuristicAnalysisAdapter:
 
     def _income_fields(self, text: str) -> dict[str, dict[str, Any]]:
         transcript = text.strip()
-        lowered = transcript.lower()
         sentences = _split_sentences(transcript)
 
         extracted: dict[str, dict[str, Any]] = {}
@@ -334,47 +351,7 @@ class HeuristicAnalysisAdapter:
                 extracted[field_name] = _field(amount, [sentence], notes, evidence_type=evidence_type)
                 break
 
-        if extracted["participant_personal_monthly_income"]["status"] != "observed":
-            inferred = self._infer_participant_monthly_income(
-                transcript=transcript,
-                lowered=lowered,
-                sentences=sentences,
-                per_household_field=extracted["per_household_earnings"],
-            )
-            if inferred is not None:
-                extracted["participant_personal_monthly_income"] = inferred
-
         return extracted
-
-    def _infer_participant_monthly_income(
-        self,
-        *,
-        transcript: str,
-        lowered: str,
-        sentences: list[str],
-        per_household_field: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        if per_household_field.get("status") != "observed":
-            return None
-        if any(token in lowered for token in ("total monthly income", "household income", "family income", "in total i earn")):
-            return None
-        house_count_match = re.search(r"(\d+)\s+(?:houses|homes)", lowered)
-        amount_text = str(per_household_field.get("value", "")).strip()
-        if not house_count_match or not amount_text.startswith("₹"):
-            return None
-        amount = int(amount_text.replace("₹", "").replace(",", ""))
-        house_count = int(house_count_match.group(1))
-        inferred_total = f"₹{amount * house_count:,}"
-        supporting_sentence = _sentence_containing(sentences, house_count_match.group(0)) or _align_quote_to_transcript(house_count_match.group(0), transcript)
-        evidence_quotes = [quote for quote in [*per_household_field.get("evidence_quotes", []), supporting_sentence] if quote]
-        if not evidence_quotes:
-            return None
-        return _field(
-            inferred_total,
-            _dedupe_preserve_order(evidence_quotes),
-            _income_notes("participant_personal_monthly_income", "inferred_or_uncertain"),
-            evidence_type="inferred_or_uncertain",
-        )
 
     def _borrowing_history(self, text: str) -> dict[str, Any]:
         borrowed = _matching_phrases(
@@ -496,12 +473,14 @@ class AnalysisService:
                 "status": "observed|unknown|missing",
                 "evidence_quotes": ["string"],
                 "notes": "string",
+                "english_translation": "string",
             },
             "bank_account_status": {
                 "value": "string",
                 "status": "observed|unknown|missing",
                 "evidence_quotes": ["string"],
                 "notes": "string",
+                "english_translation": "string",
             },
             "per_household_earnings": {
                 "value": "string",
@@ -509,6 +488,7 @@ class AnalysisService:
                 "evidence_quotes": ["string"],
                 "notes": "string",
                 "evidence_type": "direct|inferred_or_uncertain|unknown",
+                "english_translation": "string",
             },
             "participant_personal_monthly_income": {
                 "value": "string",
@@ -516,6 +496,7 @@ class AnalysisService:
                 "evidence_quotes": ["string"],
                 "notes": "string",
                 "evidence_type": "direct|inferred_or_uncertain|unknown",
+                "english_translation": "string",
             },
             "total_household_monthly_income": {
                 "value": "string",
@@ -523,40 +504,66 @@ class AnalysisService:
                 "evidence_quotes": ["string"],
                 "notes": "string",
                 "evidence_type": "direct|inferred_or_uncertain|unknown",
+                "english_translation": "string",
             },
             "borrowing_history": {
                 "value": "string",
                 "status": "observed|unknown|missing",
                 "evidence_quotes": ["string"],
                 "notes": "string",
+                "english_translation": "string",
             },
             "repayment_preference": {
                 "value": "string",
                 "status": "observed|unknown|missing",
                 "evidence_quotes": ["string"],
                 "notes": "string",
+                "english_translation": "string",
             },
             "loan_interest": {
                 "value": "string",
                 "status": "observed|unknown|missing",
                 "evidence_quotes": ["string"],
                 "notes": "string",
+                "english_translation": "string",
             },
             "summary": {
                 "value": "string",
                 "status": "observed|unknown|missing",
                 "evidence_quotes": ["string"],
                 "notes": "string",
+                "english_translation": "string",
             },
             "key_quotes": ["string"],
+            "key_quote_details": [
+                {
+                    "original_text": "string",
+                    "english_translation": "string",
+                    "speaker_label": "participant|interviewer|unknown",
+                    "turn_index": "integer|null",
+                }
+            ],
+            "income_mentions": [
+                {
+                    "meaning_label": "per_household_earnings|participant_personal_monthly_income|total_household_monthly_income|other_income_mention",
+                    "amount": "string",
+                    "evidence_quote": "string",
+                    "english_translation": "string",
+                    "speaker_label": "participant|interviewer|unknown",
+                    "turn_index": "integer|null",
+                    "evidence_type": "direct|inferred_or_uncertain|unknown",
+                }
+            ],
             "confidence_signals": {
                 "observed_evidence": ["string"],
                 "missing_or_unknown": ["string"],
             },
             "segmented_dialogue": [
                 {
+                    "turn_index": "integer",
                     "speaker_label": "participant|interviewer|unknown",
                     "utterance_text": "string",
+                    "english_translation": "string",
                     "speaker_confidence": "high|medium|low",
                     "speaker_uncertainty": "string",
                 }
@@ -572,6 +579,10 @@ class AnalysisService:
             "- Preserve direct quotes exactly when evidence exists.\n"
             "- Do not infer unsupported facts.\n"
             "- Mark fields as unknown when the transcript does not provide evidence.\n"
+            "- Never treat wages from one house/home as the participant's full monthly income unless the participant explicitly states that total.\n"
+            "- If multiple income numbers appear, capture each income mention with the correct meaning label and keep participant personal income separate from total household income.\n"
+            "- For each populated income field, include a direct evidence quote and preserve the original transcript wording.\n"
+            "- Add summary-only English translations for key quotes/snippets while preserving the original transcript text in evidence quotes and dialogue turns.\n"
             "- Populate segmented_dialogue with ordered dialogue turns when the transcript makes speaker changes evident.\n"
             "- Separate interviewer questions from participant answers when the transcript wording or punctuation makes that distinction evident.\n"
             "- Use filename or interview metadata only as a weak hint for participant identity.\n"
@@ -618,6 +629,15 @@ class AnalysisService:
             normalized[field_name] = self._normalize_field(field_name, payload.get(field_name), transcript_text)
 
         normalized["key_quotes"] = self._normalize_quote_list(payload.get("key_quotes"), transcript_text)
+        normalized["key_quote_details"] = self._normalize_key_quote_details(
+            payload.get("key_quote_details"),
+            normalized["key_quotes"],
+            transcript_text,
+        )
+        normalized["income_mentions"] = self._normalize_income_mentions(
+            payload.get("income_mentions"),
+            transcript_text,
+        )
         normalized["confidence_signals"] = self._normalize_confidence_signals(
             payload.get("confidence_signals"),
             normalized,
@@ -651,6 +671,7 @@ class AnalysisService:
         evidence_type = str(value.get("evidence_type", "")).strip().lower() or (
             "direct" if normalized_status == "observed" and evidence_quotes else "unknown"
         )
+        english_translation = str(value.get("english_translation", "")).strip()
         if evidence_type not in ALLOWED_EVIDENCE_TYPES:
             raise AnalysisSchemaError(f"Field '{field_name}' has invalid evidence_type '{evidence_type}'.")
 
@@ -669,6 +690,7 @@ class AnalysisService:
             evidence_quotes=tuple(evidence_quotes),
             notes=notes,
             evidence_type=evidence_type,
+            english_translation=english_translation,
         ).as_dict()
 
     def _normalize_quote_list(self, value: Any, transcript_text: str) -> list[str]:
@@ -713,22 +735,105 @@ class AnalysisService:
             "missing_or_unknown": _dedupe_preserve_order(missing_or_unknown),
         }
 
-    def _normalize_segmented_dialogue(self, value: Any, transcript_text: str) -> list[dict[str, str]]:
+    def _normalize_key_quote_details(
+        self,
+        value: Any,
+        key_quotes: list[str],
+        transcript_text: str,
+    ) -> list[dict[str, Any]]:
+        if value is None:
+            return _build_key_quote_details(key_quotes)
+        if not isinstance(value, list):
+            raise AnalysisSchemaError("'key_quote_details' must be an array of quote-detail objects.")
+
+        normalized_details: list[dict[str, Any]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                raise AnalysisSchemaError("Each key quote detail must be an object.")
+            original_text = _align_quote_to_transcript(str(item.get("original_text", "")).strip(), transcript_text)
+            if not original_text:
+                continue
+            speaker_label = str(item.get("speaker_label", "unknown")).strip().lower() or "unknown"
+            turn_index = item.get("turn_index")
+            if turn_index is not None and not isinstance(turn_index, int):
+                raise AnalysisSchemaError("key_quote_details.turn_index must be an integer or null.")
+            normalized_item = {
+                "original_text": original_text,
+                "english_translation": str(item.get("english_translation", "")).strip(),
+                "speaker_label": speaker_label,
+                "turn_index": turn_index,
+            }
+            if normalized_item not in normalized_details:
+                normalized_details.append(normalized_item)
+
+        if not normalized_details:
+            return _build_key_quote_details(key_quotes)
+        return normalized_details
+
+    def _normalize_income_mentions(
+        self,
+        value: Any,
+        transcript_text: str,
+    ) -> list[dict[str, Any]]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise AnalysisSchemaError("'income_mentions' must be an array of income-mention objects.")
+
+        normalized_mentions: list[dict[str, Any]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                raise AnalysisSchemaError("Each income mention must be an object.")
+            meaning_label = str(item.get("meaning_label", "")).strip()
+            amount = str(item.get("amount", "")).strip() or DEFAULT_UNKNOWN_VALUE
+            evidence_quote = _align_quote_to_transcript(str(item.get("evidence_quote", "")).strip(), transcript_text)
+            english_translation = str(item.get("english_translation", "")).strip()
+            speaker_label = str(item.get("speaker_label", "unknown")).strip().lower() or "unknown"
+            turn_index = item.get("turn_index")
+            evidence_type = str(item.get("evidence_type", "unknown")).strip().lower() or "unknown"
+
+            if turn_index is not None and not isinstance(turn_index, int):
+                raise AnalysisSchemaError("income_mentions.turn_index must be an integer or null.")
+            if evidence_type not in ALLOWED_EVIDENCE_TYPES:
+                raise AnalysisSchemaError(
+                    f"Income mention '{meaning_label or 'unknown'}' has invalid evidence_type '{evidence_type}'."
+                )
+            if not meaning_label or not evidence_quote:
+                continue
+
+            normalized_item = {
+                "meaning_label": meaning_label,
+                "amount": amount,
+                "evidence_quote": evidence_quote,
+                "english_translation": english_translation,
+                "speaker_label": speaker_label,
+                "turn_index": turn_index,
+                "evidence_type": evidence_type,
+            }
+            if normalized_item not in normalized_mentions:
+                normalized_mentions.append(normalized_item)
+        return normalized_mentions
+
+    def _normalize_segmented_dialogue(self, value: Any, transcript_text: str) -> list[dict[str, Any]]:
         if value is None:
             return []
         if not isinstance(value, list):
             raise AnalysisSchemaError("'segmented_dialogue' must be an array of dialogue-turn objects.")
 
-        normalized_turns: list[dict[str, str]] = []
+        normalized_turns: list[dict[str, Any]] = []
         for item in value:
             if not isinstance(item, dict):
                 raise AnalysisSchemaError("Each segmented dialogue turn must be an object.")
 
+            turn_index = item.get("turn_index", len(normalized_turns))
             speaker_label = str(item.get("speaker_label", "unknown")).strip().lower() or "unknown"
             utterance_text = str(item.get("utterance_text", "")).strip()
+            english_translation = str(item.get("english_translation", "")).strip()
             speaker_confidence = str(item.get("speaker_confidence", "low")).strip().lower() or "low"
             speaker_uncertainty = str(item.get("speaker_uncertainty", "")).strip()
 
+            if not isinstance(turn_index, int):
+                raise AnalysisSchemaError("Segmented dialogue turn_index must be an integer.")
             if speaker_confidence not in ALLOWED_SPEAKER_CONFIDENCE:
                 raise AnalysisSchemaError(
                     f"Segmented dialogue speaker_confidence must be one of {sorted(ALLOWED_SPEAKER_CONFIDENCE)}."
@@ -739,8 +844,10 @@ class AnalysisService:
                 continue
 
             normalized_turn = {
+                "turn_index": turn_index,
                 "speaker_label": speaker_label,
                 "utterance_text": aligned_text,
+                "english_translation": english_translation,
                 "speaker_confidence": speaker_confidence,
                 "speaker_uncertainty": speaker_uncertainty,
             }
@@ -772,13 +879,16 @@ def _field(
     notes: str,
     *,
     evidence_type: str = "direct",
+    english_translation: str = "",
 ) -> dict[str, Any]:
+    translation = english_translation.strip() or (evidence_quotes[0].strip() if evidence_quotes else "")
     return AnalysisField(
         value=value,
         status="observed",
         evidence_quotes=tuple(evidence_quotes),
         notes=notes,
         evidence_type=evidence_type,
+        english_translation=translation,
     ).as_dict()
 
 
@@ -823,6 +933,23 @@ def _align_quote_to_transcript(candidate: str, transcript_text: str) -> str:
     return transcript_text[start:end]
 
 
+def get_income_display_value(structured_output: dict[str, Any]) -> str | None:
+    labels = {
+        "participant_personal_monthly_income": "Participant monthly income",
+        "total_household_monthly_income": "Household monthly income",
+        "per_household_earnings": "Per-household earnings",
+    }
+    for field_name in (
+        "participant_personal_monthly_income",
+        "total_household_monthly_income",
+        "per_household_earnings",
+    ):
+        value = get_analysis_value(structured_output, field_name).strip()
+        if value and value != DEFAULT_UNKNOWN_VALUE:
+            return f"{labels[field_name]}: {value}"
+    return None
+
+
 
 
 def _sentence_for_span(sentences: list[str], span: tuple[int, int]) -> str:
@@ -834,14 +961,6 @@ def _sentence_for_span(sentences: list[str], span: tuple[int, int]) -> str:
         if sentence_start <= start <= sentence_end or sentence_start <= end <= sentence_end:
             return sentence
         cursor = sentence_end + 1
-    return ""
-
-
-def _sentence_containing(sentences: list[str], needle: str) -> str:
-    lowered_needle = needle.lower()
-    for sentence in sentences:
-        if lowered_needle in sentence.lower():
-            return sentence
     return ""
 
 
@@ -908,9 +1027,9 @@ def _prompt_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _heuristic_segmented_dialogue(text: str) -> list[dict[str, str]]:
-    turns: list[dict[str, str]] = []
-    for sentence in _split_sentences(text):
+def _heuristic_segmented_dialogue(text: str) -> list[dict[str, Any]]:
+    turns: list[dict[str, Any]] = []
+    for turn_index, sentence in enumerate(_split_sentences(text)):
         if sentence.endswith("?"):
             speaker_label = "interviewer"
             speaker_confidence = "high"
@@ -927,13 +1046,65 @@ def _heuristic_segmented_dialogue(text: str) -> list[dict[str, str]]:
             speaker_uncertainty = "Transcript text did not clearly identify which speaker produced this utterance."
         turns.append(
             {
+                "turn_index": turn_index,
                 "speaker_label": speaker_label,
                 "utterance_text": sentence,
+                "english_translation": sentence,
                 "speaker_confidence": speaker_confidence,
                 "speaker_uncertainty": speaker_uncertainty,
             }
         )
     return turns
+
+
+def _build_key_quote_details(
+    key_quotes: list[str],
+    *,
+    segmented_dialogue: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    turns = segmented_dialogue or []
+    details: list[dict[str, Any]] = []
+    for quote in key_quotes:
+        matched_turn = next((turn for turn in turns if quote == turn.get("utterance_text")), None)
+        details.append(
+            {
+                "original_text": quote,
+                "english_translation": quote,
+                "speaker_label": str(matched_turn.get("speaker_label", "unknown")) if matched_turn else "unknown",
+                "turn_index": matched_turn.get("turn_index") if matched_turn else None,
+            }
+        )
+    return details
+
+
+def _build_income_mentions(
+    payload: dict[str, Any],
+    *,
+    segmented_dialogue: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    turns = segmented_dialogue or []
+    mentions: list[dict[str, Any]] = []
+    for field_name in INCOME_FIELD_NAMES:
+        field = payload.get(field_name)
+        if not isinstance(field, dict) or field.get("status") != "observed":
+            continue
+        evidence_quotes = field.get("evidence_quotes")
+        if not isinstance(evidence_quotes, list) or not evidence_quotes:
+            continue
+        evidence_quote = str(evidence_quotes[0]).strip()
+        matched_turn = next((turn for turn in turns if evidence_quote == turn.get("utterance_text")), None)
+        mentions.append(
+            {
+                "meaning_label": field_name,
+                "amount": str(field.get("value", DEFAULT_UNKNOWN_VALUE)).strip() or DEFAULT_UNKNOWN_VALUE,
+                "evidence_quote": evidence_quote,
+                "english_translation": str(field.get("english_translation", "")).strip() or evidence_quote,
+                "speaker_label": str(matched_turn.get("speaker_label", "unknown")) if matched_turn else "unknown",
+                "turn_index": matched_turn.get("turn_index") if matched_turn else None,
+                "evidence_type": str(field.get("evidence_type", "unknown")).strip() or "unknown",
+            }
+        )
+    return mentions
 
 
 def _build_confidence_signals(payload: dict[str, Any]) -> dict[str, list[str]]:
@@ -1031,6 +1202,7 @@ __all__ = [
     "build_analysis_adapter",
     "get_analysis_evidence_quotes",
     "get_analysis_field",
+    "get_income_display_value",
     "get_analysis_value",
     "smartphone_user_from_analysis",
 ]

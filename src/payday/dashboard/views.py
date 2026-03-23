@@ -13,6 +13,7 @@ import streamlit as st
 from payday.analysis import (
     DEFAULT_UNKNOWN_VALUE,
     bank_account_user_from_analysis,
+    get_income_display_value,
     get_analysis_value,
     smartphone_user_from_analysis,
 )
@@ -1035,7 +1036,7 @@ class DashboardRenderer:
                 "has_bank_account": {"value": record.has_bank_account},
             },
             "per_household_earnings": {"value": record.per_household_earnings},
-            "participant_personal_monthly_income": {"value": record.participant_personal_monthly_income or record.income_range},
+            "participant_personal_monthly_income": {"value": record.participant_personal_monthly_income},
             "total_household_monthly_income": {"value": record.total_household_monthly_income},
             "borrowing_history": {"value": record.borrowing_history},
             "repayment_preference": {"value": record.repayment_preference},
@@ -1158,24 +1159,24 @@ class DashboardRenderer:
 
 
     def _preferred_income_band(self, structured: dict[str, Any]) -> str:
-        for field_name in (
-            "participant_personal_monthly_income",
-            "total_household_monthly_income",
-            "income_range",
-        ):
-            value = self._nested_value(structured, field_name)
-            if value != "unknown":
-                return value
+        corrected_value = get_income_display_value(structured)
+        if corrected_value is not None:
+            return corrected_value
+        legacy_value = self._nested_value(structured, "income_range")
+        if legacy_value != "unknown":
+            return legacy_value
         return "Unknown"
 
     def _record_income_band(self, record: DashboardInterviewRecord) -> str:
-        for value in (
-            record.participant_personal_monthly_income,
-            record.total_household_monthly_income,
-            record.income_range,
+        for label, value in (
+            ("Participant monthly income", record.participant_personal_monthly_income),
+            ("Household monthly income", record.total_household_monthly_income),
+            ("Per-household earnings", record.per_household_earnings),
         ):
             if value:
-                return value
+                return f"{label}: {value}"
+        if record.income_range:
+            return record.income_range
         return "Unknown"
 
     def _smartphone_user(self, structured: dict[str, Any]) -> bool | None:
