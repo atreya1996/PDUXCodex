@@ -341,9 +341,13 @@ class PaydayPipeline:
                 payload.get("participant_personal_monthly_income") or payload.get("income_range")
             ),
             "total_household_monthly_income": self._field_from_unknownable(payload.get("total_household_monthly_income")),
-            "borrowing_history": self._field_from_unknownable(payload.get("borrowing_history")),
+            "borrowing_history": self._field_from_unknownable(
+                payload.get("borrowing_history") or self._legacy_borrowing_history(payload)
+            ),
             "repayment_preference": self._field_from_unknownable(payload.get("repayment_preference")),
-            "loan_interest": self._field_from_unknownable(payload.get("loan_interest")),
+            "loan_interest": self._field_from_unknownable(
+                payload.get("loan_interest") or self._legacy_loan_interest(payload)
+            ),
             "summary": self._field_from_unknownable(insight.get("summary") or payload.get("summary")),
             "key_quotes": self._string_list(insight.get("key_quotes") or payload.get("key_quotes")),
             "confidence_signals": self._confidence_signal_object(payload.get("confidence_signals")),
@@ -405,6 +409,28 @@ class PaydayPipeline:
                 return candidate
         if isinstance(value, bool):
             return value
+        return None
+
+    def _legacy_borrowing_history(self, payload: dict[str, Any]) -> str | None:
+        persona_signals = payload.get("persona_signals")
+        if not isinstance(persona_signals, dict):
+            return None
+        if self._bool_from_value(persona_signals.get("cyclical_borrowing")) is True:
+            return "has_borrowed"
+        if self._bool_from_value(persona_signals.get("digital_borrowing")) is True:
+            return "has_borrowed"
+        if self._bool_from_value(persona_signals.get("self_reliance_non_borrowing")) is True:
+            return "has_not_borrowed_recently"
+        return None
+
+    def _legacy_loan_interest(self, payload: dict[str, Any]) -> str | None:
+        persona_signals = payload.get("persona_signals")
+        if not isinstance(persona_signals, dict):
+            return None
+        if self._bool_from_value(persona_signals.get("trust_fear_barrier")) is True:
+            return "fearful_or_uncertain"
+        if self._bool_from_value(persona_signals.get("repayment_stress")) is True:
+            return "fearful_or_uncertain"
         return None
 
     def _dashboard_payload_from_record(self, detail: DashboardInterviewRecord) -> dict[str, Any]:
