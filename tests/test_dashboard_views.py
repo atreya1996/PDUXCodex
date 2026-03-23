@@ -9,6 +9,46 @@ from payday.personas import PersonaClassification
 from payday.repository import DashboardInterviewRecord, DashboardStatusOverview
 
 
+def _dashboard_interview(
+    *,
+    interview_id: str,
+    participant_income_value: str = "Unknown",
+    borrowing_source: str = "Unknown",
+) -> object:
+    return type(
+        "DashboardInterviewStub",
+        (),
+        {
+            "id": interview_id,
+            "filename": f"{interview_id}.wav",
+            "created_at": "2026-03-18",
+            "status": ProcessingStatus.COMPLETED.value,
+            "current_stage": "storage",
+            "last_error": None,
+            "summary": "Summary",
+            "transcript": "Transcript",
+            "persona_id": "persona_4",
+            "persona_name": "Self-Reliant Non-Borrower",
+            "is_non_target": False,
+            "participant_income_value": participant_income_value,
+            "income_band": participant_income_value,
+            "borrowing_source": borrowing_source,
+            "borrowing_label": "Borrower" if borrowing_source != "Unknown" else "Non-borrower",
+            "is_borrower": borrowing_source != "Unknown",
+            "loan_interest_label": "Unknown",
+            "interested_in_loan": False,
+            "smartphone_user": True,
+            "has_bank_account": True,
+            "digital_access": "Smartphone + bank account",
+            "extracted_json": {},
+            "evidence_quotes": ("Quote",),
+            "segmented_dialogue": (),
+            "audio_bytes": None,
+            "audio_format": "audio/wav",
+        },
+    )()
+
+
 def test_dashboard_renderer_prefers_durable_repository_values_for_status_rows() -> None:
     renderer = DashboardRenderer()
     cached_result = PipelineResult(
@@ -125,6 +165,42 @@ def test_dashboard_renderer_status_counts_use_durable_overview_when_available() 
         ProcessingStatus.COMPLETED.value: 1,
         ProcessingStatus.FAILED.value: 1,
     }
+
+
+def test_dashboard_renderer_normalizes_income_buckets_from_comparable_participant_income_values() -> None:
+    renderer = DashboardRenderer()
+    interviews = [
+        _dashboard_interview(interview_id="one", participant_income_value="₹12,000"),
+        _dashboard_interview(interview_id="two", participant_income_value="₹10k–15k"),
+        _dashboard_interview(interview_id="three", participant_income_value="Below ₹10k"),
+        _dashboard_interview(interview_id="four", participant_income_value="Unknown"),
+    ]
+
+    income_values = renderer._normalized_participant_income_values(interviews)
+    income_rows = renderer._income_bucket_rows(interviews)
+
+    assert income_values == [12000, 12500, 9999]
+    assert income_rows == [
+        ("Below ₹10k", 1, "33%"),
+        ("₹10k–15k", 2, "67%"),
+    ]
+
+
+def test_dashboard_renderer_uses_normalized_borrowing_sources_only_for_overview_table() -> None:
+    renderer = DashboardRenderer()
+    interviews = [
+        _dashboard_interview(interview_id="one", borrowing_source="Employer"),
+        _dashboard_interview(interview_id="two", borrowing_source="Employer"),
+        _dashboard_interview(interview_id="three", borrowing_source="Family / friends"),
+        _dashboard_interview(interview_id="four", borrowing_source="Unknown"),
+    ]
+
+    rows = renderer._normalized_borrowing_rows(interviews)
+
+    assert rows == [
+        ("Employer", 2, "67%"),
+        ("Family / friends", 1, "33%"),
+    ]
 
 
 def test_dashboard_empty_repository_shows_empty_states_without_fabricated_personas_or_quotes() -> None:
