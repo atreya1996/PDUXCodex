@@ -209,6 +209,7 @@ def build_sample_interviews(
                 persona_id=persona_id,
                 persona_name=persona_name,
                 is_non_target=persona_id == "persona_3",
+                participant_income_value=sample["income_band"],
                 income_band=sample["income_band"],
                 borrowing_source=sample["borrowing_source"],
                 borrowing_label=sample["borrowing_label"],

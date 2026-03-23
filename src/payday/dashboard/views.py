@@ -22,6 +22,12 @@ from payday.repository import DashboardInterviewRecord, DashboardStatusOverview
 
 PERSONA_LOOKUP = {persona.id: persona.name for persona in PERSONAS.values()}
 STATUS_DISPLAY_ORDER = tuple(status.value for status in ProcessingStatus)
+NORMALIZED_INCOME_BUCKETS: tuple[tuple[int, int | None, str], ...] = (
+    (0, 10_000, "Below ₹10k"),
+    (10_000, 15_000, "₹10k–15k"),
+    (15_000, 20_000, "₹15k–20k"),
+    (20_000, None, "₹20k+"),
+)
 FILTER_SESSION_KEYS = {
     "income": "dashboard_filter_income",
     "borrowing": "dashboard_filter_borrowing",
@@ -29,6 +35,7 @@ FILTER_SESSION_KEYS = {
     "digital_access": "dashboard_filter_digital_access",
     "search": "dashboard_search_query",
     "selected": "dashboard_selected_interview_id",
+    "detail_open": "dashboard_detail_overlay_open",
     "transcripts": "dashboard_transcript_edits",
     "json": "dashboard_json_edits",
     "detail_message": "dashboard_detail_message",
@@ -50,6 +57,7 @@ class DashboardInterview:
     persona_id: str
     persona_name: str
     is_non_target: bool
+    participant_income_value: str
     income_band: str
     borrowing_source: str
     borrowing_label: str
@@ -96,7 +104,14 @@ class DashboardRenderer:
         with tabs[2]:
             self._render_personas(filtered, sample_mode=sample_mode)
         with tabs[3]:
-            self._render_interviews(filtered, sample_mode=sample_mode)
+            self._render_interviews(
+                filtered,
+                interviews,
+                interview_detail_loader,
+                save_interview_edits=save_interview_edits,
+                delete_interview=delete_interview,
+                sample_mode=sample_mode,
+            )
         with tabs[4]:
             self._render_interview_detail(
                 filtered,
@@ -114,6 +129,7 @@ class DashboardRenderer:
         st.session_state.setdefault(FILTER_SESSION_KEYS["persona"], [])
         st.session_state.setdefault(FILTER_SESSION_KEYS["digital_access"], [])
         st.session_state.setdefault(FILTER_SESSION_KEYS["search"], "")
+        st.session_state.setdefault(FILTER_SESSION_KEYS["detail_open"], False)
         st.session_state.setdefault(FILTER_SESSION_KEYS["transcripts"], {})
         st.session_state.setdefault(FILTER_SESSION_KEYS["json"], {})
         st.session_state.setdefault(FILTER_SESSION_KEYS["detail_message"], None)
@@ -188,17 +204,6 @@ class DashboardRenderer:
         with borrowing_col:
             self._render_borrowing_sources_summary(filtered)
 
-        top_quotes = [quote for interview in filtered for quote in interview.evidence_quotes][:4]
-        if top_quotes:
-            st.markdown("### Evidence highlights")
-            quote_columns = st.columns(min(2, len(top_quotes)), gap="large")
-            for index, quote in enumerate(top_quotes):
-                with quote_columns[index % len(quote_columns)]:
-                    st.markdown(
-                        f"<div class='pd-card quote-card'>“{quote}”</div>",
-                        unsafe_allow_html=True,
-                    )
-
     def _render_cohorts(self, filtered: list[DashboardInterview]) -> None:
         st.markdown("### Cohort slices")
         if not filtered:
@@ -267,9 +272,20 @@ class DashboardRenderer:
                     unsafe_allow_html=True,
                 )
 
-    def _render_interviews(self, filtered: list[DashboardInterview], *, sample_mode: bool) -> None:
+    def _render_interviews(
+        self,
+        filtered: list[DashboardInterview],
+        all_interviews: list[DashboardInterview],
+        interview_detail_loader: Callable[[str], DashboardInterviewRecord],
+        *,
+        save_interview_edits: Callable[..., DashboardInterviewRecord] | None,
+        delete_interview: Callable[[str], bool] | None,
+        sample_mode: bool,
+    ) -> None:
         st.markdown("### Searchable interview list")
-        st.caption("Click an interview card to open an inline preview immediately. The Interview Detail tab stays synced to the same selection.")
+        st.caption(
+            "Click an interview card or its Open button to reveal the selected interview here without leaving the Interviews view."
+        )
         if not filtered:
             self._render_empty_state(
                 "No interview cards yet",
@@ -278,10 +294,35 @@ class DashboardRenderer:
             )
             return
 
+        overlay_host = st.container()
         selected_id = st.session_state.get(FILTER_SESSION_KEYS["selected"])
         for interview in filtered:
             if self._render_interview_row(interview, selected_id=selected_id):
                 selected_id = interview.id
+
+        overlay_open = bool(st.session_state.get(FILTER_SESSION_KEYS["detail_open"]))
+        selected = self._selected_interview(all_interviews)
+        with overlay_host:
+            if overlay_open and selected is not None:
+                if filtered and selected.id not in {item.id for item in filtered}:
+                    st.warning("The selected interview is outside the current filter set, but remains open for review.")
+                st.markdown(
+                    """
+                    <div class='pd-card interview-overlay-intro'>
+                        <div class='interview-overlay-eyebrow'>Interview overlay</div>
+                        <div class='interview-overlay-title'>Review the selected interview without leaving this tab.</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                self._render_interview_detail_panel(
+                    self._merge_detail_record(selected, interview_detail_loader),
+                    all_interviews,
+                    save_interview_edits=save_interview_edits,
+                    delete_interview=delete_interview,
+                    show_close_button=True,
+                    panel_context="overlay",
+                )
 
     def _render_interview_detail(
         self,
@@ -303,8 +344,7 @@ class DashboardRenderer:
             )
             return
 
-        selected_id = st.session_state[FILTER_SESSION_KEYS["selected"]]
-        selected = next((item for item in all_interviews if item.id == selected_id), None)
+        selected = self._selected_interview(all_interviews)
         if selected is None:
             st.info("Select an interview from the list to inspect it here.")
             return
@@ -312,29 +352,76 @@ class DashboardRenderer:
         if filtered and selected.id not in {item.id for item in filtered}:
             st.warning("The selected interview is outside the current filter set, but remains available for review.")
 
-        selected = self._merge_detail_record(selected, interview_detail_loader)
+        self._render_interview_detail_panel(
+            self._merge_detail_record(selected, interview_detail_loader),
+            all_interviews,
+            save_interview_edits=save_interview_edits,
+            delete_interview=delete_interview,
+            show_close_button=False,
+            panel_context="detail_tab",
+        )
 
+    def _save_interview_detail_edits(
+        self,
+        *,
+        interview_id: str,
+        transcript: str,
+        extracted_json: str,
+        transcript_changed: bool,
+        structured_json_changed: bool,
+        save_interview_edits: Callable[..., DashboardInterviewRecord] | None,
+        transcript_edits: dict[str, str],
+        json_edits: dict[str, str],
+        success_message: str,
+    ) -> None:
+        if save_interview_edits is None:
+            return
+        try:
+            save_interview_edits(
+                interview_id,
+                transcript=transcript,
+                extracted_json=extracted_json,
+                transcript_changed=transcript_changed,
+                structured_json_changed=structured_json_changed,
+            )
+        except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                "kind": "error",
+                "message": f"Save failed: {exc}",
+            }
+        else:
+            transcript_edits.pop(interview_id, None)
+            json_edits.pop(interview_id, None)
+            st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                "kind": "success",
+                "message": success_message,
+            }
+            st.rerun()
+
+    def _selected_interview(self, interviews: list[DashboardInterview]) -> DashboardInterview | None:
+        selected_id = st.session_state.get(FILTER_SESSION_KEYS["selected"])
+        return next((item for item in interviews if item.id == selected_id), None)
+
+    def _render_interview_detail_panel(
+        self,
+        selected: DashboardInterview,
+        all_interviews: list[DashboardInterview],
+        *,
+        save_interview_edits: Callable[..., DashboardInterviewRecord] | None,
+        delete_interview: Callable[[str], bool] | None,
+        show_close_button: bool,
+        panel_context: str,
+    ) -> None:
         transcript_edits: dict[str, str] = st.session_state[FILTER_SESSION_KEYS["transcripts"]]
         json_edits: dict[str, str] = st.session_state[FILTER_SESSION_KEYS["json"]]
         original_json = json.dumps(selected.extracted_json, indent=2, ensure_ascii=False)
         transcript_edits.setdefault(selected.id, selected.transcript)
         json_edits.setdefault(selected.id, original_json)
 
-        detail_message = st.session_state.get(FILTER_SESSION_KEYS["detail_message"])
-        if isinstance(detail_message, dict):
-            kind = detail_message.get("kind")
-            message = str(detail_message.get("message", "")).strip()
-            if kind == "success" and message:
-                st.success(message)
-            elif kind == "error" and message:
-                st.error(message)
-            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = None
+        self._render_detail_messages(selected, panel_context=panel_context)
 
-        selection_notice = st.session_state.get(FILTER_SESSION_KEYS["selection_notice"])
-        if selection_notice == selected.id:
-            st.info(f"Interview selection synced from the Interviews tab: {selected.filename} is now active in Interview Detail.")
-
-        header_col, badge_col = st.columns([3, 1])
+        header_col, badge_col = st.columns([3, 1], gap="large")
         with header_col:
             st.markdown(f"#### {selected.filename}")
             st.caption(f"Interview ID: {selected.id} · Created: {selected.created_at} · Status: {selected.status}")
@@ -344,6 +431,14 @@ class DashboardRenderer:
                 f"<div class='persona-badge {badge_class}'>{selected.persona_name}</div>",
                 unsafe_allow_html=True,
             )
+            if show_close_button and st.button(
+                "Close overlay",
+                key=f"close_overlay_{selected.id}",
+                use_container_width=True,
+            ):
+                st.session_state[FILTER_SESSION_KEYS["detail_open"]] = False
+                st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+                st.rerun()
 
         audio_col, meta_col = st.columns([2, 1], gap="large")
         with audio_col:
@@ -355,32 +450,10 @@ class DashboardRenderer:
                 if selected.extracted_json.get("audio_url"):
                     st.caption(f"Stored audio path: {selected.extracted_json['audio_url']}")
         with meta_col:
-            st.markdown("##### Extracted flags")
-            flag_rows = [
-                ("Digital access", selected.digital_access),
-                ("Income band", selected.income_band),
-                ("Borrowing", selected.borrowing_label),
-                ("Borrowing source", selected.borrowing_source),
-                ("Loan interest", selected.loan_interest_label),
-            ]
-            flag_markup = "".join(
-                f"<div class='detail-flag-row'><span class='detail-flag-label'>{label}</span><span class='detail-flag-value'>{value}</span></div>"
-                for label, value in flag_rows
-            )
-            st.markdown(
-                f"<div class='pd-card detail-flags-card'>{flag_markup}</div>",
-                unsafe_allow_html=True,
-            )
+            self._render_interview_flags(selected)
 
-        dialogue_turns = self._segmented_dialogue_for(selected)
-        st.markdown("##### Transcript view")
-        if dialogue_turns:
-            self._render_segmented_dialogue(dialogue_turns)
-        else:
-            st.markdown(
-                f"<div class='pd-card dialogue-fallback'>{html.escape(selected.transcript)}</div>",
-                unsafe_allow_html=True,
-            )
+        st.markdown("##### Formatted insights")
+        self._render_formatted_insights(selected)
 
         dialogue_turns = self._segmented_dialogue_for(selected)
         st.markdown("##### Transcript view")
@@ -395,7 +468,7 @@ class DashboardRenderer:
         st.markdown("##### Editable transcript")
         updated_transcript = st.text_area(
             "Transcript",
-            key=f"detail_transcript_{selected.id}",
+            key=f"{panel_context}_transcript_{selected.id}",
             value=transcript_edits[selected.id],
             height=220,
             label_visibility="collapsed",
@@ -405,7 +478,7 @@ class DashboardRenderer:
         st.markdown("##### Extracted JSON")
         updated_json = st.text_area(
             "Extracted JSON",
-            key=f"detail_json_{selected.id}",
+            key=f"{panel_context}_json_{selected.id}",
             value=json_edits[selected.id],
             height=260,
             label_visibility="collapsed",
@@ -427,7 +500,7 @@ class DashboardRenderer:
             transcript_save_disabled = save_interview_edits is None or not transcript_changed
             if st.button(
                 "Save transcript",
-                key=f"save_transcript_{selected.id}",
+                key=f"{panel_context}_save_transcript_{selected.id}",
                 type="primary",
                 use_container_width=True,
                 disabled=transcript_save_disabled,
@@ -454,7 +527,7 @@ class DashboardRenderer:
             json_save_disabled = save_interview_edits is None or not structured_json_changed
             if st.button(
                 "Save structured JSON",
-                key=f"save_json_{selected.id}",
+                key=f"{panel_context}_save_json_{selected.id}",
                 use_container_width=True,
                 disabled=json_save_disabled,
             ):
@@ -480,7 +553,7 @@ class DashboardRenderer:
             save_all_disabled = save_interview_edits is None or (not transcript_changed and not structured_json_changed)
             if st.button(
                 "Save all edits",
-                key=f"save_all_{selected.id}",
+                key=f"{panel_context}_save_all_{selected.id}",
                 use_container_width=True,
                 disabled=save_all_disabled,
             ):
@@ -532,7 +605,7 @@ class DashboardRenderer:
             delete_disabled = delete_interview is None
             if st.button(
                 "Delete interview",
-                key=f"delete_interview_{selected.id}",
+                key=f"{panel_context}_delete_interview_{selected.id}",
                 use_container_width=True,
                 disabled=delete_disabled,
             ):
@@ -548,7 +621,7 @@ class DashboardRenderer:
             with confirm_col:
                 if st.button(
                     "Confirm delete",
-                    key=f"confirm_delete_interview_{selected.id}",
+                    key=f"{panel_context}_confirm_delete_interview_{selected.id}",
                     type="secondary",
                     use_container_width=True,
                 ):
@@ -567,6 +640,7 @@ class DashboardRenderer:
                                 all_interviews,
                                 deleted_id=selected.id,
                             )
+                            st.session_state[FILTER_SESSION_KEYS["detail_open"]] = False
                             st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
                                 "kind": "success",
                                 "message": "Interview deleted. Interview lists and overview counts were refreshed from durable storage.",
@@ -581,49 +655,77 @@ class DashboardRenderer:
             with cancel_col:
                 if st.button(
                     "Cancel delete",
-                    key=f"cancel_delete_interview_{selected.id}",
+                    key=f"{panel_context}_cancel_delete_interview_{selected.id}",
                     use_container_width=True,
                 ):
                     st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
                     st.rerun()
 
-    def _save_interview_detail_edits(
-        self,
-        *,
-        interview_id: str,
-        transcript: str,
-        extracted_json: str,
-        transcript_changed: bool,
-        structured_json_changed: bool,
-        save_interview_edits: Callable[..., DashboardInterviewRecord] | None,
-        transcript_edits: dict[str, str],
-        json_edits: dict[str, str],
-        success_message: str,
-    ) -> None:
-        if save_interview_edits is None:
+    def _render_detail_messages(self, selected: DashboardInterview, *, panel_context: str) -> None:
+        detail_message = st.session_state.get(FILTER_SESSION_KEYS["detail_message"])
+        if isinstance(detail_message, dict):
+            kind = detail_message.get("kind")
+            message = str(detail_message.get("message", "")).strip()
+            if kind == "success" and message:
+                st.success(message)
+            elif kind == "error" and message:
+                st.error(message)
+            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = None
+
+        selection_notice = st.session_state.get(FILTER_SESSION_KEYS["selection_notice"])
+        if selection_notice != selected.id:
             return
-        try:
-            save_interview_edits(
-                interview_id,
-                transcript=transcript,
-                extracted_json=extracted_json,
-                transcript_changed=transcript_changed,
-                structured_json_changed=structured_json_changed,
-            )
-        except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
-            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                "kind": "error",
-                "message": f"Save failed: {exc}",
-            }
+        if panel_context == "overlay":
+            st.success(f"{selected.filename} opened in the Interviews overlay. Audio, transcript, and insights are ready below.")
         else:
-            transcript_edits.pop(interview_id, None)
-            json_edits.pop(interview_id, None)
-            st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
-            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                "kind": "success",
-                "message": success_message,
-            }
-            st.rerun()
+            st.info(f"Interview selection synced from the Interviews tab: {selected.filename} is now active in Interview Detail.")
+        st.session_state[FILTER_SESSION_KEYS["selection_notice"]] = None
+
+    def _render_interview_flags(self, selected: DashboardInterview) -> None:
+        st.markdown("##### Extracted flags")
+        flag_rows = [
+            ("Digital access", selected.digital_access),
+            ("Income band", selected.income_band),
+            ("Borrowing", selected.borrowing_label),
+            ("Borrowing source", selected.borrowing_source),
+            ("Loan interest", selected.loan_interest_label),
+        ]
+        flag_markup = "".join(
+            f"<div class='detail-flag-row'><span class='detail-flag-label'>{label}</span><span class='detail-flag-value'>{value}</span></div>"
+            for label, value in flag_rows
+        )
+        st.markdown(
+            f"<div class='pd-card detail-flags-card'>{flag_markup}</div>",
+            unsafe_allow_html=True,
+        )
+
+    def _render_formatted_insights(self, selected: DashboardInterview) -> None:
+        quote_markup = "".join(f"<li>{html.escape(quote)}</li>" for quote in selected.evidence_quotes[:4])
+        if not quote_markup:
+            quote_markup = "<li>No direct quote captured yet.</li>"
+        summary_text = html.escape(selected.summary or "Analysis pending.")
+        st.markdown(
+            f"""
+            <div class='pd-card formatted-insights-card'>
+                <div class='interview-summary'>{summary_text}</div>
+                <div class='insight-grid'>
+                    <div>
+                        <div class='interview-inline-label'>Evidence quotes</div>
+                        <ul class='interview-inline-list'>{quote_markup}</ul>
+                    </div>
+                    <div>
+                        <div class='interview-inline-label'>Persona and access</div>
+                        <div class='insight-pill-row'>
+                            <span class='insight-pill'>{html.escape(selected.persona_name)}</span>
+                            <span class='insight-pill'>{html.escape(selected.digital_access)}</span>
+                            <span class='insight-pill'>{html.escape(selected.borrowing_label)}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     def _reprocess_interview(
         self,
@@ -780,49 +882,54 @@ class DashboardRenderer:
         )
 
     def _render_income_summary(self, interviews: list[DashboardInterview]) -> None:
-        self._render_chart_card(
-            title="Income bands",
-            subtitle="Most recent participant income signals from durable dashboard records.",
-            values=self._count_by(interviews, lambda item: item.income_band),
-            color="#4F46E5",
+        st.markdown("<div class='table-title'>Income summary</div>", unsafe_allow_html=True)
+        st.caption("Only normalized participant monthly income values are included in this summary.")
+
+        income_values = self._normalized_participant_income_values(interviews)
+        metric_columns = st.columns(2, gap="medium")
+        with metric_columns[0]:
+            st.metric(
+                label="Median income",
+                value=self._format_currency(median(income_values)) if income_values else "—",
+            )
+        with metric_columns[1]:
+            st.metric(
+                label="Average income",
+                value=self._format_currency(round(mean(income_values))) if income_values else "—",
+            )
+
+        income_rows = self._income_bucket_rows(interviews)
+        if income_rows:
+            self._render_table_card(
+                title="Normalized income buckets",
+                rows=income_rows,
+                headers=("Income bucket", "Count", "% of filtered"),
+            )
+        else:
+            st.info("No normalized participant monthly income values are available for the current filters.")
+
+        self._render_evidence_quotes(
+            "Income evidence",
+            self._evidence_quotes_for(
+                interviews,
+                predicate=lambda item: self._normalized_income_bucket(item.participant_income_value) is not None,
+            ),
         )
 
     def _render_borrowing_sources_summary(self, interviews: list[DashboardInterview]) -> None:
-        self._render_chart_card(
-            title="Borrowing sources",
-            subtitle="How filtered interviews describe current fallback borrowing behavior.",
-            values=self._count_by(interviews, lambda item: item.borrowing_label),
-            color="#0F766E",
-        )
+        borrowing_rows = self._normalized_borrowing_rows(interviews)
+        if borrowing_rows:
+            self._render_table_card(
+                title="Borrowing sources",
+                rows=borrowing_rows,
+                headers=("Source", "Count", "% of filtered"),
+            )
+        else:
+            st.info("No normalized borrowing source data is available for the current filters.")
 
-    def _render_chart_card(
-        self,
-        *,
-        title: str,
-        subtitle: str,
-        values: dict[str, int],
-        color: str,
-    ) -> None:
-        st.markdown(f"<div class='chart-title'>{title}</div><div class='chart-subtitle'>{subtitle}</div>", unsafe_allow_html=True)
-        chart_data = [{"category": key, "count": value} for key, value in values.items()]
-        if not chart_data:
-            st.info("No chart data available.")
-            return
-        st.vega_lite_chart(
-            chart_data,
-            {
-                "mark": {"type": "bar", "cornerRadiusTopLeft": 10, "cornerRadiusTopRight": 10, "color": color},
-                "encoding": {
-                    "x": {"field": "category", "type": "nominal", "sort": None, "axis": {"title": None, "labelAngle": 0}},
-                    "y": {"field": "count", "type": "quantitative", "axis": {"title": None}},
-                    "tooltip": [
-                        {"field": "category", "type": "nominal", "title": "Category"},
-                        {"field": "count", "type": "quantitative", "title": "Interviews"},
-                    ],
-                },
-                "height": 320,
-            },
-            use_container_width=True,
+        self._render_evidence_quotes(
+            "Borrowing evidence",
+            self._evidence_quotes_for(interviews, predicate=lambda item: item.borrowing_source != "Unknown"),
         )
 
     def _render_table_card(self, *, title: str, rows: list[tuple[str, int, str]], headers: tuple[str, str, str]) -> None:
@@ -852,11 +959,18 @@ class DashboardRenderer:
         )
         row_selected = interview.id == selected_id
 
-        col_main, col_meta = st.columns([3.2, 1.4], gap="medium")
+        col_main, col_action, col_meta = st.columns([3.0, 0.8, 1.4], gap="medium")
         with col_main:
-            clicked = st.button(
+            card_clicked = st.button(
                 button_label,
                 key=f"select_interview_{interview.id}",
+                use_container_width=True,
+                type="primary" if row_selected else "secondary",
+            )
+        with col_action:
+            open_clicked = st.button(
+                "Open",
+                key=f"open_interview_{interview.id}",
                 use_container_width=True,
                 type="primary" if row_selected else "secondary",
             )
@@ -872,71 +986,12 @@ class DashboardRenderer:
                 unsafe_allow_html=True,
             )
 
+        clicked = card_clicked or open_clicked
         if clicked:
             st.session_state[FILTER_SESSION_KEYS["selected"]] = interview.id
+            st.session_state[FILTER_SESSION_KEYS["detail_open"]] = True
             st.session_state[FILTER_SESSION_KEYS["selection_notice"]] = interview.id
-            row_selected = True
-
-        if row_selected:
-            self._render_inline_interview_detail(interview)
-
         return clicked
-
-    def _render_inline_interview_detail(self, interview: DashboardInterview) -> None:
-        st.success(f"Showing inline detail for {interview.filename}. The Interview Detail tab was updated to this selection.")
-
-        quote_markup = "".join(
-            f"<li>{quote}</li>" for quote in interview.evidence_quotes[:3]
-        ) or "<li>No direct quote captured yet.</li>"
-        transcript_preview = self._truncate_text(interview.transcript, limit=320)
-        st.markdown(
-            f"""
-            <div class='pd-card interview-detail-inline'>
-                <div class='interview-detail-inline-header'>Selected interview snapshot</div>
-                <div class='interview-meta'>Interview ID: {interview.id} · Persona: {interview.persona_name} · Status: {interview.status}</div>
-                <div class='interview-summary'>{interview.summary}</div>
-                <div class='interview-inline-grid'>
-                    <div>
-                        <div class='interview-inline-label'>Evidence quotes</div>
-                        <ul class='interview-inline-list'>{quote_markup}</ul>
-                    </div>
-                    <div>
-                        <div class='interview-inline-label'>Transcript preview</div>
-                        <div class='interview-inline-preview'>{transcript_preview}</div>
-                    </div>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    def _segmented_dialogue_for(self, interview: DashboardInterview) -> tuple[dict[str, Any], ...]:
-        if interview.segmented_dialogue:
-            return interview.segmented_dialogue
-        fallback = interview.extracted_json.get("segmented_dialogue")
-        if isinstance(fallback, list):
-            return tuple(item for item in fallback if isinstance(item, dict))
-        return ()
-
-    def _render_segmented_dialogue(self, turns: tuple[dict[str, Any], ...]) -> None:
-        for turn in turns:
-            speaker_label = html.escape(str(turn.get("speaker_label", "unknown")).replace("_", " ").title())
-            utterance_text = html.escape(str(turn.get("utterance_text", "")).strip())
-            speaker_confidence = html.escape(str(turn.get("speaker_confidence", "low")).strip().title())
-            speaker_uncertainty = html.escape(str(turn.get("speaker_uncertainty", "")).strip())
-            if not utterance_text:
-                continue
-            st.markdown(
-                f"""
-                <div class='pd-card dialogue-turn'>
-                    <div class='dialogue-speaker'>{speaker_label}</div>
-                    <div class='dialogue-utterance'>{utterance_text}</div>
-                    <div class='dialogue-meta'>Speaker confidence: {speaker_confidence}</div>
-                    {f"<div class='dialogue-uncertainty'>{speaker_uncertainty}</div>" if speaker_uncertainty else ""}
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
 
     def _segmented_dialogue_for(self, interview: DashboardInterview) -> tuple[dict[str, Any], ...]:
         if interview.segmented_dialogue:
@@ -977,31 +1032,84 @@ class DashboardRenderer:
         total = len(interviews)
         return [(label, count, self._percent(count, total)) for label, count in counts.items()]
 
-    def _numeric_income_values(self, interviews: list[DashboardInterview]) -> list[int]:
+    def _normalized_participant_income_values(self, interviews: list[DashboardInterview]) -> list[int]:
         values: list[int] = []
         for interview in interviews:
-            income_value = self._parse_direct_income_value(interview.income_band)
+            income_value = self._parse_income_value(interview.participant_income_value)
             if income_value is not None:
                 values.append(income_value)
         return values
 
-    def _parse_direct_income_value(self, income_band: str) -> int | None:
-        normalized = income_band.strip()
+    def _parse_income_value(self, income_value: str) -> int | None:
+        normalized = income_value.strip()
         if not normalized:
             return None
-        if any(separator in normalized for separator in ("-", "–", "to")):
+        lowered = normalized.lower()
+        if "unknown" in lowered:
             return None
-        if any(term in normalized.lower() for term in ("below", "under", "less than", "unknown")):
-            return None
+        if any(term in lowered for term in ("below", "under", "less than")):
+            match = re.search(r"(\d[\d,]*)(?:\s*([kK]))?", normalized)
+            if match is None:
+                return None
+            return self._amount_from_match(match) - 1
+        range_match = re.search(
+            r"(\d[\d,]*)(?:\s*([kK]))?\s*(?:-|–|to)\s*(\d[\d,]*)(?:\s*([kK]))?",
+            normalized,
+        )
+        if range_match is not None:
+            lower_amount = self._amount_from_match(range_match, group_index=1, suffix_index=2)
+            upper_amount = self._amount_from_match(range_match, group_index=3, suffix_index=4)
+            return round((lower_amount + upper_amount) / 2)
 
         match = re.search(r"(\d[\d,]*)(?:\s*([kK]))?", normalized)
         if match is None:
             return None
 
-        amount = int(match.group(1).replace(",", ""))
-        if match.group(2):
+        return self._amount_from_match(match)
+
+    def _amount_from_match(
+        self,
+        match: re.Match[str],
+        *,
+        group_index: int = 1,
+        suffix_index: int = 2,
+    ) -> int:
+        amount = int(match.group(group_index).replace(",", ""))
+        if match.group(suffix_index):
             amount *= 1000
         return amount
+
+    def _normalized_income_bucket(self, income_value: str) -> str | None:
+        parsed_value = self._parse_income_value(income_value)
+        if parsed_value is None:
+            return None
+        for lower_bound, upper_bound, label in NORMALIZED_INCOME_BUCKETS:
+            if parsed_value < lower_bound:
+                continue
+            if upper_bound is None or parsed_value < upper_bound:
+                return label
+        return None
+
+    def _income_bucket_rows(self, interviews: list[DashboardInterview]) -> list[tuple[str, int, str]]:
+        counts = {label: 0 for _, _, label in NORMALIZED_INCOME_BUCKETS}
+        total_normalized = 0
+        for interview in interviews:
+            bucket = self._normalized_income_bucket(interview.participant_income_value)
+            if bucket is None:
+                continue
+            counts[bucket] += 1
+            total_normalized += 1
+        return [
+            (label, count, self._percent(count, total_normalized))
+            for _, _, label in NORMALIZED_INCOME_BUCKETS
+            if (count := counts[label]) > 0
+        ]
+
+    def _normalized_borrowing_rows(self, interviews: list[DashboardInterview]) -> list[tuple[str, int, str]]:
+        comparable = [item for item in interviews if item.borrowing_source != "Unknown"]
+        counts = self._count_by(comparable, lambda item: item.borrowing_source)
+        total = len(comparable)
+        return [(label, count, self._percent(count, total)) for label, count in counts.items()]
 
     def _format_currency(self, amount: int) -> str:
         return f"₹{amount:,}"
@@ -1062,6 +1170,7 @@ class DashboardRenderer:
             persona_id=persona_id,
             persona_name=persona_name,
             is_non_target=bool(result.persona.is_non_target) if result.persona is not None else False,
+            participant_income_value=get_analysis_value(structured, "participant_personal_monthly_income"),
             income_band=self._preferred_income_band(structured),
             borrowing_source=self._borrowing_source_label(transcript, borrowing_value),
             borrowing_label="Borrower" if self._is_borrower_value(borrowing_value, transcript) else "Non-borrower",
@@ -1122,6 +1231,7 @@ class DashboardRenderer:
             persona_id=persona_id,
             persona_name=persona_name,
             is_non_target=record.smartphone_user is False or record.has_bank_account is False,
+            participant_income_value=record.participant_personal_monthly_income or "Unknown",
             income_band=self._record_income_band(record),
             borrowing_source=self._borrowing_source_label(transcript, borrowing_value),
             borrowing_label="Borrower" if self._is_borrower_value(borrowing_value, transcript) else "Non-borrower",
@@ -1157,6 +1267,11 @@ class DashboardRenderer:
             persona_id=repository_interview.persona_id if repository_interview.persona_name else cached_result.persona_id,
             persona_name=persona_name,
             is_non_target=repository_interview.is_non_target,
+            participant_income_value=(
+                repository_interview.participant_income_value
+                if repository_interview.participant_income_value != "Unknown"
+                else cached_result.participant_income_value
+            ),
             income_band=repository_interview.income_band if repository_interview.income_band != "Unknown" else cached_result.income_band,
             borrowing_source=repository_interview.borrowing_source
             if repository_interview.borrowing_source != "Unknown"
@@ -1340,6 +1455,34 @@ class DashboardRenderer:
             return normalized
         return f"{normalized[: limit - 1].rstrip()}…"
 
+    def _evidence_quotes_for(
+        self,
+        interviews: list[DashboardInterview],
+        *,
+        predicate: Callable[[DashboardInterview], bool],
+        limit: int = 3,
+    ) -> list[str]:
+        quotes: list[str] = []
+        for interview in interviews:
+            if not predicate(interview):
+                continue
+            for quote in interview.evidence_quotes:
+                if quote not in quotes:
+                    quotes.append(quote)
+                if len(quotes) >= limit:
+                    return quotes
+        return quotes
+
+    def _render_evidence_quotes(self, title: str, quotes: list[str]) -> None:
+        if not quotes:
+            return
+        st.markdown(f"##### {title}")
+        for quote in quotes:
+            st.markdown(
+                f"<div class='pd-card quote-card'>“{quote}”</div>",
+                unsafe_allow_html=True,
+            )
+
     def _inject_styles(self) -> None:
         st.markdown(
             """
@@ -1402,7 +1545,7 @@ class DashboardRenderer:
                 color: #0f172a;
                 margin-bottom: 0.2rem;
             }
-            .persona-label, .interview-title, .interview-detail-inline-header {
+            .persona-label, .interview-title, .interview-detail-inline-header, .interview-overlay-title {
                 font-size: 1.1rem;
                 font-weight: 650;
                 color: #0f172a;
@@ -1472,6 +1615,48 @@ class DashboardRenderer:
             }
             .detail-flag-value {
                 text-align: right;
+            }
+            .interview-overlay-intro {
+                background: linear-gradient(135deg, rgba(29, 78, 216, 0.08), rgba(79, 70, 229, 0.14));
+                border: 1px solid rgba(79, 70, 229, 0.16);
+                margin-bottom: 1.25rem;
+            }
+            .interview-overlay-eyebrow, .interview-inline-label {
+                font-size: 0.82rem;
+                font-weight: 700;
+                letter-spacing: 0.06em;
+                text-transform: uppercase;
+                color: #4338ca;
+                margin-bottom: 0.35rem;
+            }
+            .formatted-insights-card {
+                margin-bottom: 1.25rem;
+            }
+            .insight-grid, .interview-inline-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+                gap: 1rem;
+                margin-top: 1rem;
+            }
+            .interview-inline-list {
+                margin: 0;
+                padding-left: 1.1rem;
+                color: #0f172a;
+            }
+            .insight-pill-row {
+                display: flex;
+                gap: 0.5rem;
+                flex-wrap: wrap;
+            }
+            .insight-pill {
+                display: inline-flex;
+                align-items: center;
+                border-radius: 999px;
+                background: rgba(37, 99, 235, 0.08);
+                color: #1d4ed8;
+                font-size: 0.9rem;
+                font-weight: 600;
+                padding: 0.45rem 0.75rem;
             }
             .persona-badge {
                 border-radius: 999px;

@@ -9,6 +9,46 @@ from payday.personas import PersonaClassification
 from payday.repository import DashboardInterviewRecord, DashboardStatusOverview
 
 
+def _dashboard_interview(
+    *,
+    interview_id: str,
+    participant_income_value: str = "Unknown",
+    borrowing_source: str = "Unknown",
+) -> object:
+    return type(
+        "DashboardInterviewStub",
+        (),
+        {
+            "id": interview_id,
+            "filename": f"{interview_id}.wav",
+            "created_at": "2026-03-18",
+            "status": ProcessingStatus.COMPLETED.value,
+            "current_stage": "storage",
+            "last_error": None,
+            "summary": "Summary",
+            "transcript": "Transcript",
+            "persona_id": "persona_4",
+            "persona_name": "Self-Reliant Non-Borrower",
+            "is_non_target": False,
+            "participant_income_value": participant_income_value,
+            "income_band": participant_income_value,
+            "borrowing_source": borrowing_source,
+            "borrowing_label": "Borrower" if borrowing_source != "Unknown" else "Non-borrower",
+            "is_borrower": borrowing_source != "Unknown",
+            "loan_interest_label": "Unknown",
+            "interested_in_loan": False,
+            "smartphone_user": True,
+            "has_bank_account": True,
+            "digital_access": "Smartphone + bank account",
+            "extracted_json": {},
+            "evidence_quotes": ("Quote",),
+            "segmented_dialogue": (),
+            "audio_bytes": None,
+            "audio_format": "audio/wav",
+        },
+    )()
+
+
 def test_dashboard_renderer_prefers_durable_repository_values_for_status_rows() -> None:
     renderer = DashboardRenderer()
     cached_result = PipelineResult(
@@ -127,6 +167,42 @@ def test_dashboard_renderer_status_counts_use_durable_overview_when_available() 
     }
 
 
+def test_dashboard_renderer_normalizes_income_buckets_from_comparable_participant_income_values() -> None:
+    renderer = DashboardRenderer()
+    interviews = [
+        _dashboard_interview(interview_id="one", participant_income_value="₹12,000"),
+        _dashboard_interview(interview_id="two", participant_income_value="₹10k–15k"),
+        _dashboard_interview(interview_id="three", participant_income_value="Below ₹10k"),
+        _dashboard_interview(interview_id="four", participant_income_value="Unknown"),
+    ]
+
+    income_values = renderer._normalized_participant_income_values(interviews)
+    income_rows = renderer._income_bucket_rows(interviews)
+
+    assert income_values == [12000, 12500, 9999]
+    assert income_rows == [
+        ("Below ₹10k", 1, "33%"),
+        ("₹10k–15k", 2, "67%"),
+    ]
+
+
+def test_dashboard_renderer_uses_normalized_borrowing_sources_only_for_overview_table() -> None:
+    renderer = DashboardRenderer()
+    interviews = [
+        _dashboard_interview(interview_id="one", borrowing_source="Employer"),
+        _dashboard_interview(interview_id="two", borrowing_source="Employer"),
+        _dashboard_interview(interview_id="three", borrowing_source="Family / friends"),
+        _dashboard_interview(interview_id="four", borrowing_source="Unknown"),
+    ]
+
+    rows = renderer._normalized_borrowing_rows(interviews)
+
+    assert rows == [
+        ("Employer", 2, "67%"),
+        ("Family / friends", 1, "33%"),
+    ]
+
+
 def test_dashboard_empty_repository_shows_empty_states_without_fabricated_personas_or_quotes() -> None:
     script = '''
 from payday.dashboard.views import DashboardRenderer
@@ -213,6 +289,68 @@ renderer.render(
     assert "Save structured JSON" in button_labels
     assert "Save all edits" in button_labels
     assert "Reprocess interview" in button_labels
+
+
+def test_dashboard_interviews_open_button_reveals_overlay_in_same_view() -> None:
+    script = '''
+from payday.dashboard.views import DashboardRenderer
+from payday.models import ProcessingStatus
+from payday.repository import DashboardInterviewRecord, DashboardStatusOverview
+
+renderer = DashboardRenderer()
+record = DashboardInterviewRecord(
+    id="interview-1",
+    audio_url="audio/interview-1/repo-name.wav",
+    filename="repo-name.wav",
+    transcript="Repository transcript",
+    status=ProcessingStatus.COMPLETED.value,
+    latest_stage="persona",
+    last_error=None,
+    created_at="2026-03-18T10:00:00+00:00",
+    smartphone_user=True,
+    has_bank_account=True,
+    per_household_earnings=None,
+    participant_personal_monthly_income="₹10k–15k",
+    total_household_monthly_income=None,
+    income_range="₹10k–15k",
+    borrowing_history="has_borrowed",
+    repayment_preference="monthly",
+    loan_interest="interested",
+    summary="Repository summary",
+    key_quotes=["Repository quote"],
+    persona="Digitally Ready but Fearful",
+    confidence_score=0.91,
+)
+
+renderer.render(
+    cached_results=[],
+    recent_interviews=[record],
+    status_overview=DashboardStatusOverview(total_interviews=1, status_counts={ProcessingStatus.COMPLETED.value: 1}),
+    interview_detail_loader=lambda interview_id: record,
+    save_interview_edits=lambda **kwargs: record,
+    sample_mode=False,
+)
+'''
+
+    app = AppTest.from_string(script)
+    app.run(timeout=10)
+
+    assert any(button.label == "Open" for button in app.button)
+    assert not any(button.label == "Close overlay" for button in app.button)
+
+    open_button = next(button for button in app.button if button.label == "Open")
+    open_button.click()
+    app.run()
+
+    button_labels = [button.label for button in app.button]
+    success_values = [element.value for element in app.success]
+    markdown_values = [element.value for element in app.markdown]
+    text_area_values = [element.value for element in app.text_area]
+
+    assert "Close overlay" in button_labels
+    assert any("opened in the Interviews overlay" in value for value in success_values)
+    assert any("Formatted insights" in value for value in markdown_values)
+    assert "Repository transcript" in text_area_values
 
 
 def test_dashboard_interview_detail_requires_confirmation_before_delete() -> None:
