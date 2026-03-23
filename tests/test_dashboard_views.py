@@ -214,6 +214,68 @@ renderer.render(
     assert "Save all edits" in button_labels
 
 
+def test_dashboard_interviews_open_button_reveals_overlay_in_same_view() -> None:
+    script = '''
+from payday.dashboard.views import DashboardRenderer
+from payday.models import ProcessingStatus
+from payday.repository import DashboardInterviewRecord, DashboardStatusOverview
+
+renderer = DashboardRenderer()
+record = DashboardInterviewRecord(
+    id="interview-1",
+    audio_url="audio/interview-1/repo-name.wav",
+    filename="repo-name.wav",
+    transcript="Repository transcript",
+    status=ProcessingStatus.COMPLETED.value,
+    latest_stage="persona",
+    last_error=None,
+    created_at="2026-03-18T10:00:00+00:00",
+    smartphone_user=True,
+    has_bank_account=True,
+    per_household_earnings=None,
+    participant_personal_monthly_income="₹10k–15k",
+    total_household_monthly_income=None,
+    income_range="₹10k–15k",
+    borrowing_history="has_borrowed",
+    repayment_preference="monthly",
+    loan_interest="interested",
+    summary="Repository summary",
+    key_quotes=["Repository quote"],
+    persona="Digitally Ready but Fearful",
+    confidence_score=0.91,
+)
+
+renderer.render(
+    cached_results=[],
+    recent_interviews=[record],
+    status_overview=DashboardStatusOverview(total_interviews=1, status_counts={ProcessingStatus.COMPLETED.value: 1}),
+    interview_detail_loader=lambda interview_id: record,
+    save_interview_edits=lambda **kwargs: record,
+    sample_mode=False,
+)
+'''
+
+    app = AppTest.from_string(script)
+    app.run(timeout=10)
+
+    assert any(button.label == "Open" for button in app.button)
+    assert not any(button.label == "Close overlay" for button in app.button)
+
+    open_button = next(button for button in app.button if button.label == "Open")
+    open_button.click()
+    app.run()
+
+    button_labels = [button.label for button in app.button]
+    success_values = [element.value for element in app.success]
+    markdown_values = [element.value for element in app.markdown]
+    text_area_values = [element.value for element in app.text_area]
+
+    assert "Close overlay" in button_labels
+    assert any("opened in the Interviews overlay" in value for value in success_values)
+    assert any("Formatted insights" in value for value in markdown_values)
+    assert "Repository transcript" in text_area_values
+
+
 def test_dashboard_interview_detail_requires_confirmation_before_delete() -> None:
     script = '''
 from payday.dashboard.views import DashboardRenderer
