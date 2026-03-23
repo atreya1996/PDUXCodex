@@ -75,6 +75,7 @@ class DashboardRenderer:
         status_overview: DashboardStatusOverview,
         interview_detail_loader: Callable[[str], DashboardInterviewRecord],
         save_interview_edits: Callable[..., DashboardInterviewRecord] | None = None,
+        reprocess_interview: Callable[[str], DashboardInterviewRecord] | None = None,
         delete_interview: Callable[[str], bool] | None = None,
         sample_mode: bool = False,
     ) -> None:
@@ -102,6 +103,7 @@ class DashboardRenderer:
                 interviews,
                 interview_detail_loader,
                 save_interview_edits=save_interview_edits,
+                reprocess_interview=reprocess_interview,
                 delete_interview=delete_interview,
                 sample_mode=sample_mode,
             )
@@ -288,6 +290,7 @@ class DashboardRenderer:
         interview_detail_loader: Callable[[str], DashboardInterviewRecord],
         *,
         save_interview_edits: Callable[..., DashboardInterviewRecord] | None,
+        reprocess_interview: Callable[[str], DashboardInterviewRecord] | None,
         delete_interview: Callable[[str], bool] | None,
         sample_mode: bool,
     ) -> None:
@@ -412,7 +415,14 @@ class DashboardRenderer:
         transcript_changed = updated_transcript != selected.transcript
         structured_json_changed = updated_json != original_json
 
-        transcript_col, json_col, save_all_col, delete_col = st.columns([1.1, 1.2, 1.1, 1], gap="medium")
+        st.caption(
+            "After prompt or analysis code changes, use Reprocess interview so the dashboard refreshes from a newly analyzed SQLite row instead of judging stale stored outputs."
+        )
+
+        transcript_col, json_col, save_all_col, reprocess_col, delete_col = st.columns(
+            [1.05, 1.15, 1.05, 1.1, 0.9],
+            gap="medium",
+        )
         with transcript_col:
             transcript_save_disabled = save_interview_edits is None or not transcript_changed
             if st.button(
@@ -493,6 +503,30 @@ class DashboardRenderer:
                 st.caption("Recommended when both transcript and JSON drafts changed, so both edits persist together.")
             else:
                 st.caption("Saves whichever interview detail drafts are currently unsaved.")
+
+        with reprocess_col:
+            reprocess_disabled = reprocess_interview is None or not (selected.transcript or "").strip()
+            if st.button(
+                "Reprocess interview",
+                key=f"reprocess_interview_{selected.id}",
+                use_container_width=True,
+                disabled=reprocess_disabled,
+            ):
+                self._reprocess_interview(
+                    interview_id=selected.id,
+                    reprocess_interview=reprocess_interview,
+                    transcript_edits=transcript_edits,
+                    json_edits=json_edits,
+                    success_message=(
+                        "Interview reprocessed from the saved transcript. Analysis, persona outputs, and dashboard summaries were refreshed from SQLite."
+                    ),
+                )
+            if reprocess_interview is None:
+                st.caption("Reprocess is unavailable because no backend handler was provided.")
+            elif not (selected.transcript or "").strip():
+                st.caption("Reprocess requires a saved transcript in SQLite first.")
+            else:
+                st.caption("Reruns analysis from the saved transcript without needing manual edits.")
 
         with delete_col:
             delete_disabled = delete_interview is None
@@ -580,6 +614,34 @@ class DashboardRenderer:
             st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
                 "kind": "error",
                 "message": f"Save failed: {exc}",
+            }
+        else:
+            transcript_edits.pop(interview_id, None)
+            json_edits.pop(interview_id, None)
+            st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                "kind": "success",
+                "message": success_message,
+            }
+            st.rerun()
+
+    def _reprocess_interview(
+        self,
+        *,
+        interview_id: str,
+        reprocess_interview: Callable[[str], DashboardInterviewRecord] | None,
+        transcript_edits: dict[str, str],
+        json_edits: dict[str, str],
+        success_message: str,
+    ) -> None:
+        if reprocess_interview is None:
+            return
+        try:
+            reprocess_interview(interview_id)
+        except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                "kind": "error",
+                "message": f"Reprocess failed: {exc}",
             }
         else:
             transcript_edits.pop(interview_id, None)

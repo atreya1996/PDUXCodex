@@ -212,6 +212,7 @@ renderer.render(
     assert "Save transcript" in button_labels
     assert "Save structured JSON" in button_labels
     assert "Save all edits" in button_labels
+    assert "Reprocess interview" in button_labels
 
 
 def test_dashboard_interview_detail_requires_confirmation_before_delete() -> None:
