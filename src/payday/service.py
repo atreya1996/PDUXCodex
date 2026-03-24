@@ -4,7 +4,7 @@ import logging
 
 from payday.analysis import AnalysisService, build_analysis_adapter
 from payday.config import Settings, validate_runtime_settings
-from payday.models import BatchPipelineResult, BatchUploadItem, PipelineResult, ProcessingStatus
+from payday.models import BatchPipelineResult, BatchUploadItem, PipelineResult
 from payday.personas import PersonaService
 from payday.pipeline import PaydayPipeline
 from payday.repository import DashboardInterviewRecord, DashboardStatusOverview, PaydayRepository
@@ -119,7 +119,7 @@ class PaydayAppService:
         if not deleted:
             return False
 
-        self._delete_stored_audio_if_needed(interview_id=interview.id, audio_url=interview.audio_url, status=interview.status)
+        self._delete_stored_audio_if_needed(interview_id=interview.id, audio_url=interview.audio_url)
         return True
 
     def runtime_summary(self) -> dict[str, object]:
@@ -132,10 +132,8 @@ class PaydayAppService:
             "database_path": self.repository.database_path,
         }
 
-    def _delete_stored_audio_if_needed(self, *, interview_id: str, audio_url: str, status: str) -> None:
+    def _delete_stored_audio_if_needed(self, *, interview_id: str, audio_url: str) -> None:
         if self.settings.features.use_sample_mode:
-            return
-        if status != ProcessingStatus.COMPLETED.value:
             return
         if not audio_url.strip():
             return
