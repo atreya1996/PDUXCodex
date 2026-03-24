@@ -199,11 +199,11 @@ class DashboardRenderer:
         st.toast(message, icon=icon)
 
     def _apply_filters(self, interviews: list[DashboardInterview]) -> list[DashboardInterview]:
-        search_query = st.session_state[FILTER_SESSION_KEYS["search"]].strip().lower()
-        income_filters = set(st.session_state[FILTER_SESSION_KEYS["income"]])
-        borrowing_filters = set(st.session_state[FILTER_SESSION_KEYS["borrowing"]])
-        persona_filters = set(st.session_state[FILTER_SESSION_KEYS["persona"]])
-        digital_filters = set(st.session_state[FILTER_SESSION_KEYS["digital_access"]])
+        search_query = str(st.session_state.get(FILTER_SESSION_KEYS["search"], "")).strip().lower()
+        income_filters = set(st.session_state.get(FILTER_SESSION_KEYS["income"], []))
+        borrowing_filters = set(st.session_state.get(FILTER_SESSION_KEYS["borrowing"], []))
+        persona_filters = set(st.session_state.get(FILTER_SESSION_KEYS["persona"], []))
+        digital_filters = set(st.session_state.get(FILTER_SESSION_KEYS["digital_access"], []))
 
         filtered: list[DashboardInterview] = []
         for interview in interviews:
@@ -700,7 +700,7 @@ class DashboardRenderer:
             ("Filtered interviews", str(len(filtered))),
             ("Portfolio interviews", str(len(all_interviews))),
             ("Durable interviews", str(status_overview.total_interviews)),
-            ("Search term", st.session_state[FILTER_SESSION_KEYS["search"]].strip() or "All"),
+            ("Search term", str(st.session_state.get(FILTER_SESSION_KEYS["search"], "")).strip() or "All"),
         ]
         columns = st.columns(len(values), gap="medium")
         for column, (label, value) in zip(columns, values, strict=False):
