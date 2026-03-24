@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 from uuid import uuid4
 
 from payday.analysis import DEFAULT_UNKNOWN_VALUE
@@ -19,7 +18,7 @@ _UNSET = object()
 @dataclass(frozen=True, slots=True)
 class InterviewRecord:
     id: str
-    audio_url: str
+    file_path: str
     transcript: str | None
     status: str
     latest_stage: str
@@ -59,7 +58,7 @@ class InsightRecord:
 @dataclass(frozen=True, slots=True)
 class InterviewListItem:
     id: str
-    audio_url: str
+    file_path: str
     status: str
     created_at: str
     persona: str | None
@@ -77,7 +76,7 @@ class InterviewDetail:
 @dataclass(frozen=True, slots=True)
 class DashboardInterviewRecord:
     id: str
-    audio_url: str
+    file_path: str
     filename: str
     transcript: str | None
     status: str
@@ -183,7 +182,7 @@ class PaydayRepository:
     def create_interview(
         self,
         *,
-        audio_url: str,
+        file_path: str,
         transcript: str | None = None,
         status: str = "uploaded",
         latest_stage: str = "upload",
@@ -193,7 +192,7 @@ class PaydayRepository:
     ) -> InterviewRecord:
         record = InterviewRecord(
             id=interview_id or str(uuid4()),
-            audio_url=audio_url,
+            file_path=file_path,
             transcript=transcript,
             status=status,
             latest_stage=latest_stage,
@@ -203,12 +202,12 @@ class PaydayRepository:
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO interviews (id, audio_url, transcript, status, latest_stage, last_error, created_at, analysis_version)
+                INSERT INTO interviews (id, file_path, transcript, status, latest_stage, last_error, created_at, analysis_version)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
-                    record.audio_url,
+                    record.file_path,
                     record.transcript,
                     record.status,
                     record.latest_stage,
@@ -223,7 +222,7 @@ class PaydayRepository:
         self,
         interview_id: str,
         *,
-        audio_url: str | None = None,
+        file_path: str | None = None,
         transcript: str | None = None,
         status: str | None = None,
         latest_stage: str | None = None,
@@ -232,7 +231,7 @@ class PaydayRepository:
         existing = self.get_interview(interview_id)
         updated = InterviewRecord(
             id=existing.id,
-            audio_url=audio_url if audio_url is not None else existing.audio_url,
+            file_path=file_path if file_path is not None else existing.file_path,
             transcript=transcript if transcript is not None else existing.transcript,
             status=status if status is not None else existing.status,
             latest_stage=latest_stage if latest_stage is not None else existing.latest_stage,
@@ -244,11 +243,11 @@ class PaydayRepository:
             connection.execute(
                 """
                 UPDATE interviews
-                SET audio_url = ?, transcript = ?, status = ?, latest_stage = ?, last_error = ?, analysis_version = ?
+                SET file_path = ?, transcript = ?, status = ?, latest_stage = ?, last_error = ?, analysis_version = ?
                 WHERE id = ?
                 """,
                 (
-                    updated.audio_url,
+                    updated.file_path,
                     updated.transcript,
                     updated.status,
                     updated.latest_stage,
@@ -263,7 +262,7 @@ class PaydayRepository:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, audio_url, transcript, status, latest_stage, last_error, created_at, analysis_version
+                SELECT id, file_path, transcript, status, latest_stage, last_error, created_at, analysis_version
                 FROM interviews
                 WHERE id = ?
                 """,
@@ -574,7 +573,7 @@ class PaydayRepository:
         query = """
             SELECT
                 interviews.id,
-                interviews.audio_url,
+                interviews.file_path,
                 interviews.status,
                 interviews.created_at,
                 insights.persona,
@@ -599,7 +598,7 @@ class PaydayRepository:
                 """
                 SELECT
                     interviews.id,
-                    interviews.audio_url,
+                    interviews.file_path,
                     interviews.transcript,
                     interviews.status,
                     interviews.latest_stage,
@@ -757,7 +756,7 @@ class PaydayRepository:
                 """
                 SELECT
                     interviews.id,
-                    interviews.audio_url,
+                    interviews.file_path,
                     interviews.transcript,
                     interviews.status,
                     interviews.latest_stage,
@@ -813,8 +812,8 @@ class PaydayRepository:
         self._items[result.file_id] = result
         return result
 
-    def sync_pipeline_result(self, result: PipelineResult, *, audio_url: str) -> None:
-        interview = self._upsert_interview_from_result(result, audio_url=audio_url)
+    def sync_pipeline_result(self, result: PipelineResult, *, file_path: str) -> None:
+        interview = self._upsert_interview_from_result(result, file_path=file_path)
         if result.analysis is not None:
             self._upsert_structured_response_from_analysis(interview.id, result.analysis)
         if result.analysis is not None:
@@ -846,12 +845,12 @@ class PaydayRepository:
         path = Path(database_path).expanduser()
         return str(path)
 
-    def _upsert_interview_from_result(self, result: PipelineResult, *, audio_url: str) -> InterviewRecord:
+    def _upsert_interview_from_result(self, result: PipelineResult, *, file_path: str) -> InterviewRecord:
         transcript_text = result.transcript.text if result.transcript is not None else None
         try:
             return self.update_interview(
                 result.file_id,
-                audio_url=audio_url,
+                file_path=file_path,
                 transcript=transcript_text,
                 status=result.status.value,
                 latest_stage=result.current_stage.value,
@@ -860,7 +859,7 @@ class PaydayRepository:
         except KeyError:
             return self.create_interview(
                 interview_id=result.file_id,
-                audio_url=audio_url,
+                file_path=file_path,
                 transcript=transcript_text,
                 status=result.status.value,
                 latest_stage=result.current_stage.value,
@@ -915,8 +914,8 @@ class PaydayRepository:
         )
         return DashboardInterviewRecord(
             id=payload["id"],
-            audio_url=payload["audio_url"],
-            filename=self._filename_from_audio_url(payload["audio_url"]),
+            file_path=payload["file_path"],
+            filename=self._filename_from_file_path(payload["file_path"]),
             transcript=payload["transcript"],
             status=payload["status"],
             latest_stage=payload["latest_stage"],
@@ -1026,10 +1025,8 @@ class PaydayRepository:
         return []
 
     @staticmethod
-    def _filename_from_audio_url(audio_url: str) -> str:
-        parsed = urlparse(audio_url)
-        path = parsed.path or audio_url
-        return Path(path).name
+    def _filename_from_file_path(file_path: str) -> str:
+        return Path(file_path).name
 
     @staticmethod
     def _infer_transcript_quality(*, status: str, transcript: str | None, last_error: str | None) -> str:

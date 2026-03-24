@@ -1366,9 +1366,9 @@ class DashboardRenderer:
                 st.audio(selected.audio_bytes, format=selected.audio_format)
             else:
                 st.info("Audio bytes are unavailable after restart, but the durable interview record remains available.")
-                audio_url = selected.extracted_json.get("audio_url")
-                if audio_url:
-                    st.caption(f"Stored audio path: {audio_url}")
+                file_path = selected.extracted_json.get("file_path")
+                if file_path:
+                    st.caption(f"Stored audio path: {file_path}")
 
             st.markdown("#### Transcript detail")
             with st.expander("Editable transcript", expanded=False):
@@ -2037,7 +2037,7 @@ class DashboardRenderer:
         borrowing_value = record.borrowing_history or "unknown"
         loan_interest_value = record.loan_interest or "unknown"
         extracted_json = {
-            "audio_url": record.audio_url,
+            "file_path": record.file_path,
             "runtime": {
                 "status": record.status,
                 "current_stage": record.latest_stage,

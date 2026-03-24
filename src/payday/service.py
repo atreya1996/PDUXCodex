@@ -38,7 +38,7 @@ class PaydayAppService:
             ),
             analysis_service=analysis_service,
             persona_service=persona_service,
-            storage_service=StorageService(settings.supabase),
+            storage_service=StorageService(settings.storage.uploads_root),
             repository=self.repository,
             sample_mode=settings.features.use_sample_mode,
         )
@@ -170,7 +170,7 @@ class PaydayAppService:
         if not deleted:
             return False
 
-        self._delete_stored_audio_if_needed(interview_id=interview.id, audio_url=interview.audio_url)
+        self._delete_stored_audio_if_needed(interview_id=interview.id, file_path=interview.file_path)
         return True
 
     def runtime_summary(self) -> dict[str, object]:
@@ -213,20 +213,15 @@ class PaydayAppService:
             return None
         return completed.stdout.strip() or None
 
-    def _delete_stored_audio_if_needed(self, *, interview_id: str, audio_url: str) -> None:
+    def _delete_stored_audio_if_needed(self, *, interview_id: str, file_path: str) -> None:
         if self.settings.features.use_sample_mode:
             return
-        if not audio_url.strip():
+        if not file_path.strip():
             return
 
         try:
-            self.pipeline.storage_service.delete_asset(audio_url, sample_mode=False)
+            self.pipeline.storage_service.delete_asset(file_path, sample_mode=False)
         except FileNotFoundError:
-            logger.warning("Stored audio for interview %s was already missing at %s.", interview_id, audio_url)
-        except RuntimeError:
-            logger.warning(
-                "Skipped stored audio deletion for interview %s because no live storage delete client is configured.",
-                interview_id,
-            )
+            logger.warning("Stored audio for interview %s was already missing at %s.", interview_id, file_path)
         except Exception:
-            logger.exception("Failed to delete stored audio for interview %s at %s.", interview_id, audio_url)
+            logger.exception("Failed to delete stored audio for interview %s at %s.", interview_id, file_path)

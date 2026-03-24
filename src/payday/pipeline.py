@@ -221,7 +221,7 @@ class PaydayPipeline:
         self.repository.save_result(result)
         interview = self.repository.create_interview(
             interview_id=item.file_id,
-            audio_url=self.storage_service.build_audio_path(item.file_id, item.filename),
+            file_path=self.storage_service.build_file_path(item.file_id, item.filename),
             status=ProcessingStatus.PENDING.value,
             latest_stage=result.current_stage.value,
         )
@@ -472,7 +472,7 @@ class PaydayPipeline:
 
     def _dashboard_payload_from_record(self, detail: DashboardInterviewRecord) -> dict[str, Any]:
         return {
-            "audio_url": detail.audio_url,
+            "file_path": detail.file_path,
             "participant_profile": {
                 "smartphone_user": {"value": detail.smartphone_user},
                 "has_bank_account": {"value": detail.has_bank_account},
@@ -519,11 +519,11 @@ class PaydayPipeline:
         latest_stage: PipelineStage | None = None,
         last_error: str | object = None,
     ) -> None:
-        audio_url = self.storage_service.build_audio_path(result.file_id, result.filename)
+        file_path = self.storage_service.build_file_path(result.file_id, result.filename)
         try:
             self.repository.update_interview(
                 result.file_id,
-                audio_url=audio_url,
+                file_path=file_path,
                 transcript=transcript,
                 status=status.value if status is not None else None,
                 latest_stage=latest_stage.value if latest_stage is not None else None,
@@ -532,7 +532,7 @@ class PaydayPipeline:
         except KeyError:
             self.repository.create_interview(
                 interview_id=result.file_id,
-                audio_url=audio_url,
+                file_path=file_path,
                 transcript=transcript,
                 status=status.value if status is not None else ProcessingStatus.PENDING.value,
                 latest_stage=latest_stage.value if latest_stage is not None else result.current_stage.value,
