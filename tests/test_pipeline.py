@@ -758,6 +758,49 @@ def test_repository_delete_interview_cascades_related_rows(tmp_path) -> None:
         assert connection.execute("SELECT COUNT(*) FROM insights").fetchone()[0] == 0
 
 
+def test_repository_initialization_migrates_legacy_interview_columns_and_statuses(tmp_path) -> None:
+    database_path = tmp_path / "legacy.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE interviews (
+                id TEXT PRIMARY KEY,
+                audio_url TEXT NOT NULL,
+                transcript TEXT,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_error TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO interviews (id, audio_url, transcript, status, created_at, last_error)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy-1",
+                "audio/legacy-1/demo.wav",
+                "Legacy transcript",
+                "uploaded",
+                "2026-03-20T00:00:00+00:00",
+                "legacy error",
+            ),
+        )
+
+    repository = PaydayRepository(database_path=str(database_path))
+    migrated = repository.get_interview("legacy-1")
+
+    assert migrated.audio_url == "audio/legacy-1/demo.wav"
+    assert migrated.file_path == "audio/legacy-1/demo.wav"
+    assert migrated.filename == "demo.wav"
+    assert migrated.transcript == "Legacy transcript"
+    assert migrated.transcript_text == "Legacy transcript"
+    assert migrated.last_error == "legacy error"
+    assert migrated.error_message == "legacy error"
+    assert migrated.status == ProcessingStatus.PENDING.value
+
+
 def test_app_service_uses_sqlite_for_durable_dashboard_reads(tmp_path) -> None:
     database_path = str(tmp_path / "payday-dashboard.db")
     first_service = PaydayAppService(build_settings(database_path))
