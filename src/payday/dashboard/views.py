@@ -1192,6 +1192,9 @@ class DashboardRenderer:
         badge_class = "badge-nontarget" if interview.is_non_target else "badge-target"
         persona_label = html.escape(interview.persona_name)
         summary = html.escape(self._truncate_text(interview.summary, limit=CARD_SUMMARY_SNIPPET_LIMIT) or "No summary captured yet.")
+        transcript_preview = html.escape(
+            self._truncate_text(interview.transcript, limit=CARD_SUMMARY_SNIPPET_LIMIT) or "Transcript pending."
+        )
         malformed_badge = self._malformed_transcript_badge(interview)
         malformed_badge_html = ""
         if malformed_badge:
@@ -1385,47 +1388,46 @@ class DashboardRenderer:
         else:
             action_col, delete_col = st.columns([1, 1], gap="medium")
         with action_col:
-            if self._is_admin_mode():
-                if st.button(
-                    "Re-analyze selected interview",
-                    key=f"reanalyze_selected_overlay_{selected.id}",
-                    use_container_width=False,
-                    disabled=reprocess_interview is None,
-                ):
-                    try:
-                        reprocess_interview(selected.id)
-                    except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
-                        st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                            "kind": "error",
-                            "message": f"Re-analysis failed: {exc}",
-                        }
-                    else:
-                        transcript_edits.pop(selected.id, None)
-                        st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                            "kind": "success",
-                            "message": "Interview analysis was refreshed.",
-                        }
-                    st.rerun()
-                if st.button(
-                    "Reprocess interview",
-                    key=f"reprocess_overlay_{selected.id}",
-                    use_container_width=False,
-                    disabled=reprocess_interview is None,
-                ):
-                    try:
-                        reprocess_interview(selected.id)
-                    except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
-                        st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                            "kind": "error",
-                            "message": f"Re-analysis failed: {exc}",
-                        }
-                    else:
-                        transcript_edits.pop(selected.id, None)
-                        st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                            "kind": "success",
-                            "message": "Interview was refreshed.",
-                        }
-                    st.rerun()
+            if st.button(
+                "Re-analyze selected interview",
+                key=f"reanalyze_selected_overlay_{selected.id}",
+                use_container_width=False,
+                disabled=reprocess_interview is None,
+            ):
+                try:
+                    reprocess_interview(selected.id)
+                except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+                    st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                        "kind": "error",
+                        "message": f"Re-analysis failed: {exc}",
+                    }
+                else:
+                    transcript_edits.pop(selected.id, None)
+                    st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                        "kind": "success",
+                        "message": "Interview analysis was refreshed.",
+                    }
+                st.rerun()
+            if st.button(
+                "Reprocess interview",
+                key=f"reprocess_overlay_{selected.id}",
+                use_container_width=False,
+                disabled=reprocess_interview is None,
+            ):
+                try:
+                    reprocess_interview(selected.id)
+                except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+                    st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                        "kind": "error",
+                        "message": f"Re-analysis failed: {exc}",
+                    }
+                else:
+                    transcript_edits.pop(selected.id, None)
+                    st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                        "kind": "success",
+                        "message": "Interview was refreshed.",
+                    }
+                st.rerun()
 
             save_disabled = save_interview_edits is None or not transcript_changed
             transcript_col, json_col, save_all_col = st.columns(3, gap="small")
@@ -1463,7 +1465,7 @@ class DashboardRenderer:
                 )
             if save_interview_edits is None:
                 st.caption("Saving edits is unavailable right now. Please refresh and try again.")
-            if self._is_admin_mode() and reprocess_interview is None:
+            if reprocess_interview is None:
                 st.caption("Refresh analysis is unavailable right now. Please refresh and try again.")
             elif not transcript_changed:
                 st.caption("No transcript edits to save.")
@@ -1471,22 +1473,20 @@ class DashboardRenderer:
                 st.caption("Saving reruns downstream analysis and persona derivation without exposing raw JSON in the UI.")
             st.caption("Structured JSON editing was intentionally removed from the main UI. The buttons remain visible for workflow continuity.")
         with delete_col:
-            if self._is_admin_mode():
-                delete_disabled = delete_interview is None
-                if st.button(
-                    "Delete interview",
-                    key=f"delete_interview_overlay_{selected.id}",
-                    use_container_width=True,
-                    disabled=delete_disabled,
-                ):
-                    st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = selected.id
-                    st.rerun()
-                if delete_disabled:
-                    st.caption("Delete is unavailable right now. Please refresh and try again.")
+            delete_disabled = delete_interview is None
+            if st.button(
+                "Delete interview",
+                key=f"delete_interview_overlay_{selected.id}",
+                use_container_width=True,
+                disabled=delete_disabled,
+            ):
+                st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = selected.id
+                st.rerun()
+            if delete_disabled:
+                st.caption("Delete is unavailable right now. Please refresh and try again.")
 
         if (
-            self._is_admin_mode()
-            and st.session_state.get(FILTER_SESSION_KEYS["delete_confirm"]) == selected.id
+            st.session_state.get(FILTER_SESSION_KEYS["delete_confirm"]) == selected.id
             and delete_interview is not None
         ):
             st.warning(
@@ -1657,6 +1657,11 @@ class DashboardRenderer:
         if isinstance(raw_value, str):
             return raw_value.strip().casefold() in {"1", "true", "yes", "on", "admin", "dev", "development"}
         return bool(raw_value)
+
+    def _render_status_error_indicator(self, interview: DashboardInterview) -> None:
+        if not interview.last_error:
+            return
+        st.caption(f"Latest pipeline error: {interview.last_error}")
 
     def _render_formatted_insights(self, interview: DashboardInterview) -> None:
         sections = [
