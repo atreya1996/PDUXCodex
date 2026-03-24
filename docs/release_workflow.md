@@ -38,6 +38,16 @@ For the deployed preview target, use:
 
 These values keep uploads below common proxy/browser request-size ceilings and reduce 413 risk for multipart audio batches.
 
+### Required transport/runtime alignment
+
+Before release, verify these deployment controls are aligned with PayDay guardrails:
+
+- reverse-proxy max request body size (HTTP multipart uploads),
+- runtime/app-server max request body size, and
+- websocket/frame limits used by Streamlit transport paths.
+
+If any upstream cap is below PayDay batch limits, users will hit `413 Payload Too Large` before app-side validation can help them split batches.
+
 ## Runtime metadata refresh
 
 In the Streamlit sidebar use **Refresh status + release metadata** to force:

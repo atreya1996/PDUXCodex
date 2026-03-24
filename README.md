@@ -198,6 +198,16 @@ UI behavior now includes:
 
 If preview uploads fail with 413, retry by selecting fewer files per run, compressing recordings, or reducing duration/bitrate before re-uploading.
 
+### Transport limits to configure in deployment runtime
+
+In addition to PayDay app env vars, align upstream transport caps so Streamlit uploads are not rejected before app preflight checks run:
+
+- **Reverse proxy request body size** (for example, nginx `client_max_body_size` or equivalent) should be set above `PAYDAY_ENV_MAX_UPLOAD_BATCH_MB`.
+- **WebSocket/frame/message limits** should allow Streamlit event traffic plus upload metadata during batch processing.
+- **Application server request caps** (if your platform enforces max multipart or HTTP body size) must be greater than both the per-file and per-batch values configured in PayDay.
+
+Recommended rule: keep proxy/server request-body limits at least 10–20% above `PAYDAY_ENV_MAX_UPLOAD_BATCH_MB` so multipart overhead does not trigger upstream `413` responses.
+
 ## Contribution guidance for UI pull requests
 
 For any PR that changes Streamlit UI behavior, complete the required UI checklist in `docs/ui_pr_checklist.md` before requesting review.

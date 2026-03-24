@@ -52,6 +52,10 @@ def _format_megabytes(value_bytes: int) -> str:
     return f"{value_bytes / 1_000_000:.1f} MB"
 
 
+def _format_exact_bytes(value_bytes: int) -> str:
+    return f"{value_bytes:,} bytes ({_format_megabytes(value_bytes)})"
+
+
 def _is_payload_too_large_error(message: str) -> bool:
     normalized = message.lower()
     return "413" in normalized or "payload too large" in normalized or "request entity too large" in normalized
@@ -59,6 +63,31 @@ def _is_payload_too_large_error(message: str) -> bool:
 
 def _chunk_upload_items(items: list[BatchUploadItem], chunk_size: int) -> list[list[BatchUploadItem]]:
     return [items[index : index + chunk_size] for index in range(0, len(items), chunk_size)]
+
+
+def _upload_limit_violations(
+    *,
+    uploaded_files: list[object],
+    file_sizes: list[int],
+    total_selected_size: int,
+    environment_file_limit_bytes: int,
+    environment_batch_limit_bytes: int,
+) -> list[str]:
+    violations: list[str] = []
+    for uploaded_file, file_size in zip(uploaded_files, file_sizes, strict=False):
+        if file_size <= environment_file_limit_bytes:
+            continue
+        filename = getattr(uploaded_file, "name", "unknown-file")
+        violations.append(
+            "Per-file limit exceeded "
+            f"for {filename}: {_format_exact_bytes(file_size)} > {_format_exact_bytes(environment_file_limit_bytes)}."
+        )
+    if total_selected_size > environment_batch_limit_bytes:
+        violations.append(
+            "Per-batch limit exceeded: "
+            f"{_format_exact_bytes(total_selected_size)} > {_format_exact_bytes(environment_batch_limit_bytes)}."
+        )
+    return violations
 
 
 @st.cache_resource
@@ -149,6 +178,14 @@ def main() -> None:
     file_sizes = [len(file.getvalue()) for file in uploaded_files] if uploaded_files else []
     total_selected_size = sum(file_sizes)
     largest_selected_file = max(file_sizes) if file_sizes else 0
+    oversized_file_count = sum(1 for file_size in file_sizes if file_size > environment_file_limit_bytes)
+    violations = _upload_limit_violations(
+        uploaded_files=uploaded_files or [],
+        file_sizes=file_sizes,
+        total_selected_size=total_selected_size,
+        environment_file_limit_bytes=environment_file_limit_bytes,
+        environment_batch_limit_bytes=environment_batch_limit_bytes,
+    )
     near_environment_limit = (
         environment_batch_limit_bytes > 0
         and total_selected_size >= int(environment_batch_limit_bytes * NEAR_LIMIT_WARNING_RATIO)
@@ -160,12 +197,23 @@ def main() -> None:
             f"({_format_megabytes(total_selected_size)} of {_format_megabytes(environment_batch_limit_bytes)}). "
             "If processing fails with HTTP 413, retry with fewer files per batch."
         )
+    if upload_count > 0:
+        st.sidebar.caption(
+            "Selection size: "
+            f"{_format_exact_bytes(total_selected_size)} total across {upload_count} file(s). "
+            f"Largest file: {_format_exact_bytes(largest_selected_file)}."
+        )
+    if violations:
+        st.sidebar.error("Upload preflight failed. Fix the following size violations before submitting:")
+        for violation in violations:
+            st.sidebar.error(violation)
     runtime_summary = app_service.runtime_summary()
     st.sidebar.write(
         {
             "files_selected": upload_count,
             "batch_size_mb": round(total_selected_size / 1_000_000, 2),
             "largest_file_mb": round(largest_selected_file / 1_000_000, 2),
+            "oversized_files": oversized_file_count,
             "analysis_enabled": settings.features.enable_analysis,
             **runtime_summary,
         }
@@ -207,17 +255,10 @@ def main() -> None:
     if st.sidebar.button("Process batch", type="primary", use_container_width=True, disabled=process_disabled):
         if upload_count < 1 or upload_count > 10:
             st.sidebar.warning("Please upload between 1 and 10 audio files.")
-        elif largest_selected_file > environment_file_limit_bytes:
+        elif violations:
             st.sidebar.error(
-                "One or more files exceed the deployment/runtime per-file limit "
-                f"({_format_megabytes(environment_file_limit_bytes)}). "
-                "Compress/split oversized recordings before retrying."
-            )
-        elif total_selected_size > environment_batch_limit_bytes:
-            st.sidebar.error(
-                "Combined selection exceeds the deployment/runtime batch limit "
-                f"({_format_megabytes(total_selected_size)} > {_format_megabytes(environment_batch_limit_bytes)}). "
-                "Remove files or run multiple smaller batches."
+                "Cannot submit this batch because deployment/runtime size guardrails were exceeded. "
+                "Reduce batch size, split uploads, or compress recordings."
             )
         else:
             items = [
@@ -264,8 +305,8 @@ def main() -> None:
                 st.sidebar.error(f"{failed_result.filename}: {error_message}")
                 if _is_payload_too_large_error(error_message):
                     st.sidebar.warning(
-                        "HTTP 413 guidance: retry with fewer files (2-3 per run), compress audio, "
-                        "or lower duration/bitrate before re-uploading."
+                        "HTTP 413 Payload Too Large: request body exceeded an upstream transport limit. "
+                        "Guidance: reduce batch size / split uploads, compress audio, or lower duration/bitrate."
                     )
 
     if not settings.features.enable_analysis:

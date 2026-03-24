@@ -50,6 +50,7 @@ FILTER_SESSION_KEYS = {
     "include_low_quality": "dashboard_include_low_quality",
     "interview_page": "dashboard_interview_page",
     "search": "dashboard_search_query",
+    "include_low_quality": "dashboard_include_low_quality",
     "selected": "dashboard_selected_interview_id",
     "detail_open": "dashboard_detail_overlay_open",
     "transcripts": "dashboard_transcript_edits",
@@ -61,11 +62,14 @@ FILTER_SESSION_KEYS = {
     "open_interview_pending_id": "dashboard_open_interview_pending_id",
     "open_interview_pending_at": "dashboard_open_interview_pending_at",
     "overlay_fallback_reason": "dashboard_overlay_fallback_reason",
+    "interview_page": "dashboard_interview_page",
 }
 CARD_SUMMARY_SNIPPET_LIMIT = 120
+CARD_TRANSCRIPT_PREVIEW_LIMIT = 80
 MAX_UI_TRANSCRIPT_CHARS = 12000
 MAX_MAIN_LIST_QUOTES = 3
 INTERVIEW_CARDS_PER_PAGE = 8
+MAX_TABLE_ROWS_PER_VIEW = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +169,7 @@ class DashboardRenderer:
         st.session_state.setdefault(FILTER_SESSION_KEYS["include_low_quality"], False)
         st.session_state.setdefault(FILTER_SESSION_KEYS["interview_page"], 1)
         st.session_state.setdefault(FILTER_SESSION_KEYS["search"], "")
+        st.session_state.setdefault(FILTER_SESSION_KEYS["include_low_quality"], False)
         st.session_state.setdefault(FILTER_SESSION_KEYS["detail_open"], False)
         st.session_state.setdefault(FILTER_SESSION_KEYS["transcripts"], {})
         st.session_state.setdefault(FILTER_SESSION_KEYS["detail_message"], None)
@@ -174,6 +179,7 @@ class DashboardRenderer:
         st.session_state.setdefault(FILTER_SESSION_KEYS["open_interview_pending_id"], None)
         st.session_state.setdefault(FILTER_SESSION_KEYS["open_interview_pending_at"], None)
         st.session_state.setdefault(FILTER_SESSION_KEYS["overlay_fallback_reason"], None)
+        st.session_state.setdefault(FILTER_SESSION_KEYS["interview_page"], 1)
 
         selected_key = FILTER_SESSION_KEYS["selected"]
         if interviews and not st.session_state.get(selected_key):
@@ -610,11 +616,22 @@ class DashboardRenderer:
         self._render_overlay_debug_indicator()
 
         total_cards = len(filtered)
-        visible_cards = self._visible_interview_cards(filtered, cards_per_page=INTERVIEW_CARDS_PER_PAGE)
+        current_page, max_page = self._render_interview_pagination_controls(
+            total_cards=total_cards,
+            cards_per_page=INTERVIEW_CARDS_PER_PAGE,
+        )
+        visible_cards = self._visible_interview_cards(
+            filtered,
+            cards_per_page=INTERVIEW_CARDS_PER_PAGE,
+            page=current_page,
+        )
         if not visible_cards:
             st.info("No interview cards available for the current page.")
             return
-        st.caption(f"Showing {len(visible_cards)} of {total_cards} interviews.")
+        st.caption(
+            f"Showing page {current_page}/{max_page} with {len(visible_cards)} card(s) "
+            f"(capped at {INTERVIEW_CARDS_PER_PAGE} per page) from {total_cards} interviews."
+        )
 
         st.markdown("<div class='pd-grid-section'>", unsafe_allow_html=True)
         card_columns = st.columns(2, gap="large")
@@ -627,16 +644,6 @@ class DashboardRenderer:
                 )
         st.markdown("</div>", unsafe_allow_html=True)
 
-        if len(visible_cards) < total_cards:
-            if st.button(
-                "Load more interviews",
-                key="load_more_interviews_cards",
-                use_container_width=True,
-            ):
-                st.session_state[FILTER_SESSION_KEYS["interview_page"]] = (
-                    st.session_state.get(FILTER_SESSION_KEYS["interview_page"], 1) + 1
-                )
-                st.rerun()
 
     def _render_interviews_visual_regression_checklist(self) -> None:
         st.markdown(
@@ -1056,9 +1063,10 @@ class DashboardRenderer:
         rows: list[tuple[str, int, str]],
         headers: tuple[str, str, str],
     ) -> None:
+        visible_rows = rows[:MAX_TABLE_ROWS_PER_VIEW]
         table_rows = "".join(
             f"<tr><td>{html.escape(label)}</td><td>{count}</td><td>{html.escape(share)}</td></tr>"
-            for label, count, share in rows
+            for label, count, share in visible_rows
         )
         st.markdown(
             f"""
@@ -1075,6 +1083,10 @@ class DashboardRenderer:
             """,
             unsafe_allow_html=True,
         )
+        if len(rows) > len(visible_rows):
+            st.caption(
+                f"Showing {len(visible_rows)} of {len(rows)} rows in this view to keep dashboard rendering fast."
+            )
 
     def _render_summary_blocks(self, interviews: list[DashboardInterview]) -> None:
         incomes = self._numeric_income_values(interviews)
@@ -1169,7 +1181,12 @@ class DashboardRenderer:
     ) -> None:
         badge_class = "badge-nontarget" if interview.is_non_target else "badge-target"
         persona_label = html.escape(interview.persona_name)
-        summary = html.escape(self._truncate_text(interview.summary, limit=CARD_SUMMARY_SNIPPET_LIMIT) or "No summary captured yet.")
+        summary = html.escape(
+            self._truncate_text(interview.summary, limit=CARD_SUMMARY_SNIPPET_LIMIT) or "No summary captured yet."
+        )
+        transcript_preview = html.escape(
+            self._truncate_text(interview.transcript, limit=CARD_TRANSCRIPT_PREVIEW_LIMIT) or "Transcript pending."
+        )
         st.markdown(
             f"""
             <div class='pd-card interview-card'>
@@ -1184,6 +1201,7 @@ class DashboardRenderer:
                     <span class='meta-value'>{html.escape(interview.analysis_version or "Unknown")}</span>
                 </div>
                 <div class='interview-summary'>{summary}</div>
+                <div class='interview-summary'><strong>Transcript preview:</strong> {transcript_preview}</div>
                 <div class='interview-meta-grid'>
                     <div><span class='meta-label'>Borrowing</span><span class='meta-value'>{html.escape(interview.borrowing_label)}</span></div>
                     <div><span class='meta-label'>Income</span><span class='meta-value'>{html.escape(interview.income_band)}</span></div>
@@ -2278,14 +2296,37 @@ class DashboardRenderer:
         interviews: list[DashboardInterview],
         *,
         cards_per_page: int,
+        page: int,
     ) -> list[DashboardInterview]:
         total = len(interviews)
-        max_page = max(1, (total + cards_per_page - 1) // cards_per_page)
+        max_page = max(1, (total + cards_per_page - 1) // cards_per_page) if cards_per_page > 0 else 1
+        safe_page = min(max(page, 1), max_page)
+        start_index = (safe_page - 1) * cards_per_page
+        end_index = start_index + cards_per_page
+        return interviews[start_index:end_index]
+
+    def _render_interview_pagination_controls(self, *, total_cards: int, cards_per_page: int) -> tuple[int, int]:
+        max_page = max(1, (total_cards + cards_per_page - 1) // cards_per_page) if cards_per_page > 0 else 1
         current_page = int(st.session_state.get(FILTER_SESSION_KEYS["interview_page"], 1))
         current_page = min(max(current_page, 1), max_page)
         st.session_state[FILTER_SESSION_KEYS["interview_page"]] = current_page
-        end_index = current_page * cards_per_page
-        return interviews[:end_index]
+
+        if max_page <= 1:
+            return current_page, max_page
+
+        pagination_cols = st.columns([1, 2, 1], gap="small")
+        with pagination_cols[0]:
+            if st.button("Previous page", key="interviews_page_prev", use_container_width=True, disabled=current_page <= 1):
+                st.session_state[FILTER_SESSION_KEYS["interview_page"]] = current_page - 1
+                st.rerun()
+        with pagination_cols[1]:
+            st.caption(f"Interviews page {current_page} of {max_page} ({cards_per_page} cards per page max).")
+        with pagination_cols[2]:
+            if st.button("Next page", key="interviews_page_next", use_container_width=True, disabled=current_page >= max_page):
+                st.session_state[FILTER_SESSION_KEYS["interview_page"]] = current_page + 1
+                st.rerun()
+
+        return current_page, max_page
 
     def _evidence_quotes_for(
         self,

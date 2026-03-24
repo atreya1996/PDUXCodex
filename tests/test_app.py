@@ -10,6 +10,7 @@ from payday.config import (
     SupabaseSettings,
     TranscriptionSettings,
 )
+from payday.models import BatchPipelineResult
 from payday.transcription import describe_transcription_file_size_limit
 
 
@@ -127,18 +128,9 @@ class _FakeAppService:
     def list_stale_corrupted_interview_ids(self) -> list[str]:
         return []
 
-    def process_batch_uploads(self, items: list[object]) -> object:
+    def process_batch_uploads(self, items: list[object]) -> BatchPipelineResult:
         self.batch_calls.append(items)
-        return type(
-            "BatchUploadResultStub",
-            (),
-            {
-                "completed_count": len(items),
-                "failed_count": 0,
-                "batch_id": "batch-0001",
-                "results": [],
-            },
-        )()
+        return BatchPipelineResult(batch_id="batch-1", completed_count=len(items), failed_count=0, results=[])
 
 
 class _FakeDashboardRenderer:
@@ -218,4 +210,4 @@ def test_app_blocks_batch_when_environment_size_limit_is_exceeded(monkeypatch) -
     payday_app.main()
 
     assert service.batch_calls == []
-    assert any("Combined selection exceeds the deployment/runtime batch limit" in text for text in fake_st.sidebar.error_messages)
+    assert any("Per-batch limit exceeded:" in text for text in fake_st.sidebar.error_messages)
