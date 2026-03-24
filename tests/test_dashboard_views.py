@@ -291,9 +291,9 @@ renderer.render(
     markdown_values = [element.value for element in app.markdown]
 
     assert any("Upload interview audio from the sidebar to populate the dashboard overview." in value for value in info_values)
-    assert any("Upload audio files or intentionally load sample fixtures to create interview cards." in value for value in info_values)
+    assert any("Upload audio in the sidebar, then process at least one interview to review it here." in value for value in info_values)
     assert any(
-        "Upload and process at least one interview, or intentionally load sample fixtures, to inspect transcript details here." in value
+        "To test with sample interviews, turn on sample mode in app settings." in value
         for value in info_values
     )
     assert not any("Employer-Dependent Digital Borrower" in value for value in markdown_values)
@@ -480,4 +480,4 @@ renderer.render(
 
     assert "Confirm delete" in button_labels
     assert "Cancel delete" in button_labels
-    assert any("stored audio asset" in value for value in warning_values)
+    assert any("related audio file" in value for value in warning_values)

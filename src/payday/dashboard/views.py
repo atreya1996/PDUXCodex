@@ -53,6 +53,8 @@ FILTER_SESSION_KEYS = {
     "overlay_open": "dashboard_interview_overlay_open",
     "force_sqlite_reload": "dashboard_force_sqlite_reload",
     "toast_message": "dashboard_toast_message",
+    "debug_toggle": "payday_debug_ui",
+    "reanalysis_toggle": "payday_enable_reanalysis",
 }
 
 
@@ -148,6 +150,8 @@ class DashboardRenderer:
         st.session_state.setdefault(FILTER_SESSION_KEYS["delete_confirm"], None)
         st.session_state.setdefault(FILTER_SESSION_KEYS["overlay_open"], False)
         st.session_state.setdefault(FILTER_SESSION_KEYS["toast_message"], None)
+        st.session_state.setdefault(FILTER_SESSION_KEYS["debug_toggle"], False)
+        st.session_state.setdefault(FILTER_SESSION_KEYS["reanalysis_toggle"], False)
 
         selected_key = FILTER_SESSION_KEYS["selected"]
         if interviews and not st.session_state.get(selected_key):
@@ -245,7 +249,7 @@ class DashboardRenderer:
             placeholder="Search filename, quote, summary, transcript",
         )
         st.sidebar.caption(
-            f"Showing {len(filtered)} of {len(all_interviews)} interviews. Durable interviews in SQLite: {status_overview.total_interviews}."
+            f"Showing {len(filtered)} of {len(all_interviews)} interviews. Saved interviews: {status_overview.total_interviews}."
         )
 
     def _render_overview(
@@ -411,70 +415,69 @@ class DashboardRenderer:
             "Interviews",
             "Browse interview cards, then open a modal-style overlay for audio, transcript editing, formatted insights, and persona review.",
         )
-        self._render_interviews_visual_regression_checklist()
+        if self._show_dev_regression_checklist():
+            self._render_interviews_visual_regression_checklist()
 
         if not filtered:
             self._render_empty_state(
                 "No interview cards yet",
                 sample_mode=sample_mode,
-                context="Upload audio files or intentionally load sample fixtures to create interview cards. Upload and process at least one interview, or intentionally load sample fixtures, to inspect transcript details here.",
+                context="Upload audio in the sidebar, then process at least one interview to review it here.",
             )
             return
 
-        action_col1, action_col2 = st.columns(2, gap="small")
-        stale_count = len(list_stale_interview_ids()) if list_stale_interview_ids is not None else None
+        if self._is_reanalysis_enabled():
+            action_col1, action_col2 = st.columns(2, gap="small")
+            stale_count = len(list_stale_interview_ids()) if list_stale_interview_ids is not None else None
 
-        with action_col1:
-            filtered_label = f"Reanalyze filtered ({len(filtered)})"
-            reanalyze_filtered_clicked = st.button(
-                filtered_label,
-                key="reanalyze_filtered_dashboard",
-                use_container_width=True,
-                disabled=reanalyze_interviews is None or not filtered,
-            )
-        with action_col2:
-            stale_label = "Reanalyze all stale"
-            if stale_count is not None:
-                stale_label += f" ({stale_count})"
-            reanalyze_stale_clicked = st.button(
-                stale_label,
-                key="reanalyze_stale_dashboard",
-                use_container_width=True,
-                disabled=reanalyze_stale_interviews is None or stale_count == 0,
-            )
+            with action_col1:
+                filtered_label = f"Reanalyze filtered ({len(filtered)})"
+                reanalyze_filtered_clicked = st.button(
+                    filtered_label,
+                    key="reanalyze_filtered_dashboard",
+                    use_container_width=True,
+                    disabled=reanalyze_interviews is None or not filtered,
+                )
+            with action_col2:
+                stale_label = "Reanalyze all stale"
+                if stale_count is not None:
+                    stale_label += f" ({stale_count})"
+                reanalyze_stale_clicked = st.button(
+                    stale_label,
+                    key="reanalyze_stale_dashboard",
+                    use_container_width=True,
+                    disabled=reanalyze_stale_interviews is None or stale_count == 0,
+                )
 
-        if reanalyze_filtered_clicked:
-            try:
-                reanalyze_interviews([item.id for item in filtered])
-            except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
-                st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                    "kind": "error",
-                    "message": f"Filtered reanalysis failed: {exc}",
-                }
-            else:
-                st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                    "kind": "success",
-                    "message": "Reanalysis complete for filtered interviews. Structured responses, insights, and personas were refreshed in SQLite.",
-                }
-            st.rerun()
+            if reanalyze_filtered_clicked:
+                try:
+                    reanalyze_interviews([item.id for item in filtered])
+                except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+                    st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                        "kind": "error",
+                        "message": f"Could not refresh filtered interviews: {exc}",
+                    }
+                else:
+                    st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                        "kind": "success",
+                        "message": "Filtered interviews were refreshed.",
+                    }
+                st.rerun()
 
-        if reanalyze_stale_clicked:
-            try:
-                refreshed_rows = reanalyze_stale_interviews()
-            except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
-                st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                    "kind": "error",
-                    "message": f"Stale reanalysis failed: {exc}",
-                }
-            else:
-                st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                    "kind": "success",
-                    "message": f"Reanalysis complete for {len(refreshed_rows)} stale interviews. Structured responses, insights, and personas were refreshed in SQLite.",
-                }
-            st.rerun()
-
-        if reanalyze_interviews is None or reanalyze_stale_interviews is None:
-            st.caption("Reanalysis actions are unavailable because one or more backend handlers were not provided.")
+            if reanalyze_stale_clicked:
+                try:
+                    refreshed_rows = reanalyze_stale_interviews()
+                except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+                    st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                        "kind": "error",
+                        "message": f"Could not refresh stale interviews: {exc}",
+                    }
+                else:
+                    st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                        "kind": "success",
+                        "message": f"Refreshed {len(refreshed_rows)} stale interviews.",
+                    }
+                st.rerun()
 
         overlay_rendered = self._render_overlay_if_needed(
             filtered=filtered,
@@ -487,7 +490,6 @@ class DashboardRenderer:
         if not overlay_rendered and st.session_state.get(FILTER_SESSION_KEYS["overlay_open"]):
             self._render_inline_detail_fallback(all_interviews=all_interviews)
 
-        self._render_interview_row_actions(filtered)
         self._render_overlay_debug_indicator()
 
         st.markdown("<div class='pd-grid-section'>", unsafe_allow_html=True)
@@ -1030,8 +1032,9 @@ class DashboardRenderer:
                 st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = interview.id
                 st.rerun()
 
+        self._render_status_error_indicator(interview)
         if delete_disabled:
-            st.caption("Delete is unavailable because no backend delete handler was provided.")
+            st.caption("Delete is unavailable right now. Please refresh and try again.")
         elif st.session_state.get(FILTER_SESSION_KEYS["delete_confirm"]) == interview.id:
             st.warning("Confirm permanent delete for this interview and linked records.")
             confirm_col, cancel_col = st.columns(2, gap="small")
@@ -1162,7 +1165,7 @@ class DashboardRenderer:
                     transcript_edits.pop(selected.id, None)
                     st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
                         "kind": "success",
-                        "message": "Selected interview re-analyzed. Structured responses and insights were overwritten in SQLite.",
+                        "message": "Interview analysis was refreshed.",
                     }
                 st.rerun()
             if st.button(
@@ -1182,7 +1185,7 @@ class DashboardRenderer:
                     transcript_edits.pop(selected.id, None)
                     st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
                         "kind": "success",
-                        "message": "Interview reprocessed and refreshed in SQLite.",
+                        "message": "Interview was refreshed.",
                     }
                 st.rerun()
 
@@ -1204,7 +1207,7 @@ class DashboardRenderer:
                         structured_json_changed=False,
                         save_interview_edits=save_interview_edits,
                         transcript_edits=transcript_edits,
-                        success_message="Transcript saved. Downstream analysis, persona derivation, and dashboard views were refreshed from SQLite.",
+                        success_message="Transcript saved and interview insights updated.",
                     )
             with json_col:
                 st.button(
@@ -1221,9 +1224,9 @@ class DashboardRenderer:
                     disabled=True,
                 )
             if save_interview_edits is None:
-                st.caption("Transcript save is unavailable because no backend save handler was provided.")
+                st.caption("Saving edits is unavailable right now. Please refresh and try again.")
             if reprocess_interview is None:
-                st.caption("Re-analyze selected interview is unavailable because no backend handler was provided.")
+                st.caption("Refresh analysis is unavailable right now. Please refresh and try again.")
             elif not transcript_changed:
                 st.caption("No transcript edits to save.")
             else:
@@ -1240,11 +1243,11 @@ class DashboardRenderer:
                 st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = selected.id
                 st.rerun()
             if delete_disabled:
-                st.caption("Delete is unavailable because no backend delete handler was provided.")
+                st.caption("Delete is unavailable right now. Please refresh and try again.")
 
         if st.session_state.get(FILTER_SESSION_KEYS["delete_confirm"]) == selected.id and delete_interview is not None:
             st.warning(
-                "Delete this interview from durable storage? This removes linked structured responses and insights, and deletes the stored audio asset when live storage is enabled."
+                "Delete this interview? This also removes its transcript, insights, and related audio file."
             )
             confirm_col, cancel_col = st.columns(2, gap="medium")
             with confirm_col:
@@ -1296,15 +1299,11 @@ class DashboardRenderer:
                 st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
                 st.rerun()
 
-    def _render_interview_row_actions(self, interviews: list[DashboardInterview]) -> None:
-        with st.expander("Quick row actions", expanded=False):
-            for interview in interviews:
-                row_cols = st.columns([2.8, 1.4, 1.2, 1], gap="small")
-                row_cols[0].markdown(f"**{html.escape(interview.filename)}**")
-                row_cols[1].caption(f"ID: {interview.id}")
-                row_cols[2].caption(interview.persona_name)
-                if row_cols[3].button("Open", key=f"open_row_{interview.id}", use_container_width=True):
-                    self._open_interview_overlay(interview.id)
+    def _render_status_error_indicator(self, interview: DashboardInterview) -> None:
+        status_label = interview.status.replace("_", " ").title()
+        st.caption(f"Status: {status_label}")
+        if interview.last_error:
+            st.error("Needs attention: this interview hit a processing error. Open it to review details.")
 
     def _render_overlay_debug_indicator(self) -> None:
         if not self._is_dev_mode():
@@ -1325,25 +1324,22 @@ class DashboardRenderer:
         st.toast(message, icon=icon)
         st.session_state[FILTER_SESSION_KEYS["toast_message"]] = None
 
-    def _open_interview_overlay(self, interview_id: str) -> None:
-        st.session_state[FILTER_SESSION_KEYS["selected"]] = interview_id
-        st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = True
-        st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
-        toast_payload = {
-            "kind": "success",
-            "message": f"Opened interview {interview_id}.",
-        }
-        st.session_state[FILTER_SESSION_KEYS["toast_message"]] = toast_payload
-        st.toast(toast_payload["message"], icon="✅")
-        st.rerun()
+    def _show_dev_regression_checklist(self) -> bool:
+        if self._is_dev_mode():
+            return True
+        return bool(st.session_state.get(FILTER_SESSION_KEYS["debug_toggle"], False))
 
-    def _is_dev_mode(self) -> bool:
-        dev_flags = (
-            os.getenv("PAYDAY_DEV_MODE", ""),
-            os.getenv("STREAMLIT_ENV", ""),
-            os.getenv("ENV", ""),
-        )
-        return any(flag.strip().lower() in {"1", "true", "yes", "dev", "development"} for flag in dev_flags)
+    def _is_reanalysis_enabled(self) -> bool:
+        raw_toggle = st.session_state.get(FILTER_SESSION_KEYS["reanalysis_toggle"])
+        if isinstance(raw_toggle, bool):
+            if raw_toggle:
+                return True
+        elif raw_toggle is not None and str(raw_toggle).strip().casefold() in {"1", "true", "yes", "on"}:
+            return True
+        raw_env = os.getenv("PAYDAY_ENABLE_REANALYSIS")
+        if raw_env is None:
+            return False
+        return raw_env.strip().casefold() in {"1", "true", "yes", "on"}
 
     def _render_formatted_insights(self, interview: DashboardInterview) -> None:
         sections = [
@@ -1480,7 +1476,7 @@ class DashboardRenderer:
         if delete_interview is None:
             st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
                 "kind": "error",
-                "message": "Delete is unavailable because no backend delete handler was provided.",
+                "message": "Delete is unavailable right now. Please refresh and try again.",
             }
             st.session_state[FILTER_SESSION_KEYS["toast_message"]] = {
                 "kind": "error",
@@ -1514,7 +1510,7 @@ class DashboardRenderer:
                 st.session_state[FILTER_SESSION_KEYS["force_sqlite_reload"]] = True
                 st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
                     "kind": "success",
-                    "message": f"Deleted {interview.filename} ({interview.id}). Interview lists, overview KPIs, and cohort/persona tables were reloaded from SQLite.",
+                    "message": f"Deleted {interview.filename} ({interview.id}) and refreshed the dashboard.",
                 }
                 st.session_state[FILTER_SESSION_KEYS["toast_message"]] = {
                     "kind": "success",
@@ -1934,9 +1930,9 @@ class DashboardRenderer:
 
     def _render_empty_state(self, title: str, *, sample_mode: bool, context: str) -> None:
         sample_guidance = (
-            " Because sample mode is enabled, you can also intentionally load developer sample fixtures from the app layer."
+            " Sample data is on, so you can load sample interviews from the sidebar if needed."
             if sample_mode
-            else " To inspect demo content, enable the developer-only sample-mode path instead of relying on implicit fallback data."
+            else " To test with sample interviews, turn on sample mode in app settings."
         )
         st.info(f"{title}. {context}{sample_guidance}")
 
