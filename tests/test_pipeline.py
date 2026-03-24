@@ -1320,6 +1320,36 @@ def test_app_service_reprocess_stale_interviews_recomputes_legacy_rows(tmp_path)
     assert interview.id not in stale_after
 
 
+def test_app_service_lists_and_deletes_stale_corrupted_rows(tmp_path) -> None:
+    database_path = str(tmp_path / "stale-corrupted.sqlite3")
+    service = PaydayAppService(build_settings(sqlite_path=database_path))
+    interview = service.repository.create_interview(
+        interview_id="stale-bad-1",
+        audio_url="audio/stale-bad-1/demo.wav",
+        transcript="bad",
+        status=ProcessingStatus.FAILED.value,
+        latest_stage=PipelineStage.TRANSCRIPTION.value,
+        last_error="transcription malformed payload",
+    )
+    with service.repository._connect() as connection:  # noqa: SLF001
+        connection.execute(
+            """
+            UPDATE interviews
+            SET analysis_schema_version = NULL, persona_ruleset_version = NULL
+            WHERE id = ?
+            """,
+            (interview.id,),
+        )
+
+    stale_corrupted_before = service.list_stale_corrupted_interview_ids()
+    deletion_summary = service.delete_stale_corrupted_interviews()
+
+    assert interview.id in stale_corrupted_before
+    assert deletion_summary["stale_corrupted_count"] == 1
+    assert interview.id in deletion_summary["deleted_ids"]
+    assert deletion_summary["failed"] == {}
+
+
 def test_persona_classifier_supports_legacy_nested_structured_output_for_personas_one_to_five() -> None:
     expected_personas = {
         "demo_01_employer_digital_borrower.txt": "persona_1",

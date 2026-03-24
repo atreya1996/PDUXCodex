@@ -81,8 +81,12 @@ class _FakeStreamlit:
 
 
 class _FakeAppService:
+    class _FakeRepository:
+        def list_stale_interview_ids(self) -> list[str]:
+            return []
+
     def __init__(self) -> None:
-        self.batch_calls: list[list[object]] = []
+        self.repository = self._FakeRepository()
 
     def list_results(self) -> list[object]:
         return []
@@ -105,26 +109,22 @@ class _FakeAppService:
         }
 
     def runtime_diagnostics(self) -> dict[str, object]:
-        return {
-            "sample_mode": True,
-            "database_path": ":memory:",
-        }
+        return {"git_branch": "test", "git_commit": "abc123"}
 
-    def process_batch_uploads(self, items: list[object]):
-        from payday.models import BatchPipelineResult, PipelineResult, ProcessingStatus
+    def reprocess_stale_interviews(self) -> dict[str, object]:
+        return {"stale_count": 0, "reprocessed_ids": [], "failed": {}}
 
-        self.batch_calls.append(items)
-        return BatchPipelineResult(
-            batch_id="batch-test-1234",
-            results=[
-                PipelineResult(
-                    file_id=f"file-{index}",
-                    filename=getattr(item, "filename", f"file-{index}.wav"),
-                    status=ProcessingStatus.COMPLETED,
-                )
-                for index, item in enumerate(items)
-            ],
-        )
+    def reprocess_failed_or_malformed_interviews(self) -> dict[str, object]:
+        return {"failed_or_malformed_count": 0, "reprocessed_ids": [], "failed": {}}
+
+    def list_failed_or_malformed_interview_ids(self) -> list[str]:
+        return []
+
+    def delete_stale_corrupted_interviews(self) -> dict[str, object]:
+        return {"stale_corrupted_count": 0, "deleted_ids": [], "failed": {}}
+
+    def list_stale_corrupted_interview_ids(self) -> list[str]:
+        return []
 
 
 class _FakeDashboardRenderer:

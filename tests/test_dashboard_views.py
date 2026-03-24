@@ -40,6 +40,7 @@ def _dashboard_interview(
             "smartphone_user": True,
             "has_bank_account": True,
             "digital_access": "Smartphone + bank account",
+            "transcript_quality": "good",
             "extracted_json": {},
             "evidence_quotes": ("Quote",),
             "segmented_dialogue": (),

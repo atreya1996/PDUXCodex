@@ -283,6 +283,12 @@ def main() -> None:
         save_interview_edits=getattr(app_service, "save_interview_edits", None),
         reprocess_interview=getattr(app_service, "reprocess_interview", None),
         reanalyze_interviews=getattr(app_service, "reanalyze_interviews", None),
+        reanalyze_stale_interviews=lambda: app_service.reprocess_stale_interviews(),
+        list_stale_interview_ids=lambda: app_service.repository.list_stale_interview_ids(),
+        reprocess_failed_or_malformed=lambda: app_service.reprocess_failed_or_malformed_interviews(),
+        list_failed_or_malformed_ids=lambda: app_service.list_failed_or_malformed_interview_ids(),
+        delete_stale_corrupted=lambda: app_service.delete_stale_corrupted_interviews(),
+        list_stale_corrupted_ids=lambda: app_service.list_stale_corrupted_interview_ids(),
         delete_interview=getattr(app_service, "delete_interview", lambda _interview_id: False),
         sample_mode=settings.features.use_sample_mode,
     )
