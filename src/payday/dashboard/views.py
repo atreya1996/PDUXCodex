@@ -376,6 +376,7 @@ class DashboardRenderer:
             "Interviews",
             "Browse interview cards, then open a modal-style overlay for audio, transcript editing, formatted insights, and persona review.",
         )
+        self._render_interviews_visual_regression_checklist()
 
         if not filtered:
             self._render_empty_state(
@@ -399,6 +400,22 @@ class DashboardRenderer:
             with card_columns[index % len(card_columns)]:
                 self._render_interview_card(interview)
         st.markdown("</div>", unsafe_allow_html=True)
+
+    def _render_interviews_visual_regression_checklist(self) -> None:
+        st.markdown(
+            (
+                "<div class='pd-card checklist-card'>"
+                "<div class='section-title'>Interviews tab visual regression checklist</div>"
+                "<ul class='checklist-list'>"
+                "<li>Card background uses the design token surface with visible card borders.</li>"
+                "<li>Interview title, summary text, and metadata labels/values maintain readable contrast.</li>"
+                "<li>Primary and secondary buttons preserve contrast against the card background.</li>"
+                "<li>Hover and focus states are visible for cards, tabs, and action buttons.</li>"
+                "</ul>"
+                "</div>"
+            ),
+            unsafe_allow_html=True,
+        )
 
     def _render_page_intro(self, title: str, subtitle: str) -> None:
         st.markdown(
@@ -1462,6 +1479,10 @@ class DashboardRenderer:
                 background: var(--pd-primary);
                 color: var(--pd-text);
             }}
+            ::-moz-selection {{
+                background: var(--pd-primary);
+                color: var(--pd-text);
+            }}
             .stApp, .stApp header {{
                 background: var(--pd-bg);
                 color: var(--pd-text);
@@ -1580,6 +1601,12 @@ class DashboardRenderer:
                 line-height: 1.6;
                 margin-top: 12px;
             }}
+            .interview-title {{
+                color: var(--pd-text);
+            }}
+            .interview-summary {{
+                color: var(--pd-text);
+            }}
             .interview-card {{
                 min-height: 250px;
             }}
@@ -1595,6 +1622,10 @@ class DashboardRenderer:
                 text-transform: uppercase;
                 letter-spacing: 0.04em;
                 margin-bottom: 4px;
+                color: var(--pd-muted);
+            }}
+            .meta-value {{
+                color: var(--pd-text);
             }}
             .persona-badge {{
                 border-radius: 999px;
@@ -1673,6 +1704,13 @@ class DashboardRenderer:
                 padding: 8px 16px;
                 border: 1px solid var(--pd-border);
             }}
+            .stButton > button:hover, .stDownloadButton > button:hover {{
+                border-color: rgba(79, 70, 229, 0.72);
+            }}
+            .stButton > button:focus-visible, .stDownloadButton > button:focus-visible {{
+                outline: 2px solid var(--pd-primary);
+                outline-offset: 2px;
+            }}
             .stTextInput label, .stMultiSelect label, .stTextArea label, .stSelectbox label {{
                 font-size: 14px !important;
                 font-weight: 600 !important;
@@ -1694,6 +1732,17 @@ class DashboardRenderer:
                 border: 1px solid var(--pd-border);
                 border-radius: 16px;
                 padding: 16px;
+            }}
+            .checklist-card {{
+                margin-bottom: 16px;
+                padding: 16px;
+            }}
+            .checklist-list {{
+                margin: 8px 0 0;
+                padding-left: 24px;
+                color: var(--pd-text);
+                display: grid;
+                gap: 8px;
             }}
             @media (max-width: 900px) {{
                 .interview-meta-grid {{
