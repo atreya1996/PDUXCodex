@@ -1207,6 +1207,17 @@ def get_persona_signal_evidence_quotes(structured_output: dict[str, Any], signal
     return [quote for quote in evidence if isinstance(quote, str) and quote.strip()]
 
 
+def has_borrowing_evidence(structured_output: dict[str, Any]) -> bool:
+    borrowing_history = get_analysis_value(structured_output, "borrowing_history")
+    if borrowing_history == "has_borrowed":
+        return True
+    if get_persona_signal_evidence_quotes(structured_output, "cyclical_borrowing"):
+        return True
+    if get_persona_signal_evidence_quotes(structured_output, "digital_borrowing"):
+        return True
+    return False
+
+
 def _legacy_field_from_nested_sections(structured_output: dict[str, Any], field_name: str) -> dict[str, Any] | None:
     if field_name == "smartphone_usage":
         legacy_value = _nested_boolean(structured_output, "participant_profile", "smartphone_user")
