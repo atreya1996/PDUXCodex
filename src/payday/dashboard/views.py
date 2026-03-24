@@ -430,6 +430,11 @@ class DashboardRenderer:
         for index, persona_id in enumerate(persona_keys):
             persona = PERSONAS[persona_id]
             matches = [item for item in comparable if item.persona_id == persona_id]
+            sample_summary = (
+                self._truncate_text(matches[0].summary, limit=CARD_SUMMARY_SNIPPET_LIMIT)
+                if matches and matches[0].summary
+                else "No summary captured yet."
+            )
             quote = matches[0].evidence_quotes[0] if matches and matches[0].evidence_quotes else "No direct quote captured yet."
             non_target_count = sum(1 for item in matches if item.is_non_target)
             with columns[index % len(columns)]:

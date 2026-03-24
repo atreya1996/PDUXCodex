@@ -197,6 +197,23 @@ def test_transcription_service_sample_mode_requires_explicit_env_flag(monkeypatc
         service.transcribe(asset, sample_mode=True)
 
 
+def test_transcription_service_sample_mode_accepts_truthy_env_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAYDAY_USE_SAMPLE_MODE", "1")
+    service = TranscriptionService(TranscriptionSettings())
+    asset = UploadedAsset(
+        filename="demo.txt",
+        content_type="text/plain",
+        size_bytes=11,
+        raw_bytes=b"hello world",
+        file_id="file-123",
+    )
+
+    transcript = service.transcribe(asset, sample_mode=True)
+
+    assert transcript.text == "hello world"
+    assert transcript.metadata["sample_mode"] is True
+
+
 def test_transcription_service_non_sample_mode_uses_openai_client_and_returns_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     install_fake_openai_module(monkeypatch)
     transcriptions = StubOpenAITranscriptions(response=StubTranscriptionResponse("Real transcript", language="hi", duration=8.25))
