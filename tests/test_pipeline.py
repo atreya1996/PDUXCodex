@@ -184,6 +184,7 @@ def test_transcription_service_sample_mode_preserves_demo_behavior() -> None:
         "sample_mode": True,
         "filename": "demo.txt",
         "file_id": "file-123",
+        "file_path": "",
         "content_type": "text/plain",
         "size_bytes": 11,
         "source": "demo.txt",
@@ -249,6 +250,7 @@ def test_transcription_service_non_sample_mode_uses_openai_client_and_returns_me
         "sample_mode": False,
         "filename": "call.wav",
         "file_id": "file-456",
+        "file_path": "",
         "content_type": "audio/wav",
         "size_bytes": 4,
         "source": "call.wav",
@@ -311,8 +313,8 @@ def test_transcription_service_timeout_propagates_for_pipeline_retries(monkeypat
         service.transcribe(asset, sample_mode=False)
 
 
-def test_upload_service_normalizes_supported_openai_formats() -> None:
-    service = UploadService()
+def test_upload_service_normalizes_supported_openai_formats(tmp_path: Path) -> None:
+    service = UploadService(upload_dir=tmp_path)
 
     mp4_asset = service.create_asset("interview.mp4", "application/octet-stream", b"mp4-bytes")
     mpeg_asset = service.create_asset("interview.mpeg", "", b"mpeg-bytes")
@@ -321,14 +323,42 @@ def test_upload_service_normalizes_supported_openai_formats() -> None:
     assert mp4_asset.content_type == "video/mp4"
     assert mpeg_asset.content_type == "audio/mpeg"
     assert webm_asset.content_type == "audio/webm"
+    assert Path(mp4_asset.file_path).exists()
     assert SUPPORTED_UPLOAD_EXTENSIONS == ("mp3", "mp4", "mpeg", "mpga", "m4a", "wav", "webm", "ogg", "aac")
 
 
-def test_upload_service_rejects_unsupported_extensions() -> None:
-    service = UploadService()
+def test_upload_service_rejects_unsupported_extensions(tmp_path: Path) -> None:
+    service = UploadService(upload_dir=tmp_path)
 
     with pytest.raises(UploadValidationError, match="Unsupported upload format"):
         service.create_asset("notes.txt", "text/plain", b"hello")
+
+
+def test_upload_service_sanitizes_filename_and_prefixes_file_id(tmp_path: Path) -> None:
+    service = UploadService(upload_dir=tmp_path)
+
+    asset = service.create_asset("../voice note (1).wav", "audio/wav", b"RIFF", file_id="abc123")
+
+    assert asset.filename == "voice_note_1_.wav"
+    assert asset.file_path.endswith("abc123_voice_note_1_.wav")
+    assert Path(asset.file_path).read_bytes() == b"RIFF"
+
+
+def test_upload_service_rejects_content_type_extension_mismatch(tmp_path: Path) -> None:
+    service = UploadService(upload_dir=tmp_path)
+
+    with pytest.raises(UploadValidationError, match="extension '.wav' but content type 'video/mp4'"):
+        service.create_asset("clip.wav", "video/mp4", b"RIFF")
+
+
+def test_upload_service_rejects_empty_and_oversized_payloads(tmp_path: Path) -> None:
+    service = UploadService(upload_dir=tmp_path, max_file_size_bytes=5)
+
+    with pytest.raises(UploadValidationError, match="is empty"):
+        service.create_asset("empty.wav", "audio/wav", b"")
+
+    with pytest.raises(UploadValidationError, match="exceeds the 0 MB upload limit"):
+        service.create_asset("big.wav", "audio/wav", b"123456")
 
 
 def test_pipeline_accepts_mp4_and_mpeg_family_uploads() -> None:
@@ -370,6 +400,26 @@ def test_pipeline_process_upload_returns_completed_result() -> None:
     assert result.status is ProcessingStatus.COMPLETED
     assert result.current_stage is PipelineStage.STORAGE
     assert service.list_results()
+
+
+def test_pipeline_fails_before_transcription_when_persisted_upload_path_is_missing() -> None:
+    service = PaydayAppService(build_settings())
+    service.pipeline.upload_service.create_asset = lambda **_: UploadedAsset(  # type: ignore[method-assign]
+        filename="demo.wav",
+        content_type="audio/wav",
+        size_bytes=4,
+        file_path="data/uploads/missing_demo.wav",
+        raw_bytes=b"RIFF",
+        file_id="missing-file-id",
+    )
+
+    result = service.process_upload("demo.wav", "audio/wav", b"RIFF")
+
+    assert result.status is ProcessingStatus.FAILED
+    assert result.current_stage is PipelineStage.UPLOAD
+    assert result.transcript is None
+    assert result.last_error is not None
+    assert "was not persisted" in result.last_error
 
 
 def test_pipeline_rejects_binary_signature_transcript_before_analysis() -> None:
