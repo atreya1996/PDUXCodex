@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -50,6 +51,8 @@ FILTER_SESSION_KEYS = {
     "detail_message": "dashboard_detail_message",
     "delete_confirm": "dashboard_delete_confirm",
     "overlay_open": "dashboard_interview_overlay_open",
+    "force_sqlite_reload": "dashboard_force_sqlite_reload",
+    "toast_message": "dashboard_toast_message",
 }
 
 
@@ -139,6 +142,7 @@ class DashboardRenderer:
         st.session_state.setdefault(FILTER_SESSION_KEYS["detail_message"], None)
         st.session_state.setdefault(FILTER_SESSION_KEYS["delete_confirm"], None)
         st.session_state.setdefault(FILTER_SESSION_KEYS["overlay_open"], False)
+        st.session_state.setdefault(FILTER_SESSION_KEYS["toast_message"], None)
 
         selected_key = FILTER_SESSION_KEYS["selected"]
         if interviews and not st.session_state.get(selected_key):
@@ -388,6 +392,7 @@ class DashboardRenderer:
             "Interviews",
             "Browse interview cards, then open a modal-style overlay for audio, transcript editing, formatted insights, and persona review.",
         )
+        self._render_interviews_visual_regression_checklist()
 
         if not filtered:
             self._render_empty_state(
@@ -432,8 +437,28 @@ class DashboardRenderer:
         card_columns = st.columns(2, gap="large")
         for index, interview in enumerate(filtered):
             with card_columns[index % len(card_columns)]:
-                self._render_interview_card(interview)
+                self._render_interview_card(
+                    interview,
+                    delete_interview=delete_interview,
+                    all_interviews=all_interviews,
+                )
         st.markdown("</div>", unsafe_allow_html=True)
+
+    def _render_interviews_visual_regression_checklist(self) -> None:
+        st.markdown(
+            (
+                "<div class='pd-card checklist-card'>"
+                "<div class='section-title'>Interviews tab visual regression checklist</div>"
+                "<ul class='checklist-list'>"
+                "<li>Card background uses the design token surface with visible card borders.</li>"
+                "<li>Interview title, summary text, and metadata labels/values maintain readable contrast.</li>"
+                "<li>Primary and secondary buttons preserve contrast against the card background.</li>"
+                "<li>Hover and focus states are visible for cards, tabs, and action buttons.</li>"
+                "</ul>"
+                "</div>"
+            ),
+            unsafe_allow_html=True,
+        )
 
     def _render_page_intro(self, title: str, subtitle: str) -> None:
         st.markdown(
@@ -522,14 +547,7 @@ class DashboardRenderer:
         values: dict[str, int],
         color: str,
     ) -> None:
-        chart_data = [
-            {
-                "category": key,
-                "count": value,
-                "share": round((value / sum(values.values())) * 100, 1) if values else 0,
-            }
-            for key, value in values.items()
-        ]
+        chart_data = self._normalized_chart_rows(values)
         with st.container():
             st.markdown(
                 (
@@ -540,55 +558,178 @@ class DashboardRenderer:
                 ),
                 unsafe_allow_html=True,
             )
-        if not chart_data:
-            st.info("No chart data available.")
+        if not chart_data or not self._chart_rows_are_flat(chart_data):
+            self._render_chart_fallback_table(
+                title=title,
+                subtitle=subtitle,
+                chart_rows=chart_data,
+                reason="No valid chart rows were available, so a normalized table is shown instead.",
+            )
             return
-        st.vega_lite_chart(
-            chart_data,
+
+        if self._is_dev_mode():
+            st.caption(
+                "Debug normalized chart rows (first 3): "
+                + json.dumps(chart_data[:3], ensure_ascii=False, sort_keys=True)
+            )
+
+        try:
+            st.vega_lite_chart(
+                chart_data,
+                {
+                    "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+                    "background": "transparent",
+                    "data": {"values": chart_data},
+                    "mark": {"type": "bar", "cornerRadiusTopLeft": 10, "cornerRadiusTopRight": 10, "color": color},
+                    "encoding": {
+                        "x": {
+                            "field": "category",
+                            "type": "nominal",
+                            "sort": "-y",
+                            "axis": {
+                                "title": None,
+                                "labelAngle": 0,
+                                "labelColor": DESIGN_SYSTEM["text_secondary"],
+                                "domainColor": DESIGN_SYSTEM["border"],
+                                "tickColor": DESIGN_SYSTEM["border"],
+                            },
+                        },
+                        "y": {
+                            "field": "count",
+                            "type": "quantitative",
+                            "axis": {
+                                "title": None,
+                                "labelColor": DESIGN_SYSTEM["text_secondary"],
+                                "gridColor": "rgba(156, 163, 175, 0.14)",
+                                "domainColor": DESIGN_SYSTEM["border"],
+                                "tickColor": DESIGN_SYSTEM["border"],
+                            },
+                        },
+                        "tooltip": [
+                            {"field": "category", "type": "nominal", "title": "Category"},
+                            {"field": "count", "type": "quantitative", "title": "Interviews"},
+                            {"field": "share", "type": "quantitative", "title": "% of filtered"},
+                        ],
+                    },
+                    "view": {"stroke": None},
+                    "height": 280,
+                    "config": {
+                        "style": {"cell": {"stroke": "transparent"}},
+                        "legend": {"labelColor": DESIGN_SYSTEM["text_secondary"], "titleColor": DESIGN_SYSTEM["text_primary"]},
+                    },
+                },
+                use_container_width=True,
+            )
+        except Exception:
+            self._render_chart_fallback_table(
+                title=title,
+                subtitle=subtitle,
+                chart_rows=chart_data,
+                reason="Chart rendering failed at runtime, so a normalized table is shown instead.",
+            )
+
+    def _normalized_chart_rows(self, values: dict[str, int]) -> list[dict[str, int | float | str]]:
+        normalized_counts: dict[str, int] = {}
+        for raw_category, raw_count in values.items():
+            count = self._safe_chart_count(raw_count)
+            if count is None or count <= 0:
+                continue
+            category = self._normalize_chart_category(raw_category)
+            normalized_counts[category] = normalized_counts.get(category, 0) + count
+        total = sum(normalized_counts.values())
+        if total <= 0:
+            return []
+        return [
             {
-                "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-                "background": "transparent",
-                "data": {"values": chart_data},
-                "mark": {"type": "bar", "cornerRadiusTopLeft": 10, "cornerRadiusTopRight": 10, "color": color},
-                "encoding": {
-                    "x": {
-                        "field": "category",
-                        "type": "nominal",
-                        "sort": "-y",
-                        "axis": {
-                            "title": None,
-                            "labelAngle": 0,
-                            "labelColor": DESIGN_SYSTEM["text_secondary"],
-                            "domainColor": DESIGN_SYSTEM["border"],
-                            "tickColor": DESIGN_SYSTEM["border"],
-                        },
-                    },
-                    "y": {
-                        "field": "count",
-                        "type": "quantitative",
-                        "axis": {
-                            "title": None,
-                            "labelColor": DESIGN_SYSTEM["text_secondary"],
-                            "gridColor": "rgba(156, 163, 175, 0.14)",
-                            "domainColor": DESIGN_SYSTEM["border"],
-                            "tickColor": DESIGN_SYSTEM["border"],
-                        },
-                    },
-                    "tooltip": [
-                        {"field": "category", "type": "nominal", "title": "Category"},
-                        {"field": "count", "type": "quantitative", "title": "Interviews"},
-                        {"field": "share", "type": "quantitative", "title": "% of filtered"},
-                    ],
-                },
-                "view": {"stroke": None},
-                "height": 280,
-                "config": {
-                    "style": {"cell": {"stroke": "transparent"}},
-                    "legend": {"labelColor": DESIGN_SYSTEM["text_secondary"], "titleColor": DESIGN_SYSTEM["text_primary"]},
-                },
-            },
-            use_container_width=True,
+                "category": category,
+                "count": count,
+                "share": round((count / total) * 100, 1),
+            }
+            for category, count in normalized_counts.items()
+        ]
+
+    def _normalize_chart_category(self, raw_category: Any) -> str:
+        unknown_label = "Unknown"
+        if raw_category is None:
+            return unknown_label
+        label = str(raw_category).strip()
+        if not label:
+            return unknown_label
+        if label.casefold() in {"unknown", "unk", "n/a", "na", "none", "null", "unspecified"}:
+            return unknown_label
+        return label
+
+    def _safe_chart_count(self, raw_count: Any) -> int | None:
+        if isinstance(raw_count, bool):
+            return None
+        if isinstance(raw_count, (int, float)):
+            return int(raw_count)
+        if isinstance(raw_count, str):
+            parsed = raw_count.strip().replace(",", "")
+            if not parsed:
+                return None
+            try:
+                return int(float(parsed))
+            except ValueError:
+                return None
+        return None
+
+    def _chart_rows_are_flat(self, rows: list[dict[str, Any]]) -> bool:
+        if not isinstance(rows, list):
+            return False
+        for row in rows:
+            if not isinstance(row, dict):
+                return False
+            if "category" not in row or "count" not in row:
+                return False
+            if not isinstance(row["category"], str) or not row["category"].strip():
+                return False
+            if not isinstance(row["count"], (int, float)):
+                return False
+            if "share" in row and not isinstance(row["share"], (int, float)):
+                return False
+            if any(isinstance(value, (list, dict, tuple, set)) for value in row.values()):
+                return False
+        return True
+
+    def _render_chart_fallback_table(
+        self,
+        *,
+        title: str,
+        subtitle: str,
+        chart_rows: list[dict[str, Any]],
+        reason: str,
+    ) -> None:
+        st.caption(reason)
+        table_rows = [
+            (
+                str(row.get("category", "Unknown")),
+                int(row.get("count", 0)),
+                f"{float(row.get('share', 0.0)):.1f}%",
+            )
+            for row in chart_rows
+            if isinstance(row, dict)
+        ]
+        if not table_rows:
+            table_rows = [("Unknown", 0, "0.0%")]
+        self._render_table_card(
+            title=f"{title} (Table fallback)",
+            subtitle=subtitle,
+            rows=table_rows,
+            headers=("Category", "Count", "% of filtered"),
         )
+
+    def _is_dev_mode(self) -> bool:
+        raw_value = st.session_state.get("payday_dev_mode")
+        if raw_value is None:
+            raw_value = os.getenv("PAYDAY_DEV_MODE")
+        if raw_value is None:
+            return False
+        if isinstance(raw_value, bool):
+            return raw_value
+        if isinstance(raw_value, str):
+            return raw_value.strip().casefold() in {"1", "true", "yes", "on"}
+        return bool(raw_value)
 
     def _render_table_card(
         self,
@@ -700,7 +841,13 @@ class DashboardRenderer:
             unsafe_allow_html=True,
         )
 
-    def _render_interview_card(self, interview: DashboardInterview) -> None:
+    def _render_interview_card(
+        self,
+        interview: DashboardInterview,
+        *,
+        delete_interview: Callable[[str], bool] | None,
+        all_interviews: list[DashboardInterview],
+    ) -> None:
         badge_class = "badge-nontarget" if interview.is_non_target else "badge-target"
         persona_label = html.escape(interview.persona_name)
         summary = html.escape(self._truncate_text(interview.summary, limit=160) or "No summary captured yet.")
@@ -727,6 +874,41 @@ class DashboardRenderer:
             st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = True
             st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
             st.rerun()
+
+        with st.expander("Delete interview", expanded=False):
+            delete_disabled = delete_interview is None
+            if st.button(
+                f"Delete {interview.filename}",
+                key=f"delete_interview_card_{interview.id}",
+                use_container_width=True,
+                disabled=delete_disabled,
+            ):
+                st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = interview.id
+                st.rerun()
+            if delete_disabled:
+                st.caption("Delete is unavailable because no backend delete handler was provided.")
+            elif st.session_state.get(FILTER_SESSION_KEYS["delete_confirm"]) == interview.id:
+                st.warning("Confirm permanent delete for this interview and linked records.")
+                confirm_col, cancel_col = st.columns(2, gap="small")
+                with confirm_col:
+                    if st.button(
+                        "Confirm",
+                        key=f"confirm_delete_card_{interview.id}",
+                        use_container_width=True,
+                    ):
+                        self._delete_interview_and_refresh(
+                            interview=interview,
+                            all_interviews=all_interviews,
+                            delete_interview=delete_interview,
+                        )
+                with cancel_col:
+                    if st.button(
+                        "Cancel",
+                        key=f"cancel_delete_card_{interview.id}",
+                        use_container_width=True,
+                    ):
+                        st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+                        st.rerun()
 
     def _render_overlay_if_needed(
         self,
@@ -926,34 +1108,11 @@ class DashboardRenderer:
                     key=f"confirm_delete_interview_{selected.id}",
                     use_container_width=True,
                 ):
-                    try:
-                        deleted = delete_interview(selected.id)
-                    except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
-                        st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                            "kind": "error",
-                            "message": f"Delete failed: {exc}",
-                        }
-                    else:
-                        if deleted:
-                            transcript_edits.pop(selected.id, None)
-                            st.session_state[FILTER_SESSION_KEYS["selected"]] = self._next_selected_id(
-                                all_interviews,
-                                deleted_id=selected.id,
-                            )
-                            st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = bool(
-                                st.session_state[FILTER_SESSION_KEYS["selected"]]
-                            )
-                            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                                "kind": "success",
-                                "message": "Interview deleted. Interview lists and overview counts were refreshed from durable storage.",
-                            }
-                        else:
-                            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                                "kind": "error",
-                                "message": f"Interview {selected.id} could not be deleted because it no longer exists.",
-                            }
-                        st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
-                        st.rerun()
+                    self._delete_interview_and_refresh(
+                        interview=selected,
+                        all_interviews=all_interviews,
+                        delete_interview=delete_interview,
+                    )
             with cancel_col:
                 if st.button(
                     "Cancel delete",
@@ -1089,6 +1248,69 @@ class DashboardRenderer:
         if not remaining_ids:
             return None
         return remaining_ids[0]
+
+    def _delete_interview_and_refresh(
+        self,
+        *,
+        interview: DashboardInterview,
+        all_interviews: list[DashboardInterview],
+        delete_interview: Callable[[str], bool] | None,
+    ) -> None:
+        if delete_interview is None:
+            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                "kind": "error",
+                "message": "Delete is unavailable because no backend delete handler was provided.",
+            }
+            st.session_state[FILTER_SESSION_KEYS["toast_message"]] = {
+                "kind": "error",
+                "message": "Delete unavailable.",
+            }
+            st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+            st.rerun()
+
+        transcript_edits: dict[str, str] = st.session_state[FILTER_SESSION_KEYS["transcripts"]]
+        try:
+            deleted = delete_interview(interview.id)
+        except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                "kind": "error",
+                "message": f"Delete failed: {exc}",
+            }
+            st.session_state[FILTER_SESSION_KEYS["toast_message"]] = {
+                "kind": "error",
+                "message": f"Delete failed: {exc}",
+            }
+        else:
+            if deleted:
+                transcript_edits.pop(interview.id, None)
+                st.session_state[FILTER_SESSION_KEYS["selected"]] = self._next_selected_id(
+                    all_interviews,
+                    deleted_id=interview.id,
+                )
+                st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = bool(
+                    st.session_state[FILTER_SESSION_KEYS["selected"]]
+                )
+                st.session_state[FILTER_SESSION_KEYS["force_sqlite_reload"]] = True
+                st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                    "kind": "success",
+                    "message": "Interview deleted. Interview lists, overview KPIs, and cohort/persona tables were reloaded from SQLite.",
+                }
+                st.session_state[FILTER_SESSION_KEYS["toast_message"]] = {
+                    "kind": "success",
+                    "message": "Interview deleted and dashboard refreshed.",
+                }
+            else:
+                st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                    "kind": "error",
+                    "message": f"Interview {interview.id} could not be deleted because it no longer exists.",
+                }
+                st.session_state[FILTER_SESSION_KEYS["toast_message"]] = {
+                    "kind": "error",
+                    "message": f"Interview {interview.id} was already removed.",
+                }
+
+        st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+        st.rerun()
 
     def _build_cohort_rows(self, interviews: list[DashboardInterview], attribute: str) -> list[tuple[str, int, str]]:
         counts = self._count_by(interviews, lambda item: getattr(item, attribute))
@@ -1568,6 +1790,10 @@ class DashboardRenderer:
                 background: var(--pd-primary);
                 color: var(--pd-text);
             }}
+            ::-moz-selection {{
+                background: var(--pd-primary);
+                color: var(--pd-text);
+            }}
             .stApp, .stApp header {{
                 background: var(--pd-bg);
                 color: var(--pd-text);
@@ -1686,6 +1912,12 @@ class DashboardRenderer:
                 line-height: 1.6;
                 margin-top: 12px;
             }}
+            .interview-title {{
+                color: var(--pd-text);
+            }}
+            .interview-summary {{
+                color: var(--pd-text);
+            }}
             .interview-card {{
                 min-height: 250px;
             }}
@@ -1701,6 +1933,10 @@ class DashboardRenderer:
                 text-transform: uppercase;
                 letter-spacing: 0.04em;
                 margin-bottom: 4px;
+                color: var(--pd-muted);
+            }}
+            .meta-value {{
+                color: var(--pd-text);
             }}
             .persona-badge {{
                 border-radius: 999px;
@@ -1779,6 +2015,13 @@ class DashboardRenderer:
                 padding: 8px 16px;
                 border: 1px solid var(--pd-border);
             }}
+            .stButton > button:hover, .stDownloadButton > button:hover {{
+                border-color: rgba(79, 70, 229, 0.72);
+            }}
+            .stButton > button:focus-visible, .stDownloadButton > button:focus-visible {{
+                outline: 2px solid var(--pd-primary);
+                outline-offset: 2px;
+            }}
             .stTextInput label, .stMultiSelect label, .stTextArea label, .stSelectbox label {{
                 font-size: 14px !important;
                 font-weight: 600 !important;
@@ -1800,6 +2043,17 @@ class DashboardRenderer:
                 border: 1px solid var(--pd-border);
                 border-radius: 16px;
                 padding: 16px;
+            }}
+            .checklist-card {{
+                margin-bottom: 16px;
+                padding: 16px;
+            }}
+            .checklist-list {{
+                margin: 8px 0 0;
+                padding-left: 24px;
+                color: var(--pd-text);
+                display: grid;
+                gap: 8px;
             }}
             @media (max-width: 900px) {{
                 .interview-meta-grid {{

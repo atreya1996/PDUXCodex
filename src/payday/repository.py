@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from payday.analysis import DEFAULT_UNKNOWN_VALUE
 from payday.models import AnalysisResult, PersonaClassification, PipelineResult
+from payday.schema_versions import ANALYSIS_SCHEMA_VERSION, PERSONA_RULESET_VERSION
 
 _UNSET = object()
 
@@ -148,6 +149,10 @@ class PaydayRepository:
             )
         if "last_error" not in interview_columns:
             connection.execute("ALTER TABLE interviews ADD COLUMN last_error TEXT")
+        if "analysis_schema_version" not in interview_columns:
+            connection.execute("ALTER TABLE interviews ADD COLUMN analysis_schema_version INTEGER")
+        if "persona_ruleset_version" not in interview_columns:
+            connection.execute("ALTER TABLE interviews ADD COLUMN persona_ruleset_version INTEGER")
 
     def _ensure_structured_response_columns(self, connection: sqlite3.Connection) -> None:
         structured_columns = {
@@ -360,6 +365,14 @@ class PaydayRepository:
                     record.analyzed_at,
                 ),
             )
+            connection.execute(
+                """
+                UPDATE interviews
+                SET analysis_schema_version = ?
+                WHERE id = ?
+                """,
+                (ANALYSIS_SCHEMA_VERSION, interview_id),
+            )
         return record
 
     def upsert_insight(
@@ -403,6 +416,17 @@ class PaydayRepository:
                     record.confidence_score,
                     record.analysis_version,
                     record.analyzed_at,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE interviews
+                SET persona_ruleset_version = ?
+                WHERE id = ?
+                """,
+                (
+                    PERSONA_RULESET_VERSION,
+                    interview_id,
                 ),
             )
         return record
@@ -496,7 +520,38 @@ class PaydayRepository:
                     analyzed_at,
                 ),
             )
+            connection.execute(
+                """
+                UPDATE interviews
+                SET analysis_schema_version = ?, persona_ruleset_version = ?
+                WHERE id = ?
+                """,
+                (ANALYSIS_SCHEMA_VERSION, PERSONA_RULESET_VERSION, interview_id),
+            )
         return self.get_dashboard_interview_detail(interview_id)
+
+    def list_stale_interview_ids(self, *, limit: int = 500) -> list[str]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT interviews.id
+                FROM interviews
+                LEFT JOIN insights ON insights.interview_id = interviews.id
+                WHERE interviews.transcript IS NOT NULL
+                  AND TRIM(interviews.transcript) <> ''
+                  AND (
+                    interviews.analysis_schema_version IS NULL
+                    OR interviews.analysis_schema_version < ?
+                    OR interviews.persona_ruleset_version IS NULL
+                    OR interviews.persona_ruleset_version < ?
+                    OR insights.persona IS NULL
+                  )
+                ORDER BY interviews.created_at DESC, interviews.id DESC
+                LIMIT ?
+                """,
+                (ANALYSIS_SCHEMA_VERSION, PERSONA_RULESET_VERSION, limit),
+            ).fetchall()
+        return [str(row["id"]) for row in rows]
 
     def list_interviews(self, *, status: str | None = None, limit: int = 100) -> list[InterviewListItem]:
         query = """

@@ -1183,6 +1183,78 @@ def test_persona_classifier_matches_persona_five_before_lower_priority_rules() -
     ]
 
 
+def test_persona_classifier_never_assigns_persona_four_when_borrowing_evidence_exists() -> None:
+    persona = PersonaService().classify(
+        build_transcript("Sujata says she has taken a loan and repays it monthly."),
+        build_analysis(
+            {
+                "smartphone_usage": {"value": "has_smartphone", "status": "observed", "evidence_quotes": ["I use WhatsApp"], "notes": ""},
+                "bank_account_status": {"value": "has_bank_account", "status": "observed", "evidence_quotes": ["I have a bank account"], "notes": ""},
+                "borrowing_history": {
+                    "value": "has_borrowed",
+                    "status": "observed",
+                    "evidence_quotes": ["Sujata says she has taken a loan"],
+                    "notes": "",
+                },
+                "persona_signals": {
+                    "self_reliance_non_borrowing": {
+                        "value": True,
+                        "evidence_quotes": ["I manage with savings when possible"],
+                    }
+                },
+            }
+        ),
+    )
+
+    assert persona.persona_id != "persona_4"
+
+
+def test_persona_classifier_requires_explicit_non_borrowing_evidence_for_persona_four() -> None:
+    persona = PersonaService().classify(
+        build_transcript("I use WhatsApp and have a bank account."),
+        build_analysis(
+            {
+                "smartphone_usage": {"value": "has_smartphone", "status": "observed", "evidence_quotes": ["I use WhatsApp"], "notes": ""},
+                "bank_account_status": {"value": "has_bank_account", "status": "observed", "evidence_quotes": ["I have a bank account"], "notes": ""},
+                "borrowing_history": {"value": "has_not_borrowed_recently", "status": "observed", "evidence_quotes": [], "notes": ""},
+            }
+        ),
+    )
+
+    assert persona.persona_id != "persona_4"
+
+
+def test_app_service_reprocess_stale_interviews_recomputes_legacy_rows(tmp_path) -> None:
+    database_path = str(tmp_path / "stale-reprocess.sqlite3")
+    service = PaydayAppService(build_settings(sqlite_path=database_path))
+    interview = service.repository.create_interview(
+        interview_id="legacy-row-1",
+        audio_url="audio/legacy-row-1/demo.wav",
+        transcript="I use WhatsApp. I have a bank account. I have taken a loan.",
+        status=ProcessingStatus.COMPLETED.value,
+        latest_stage=PipelineStage.STORAGE.value,
+    )
+    with service.repository._connect() as connection:  # noqa: SLF001
+        connection.execute(
+            """
+            UPDATE interviews
+            SET analysis_schema_version = NULL, persona_ruleset_version = NULL
+            WHERE id = ?
+            """,
+            (interview.id,),
+        )
+
+    summary = service.reprocess_stale_interviews()
+    refreshed = service.repository.get_dashboard_interview_detail(interview.id)
+    stale_after = service.repository.list_stale_interview_ids()
+
+    assert summary["stale_count"] == 1
+    assert summary["failed"] == {}
+    assert interview.id in summary["reprocessed_ids"]
+    assert refreshed.persona is not None
+    assert interview.id not in stale_after
+
+
 def test_persona_classifier_supports_legacy_nested_structured_output_for_personas_one_to_five() -> None:
     expected_personas = {
         "demo_01_employer_digital_borrower.txt": "persona_1",
