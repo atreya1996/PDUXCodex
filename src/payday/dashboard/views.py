@@ -544,7 +544,7 @@ class DashboardRenderer:
         *,
         title: str,
         subtitle: str,
-        values: dict[str, int],
+        values: dict[str, Any],
         color: str,
     ) -> None:
         chart_data = self._normalized_chart_rows(values)
@@ -559,6 +559,11 @@ class DashboardRenderer:
                 unsafe_allow_html=True,
             )
         if not chart_data or not self._chart_rows_are_flat(chart_data):
+            self._emit_chart_diagnostics(
+                title=title,
+                chart_rows=chart_data,
+                note="Fallback triggered because normalized chart rows were empty or invalid.",
+            )
             self._render_chart_fallback_table(
                 title=title,
                 subtitle=subtitle,
@@ -567,11 +572,25 @@ class DashboardRenderer:
             )
             return
 
-        if self._is_dev_mode():
-            st.caption(
-                "Debug normalized chart rows (first 3): "
-                + json.dumps(chart_data[:3], ensure_ascii=False, sort_keys=True)
+        if self._prefer_income_table_fallback(title=title, values=values, chart_rows=chart_data):
+            self._emit_chart_diagnostics(
+                title=title,
+                chart_rows=chart_data,
+                note="Income distribution shown as table due to sparse/non-numeric chart inputs.",
             )
+            self._render_chart_fallback_table(
+                title=title,
+                subtitle=subtitle,
+                chart_rows=chart_data,
+                reason="Income values were sparse or non-numeric, so a tabular distribution is shown for clarity.",
+            )
+            return
+
+        self._emit_chart_diagnostics(
+            title=title,
+            chart_rows=chart_data,
+            note="Rendering Vega chart with normalized rows.",
+        )
 
         try:
             st.vega_lite_chart(
@@ -620,7 +639,12 @@ class DashboardRenderer:
                 },
                 use_container_width=True,
             )
-        except Exception:
+        except Exception as exc:
+            self._emit_chart_diagnostics(
+                title=title,
+                chart_rows=chart_data,
+                note=f"Vega rendering failed ({type(exc).__name__}); using fallback table.",
+            )
             self._render_chart_fallback_table(
                 title=title,
                 subtitle=subtitle,
@@ -628,7 +652,7 @@ class DashboardRenderer:
                 reason="Chart rendering failed at runtime, so a normalized table is shown instead.",
             )
 
-    def _normalized_chart_rows(self, values: dict[str, int]) -> list[dict[str, int | float | str]]:
+    def _normalized_chart_rows(self, values: dict[str, Any]) -> list[dict[str, int | float | str]]:
         normalized_counts: dict[str, int] = {}
         for raw_category, raw_count in values.items():
             count = self._safe_chart_count(raw_count)
@@ -652,11 +676,42 @@ class DashboardRenderer:
         unknown_label = "Unknown"
         if raw_category is None:
             return unknown_label
-        label = str(raw_category).strip()
+        if isinstance(raw_category, bytes):
+            label = raw_category.decode("utf-8", errors="ignore").strip()
+        else:
+            label = str(raw_category).strip()
+        label = re.sub(r"\s+", " ", label)
+        label = label.strip(" -_:/\\|.,;")
         if not label:
             return unknown_label
-        if label.casefold() in {"unknown", "unk", "n/a", "na", "none", "null", "unspecified"}:
+        lowered = label.casefold()
+        if lowered in {
+            "unknown",
+            "unk",
+            "n/a",
+            "na",
+            "none",
+            "null",
+            "nil",
+            "nan",
+            "nill",
+            "unspecified",
+            "not specified",
+            "not available",
+            "missing",
+            "undefined",
+            "?",
+            "-",
+            "--",
+            "{}",
+            "[]",
+            "()",
+        }:
             return unknown_label
+        if re.fullmatch(r"[?_\-./\s]+", label):
+            return unknown_label
+        label = re.sub(r"\s*/\s*", " / ", label)
+        label = re.sub(r"\s+", " ", label).strip()
         return label
 
     def _safe_chart_count(self, raw_count: Any) -> int | None:
@@ -701,15 +756,22 @@ class DashboardRenderer:
         reason: str,
     ) -> None:
         st.caption(reason)
-        table_rows = [
-            (
-                str(row.get("category", "Unknown")),
-                int(row.get("count", 0)),
-                f"{float(row.get('share', 0.0)):.1f}%",
-            )
-            for row in chart_rows
-            if isinstance(row, dict)
-        ]
+        table_rows: list[tuple[str, int, str]] = []
+        for row in chart_rows:
+            if not isinstance(row, dict):
+                continue
+            category = self._normalize_chart_category(row.get("category"))
+            count = self._safe_chart_count(row.get("count")) or 0
+            raw_share = row.get("share", 0.0)
+            share_value = 0.0
+            if isinstance(raw_share, (int, float)):
+                share_value = float(raw_share)
+            elif isinstance(raw_share, str):
+                try:
+                    share_value = float(raw_share.strip().replace("%", ""))
+                except ValueError:
+                    share_value = 0.0
+            table_rows.append((category, count, f"{share_value:.1f}%"))
         if not table_rows:
             table_rows = [("Unknown", 0, "0.0%")]
         self._render_table_card(
@@ -717,6 +779,30 @@ class DashboardRenderer:
             subtitle=subtitle,
             rows=table_rows,
             headers=("Category", "Count", "% of filtered"),
+        )
+
+    def _prefer_income_table_fallback(
+        self,
+        *,
+        title: str,
+        values: dict[str, Any],
+        chart_rows: list[dict[str, Any]],
+    ) -> bool:
+        if "income" not in title.casefold():
+            return False
+        has_non_numeric = any(self._safe_chart_count(raw_count) is None for raw_count in values.values())
+        non_zero_rows = [row for row in chart_rows if self._safe_chart_count(row.get("count"))]
+        total_count = sum(self._safe_chart_count(row.get("count")) or 0 for row in chart_rows)
+        is_sparse = len(non_zero_rows) <= 1 or total_count < 4
+        return has_non_numeric or is_sparse
+
+    def _emit_chart_diagnostics(self, *, title: str, chart_rows: list[dict[str, Any]], note: str) -> None:
+        if not self._is_dev_mode():
+            return
+        compact_rows = chart_rows[:3]
+        st.caption(
+            f"[dev] {title}: {note} First normalized rows: "
+            + json.dumps(compact_rows, ensure_ascii=False, sort_keys=True)
         )
 
     def _is_dev_mode(self) -> bool:

@@ -226,12 +226,47 @@ def test_dashboard_renderer_normalizes_chart_rows_to_flat_category_count_share_s
     assert renderer._chart_rows_are_flat(chart_rows) is True
 
 
+def test_dashboard_renderer_normalizes_unknown_or_malformed_chart_categories() -> None:
+    renderer = DashboardRenderer()
+
+    assert renderer._normalize_chart_category(None) == "Unknown"
+    assert renderer._normalize_chart_category("   ") == "Unknown"
+    assert renderer._normalize_chart_category("NIL") == "Unknown"
+    assert renderer._normalize_chart_category(" -- ") == "Unknown"
+    assert renderer._normalize_chart_category("  Family/friends  ") == "Family / friends"
+
+
 def test_dashboard_renderer_chart_rows_validation_rejects_nested_or_missing_shape() -> None:
     renderer = DashboardRenderer()
 
     assert renderer._chart_rows_are_flat([{"category": "Borrower", "count": {"nested": 1}}]) is False
     assert renderer._chart_rows_are_flat([{"category": "Borrower"}]) is False
     assert renderer._chart_rows_are_flat([{"count": 1, "share": 20.0}]) is False
+
+
+def test_dashboard_renderer_prefers_income_table_for_sparse_or_non_numeric_inputs() -> None:
+    renderer = DashboardRenderer()
+
+    sparse_chart_rows = renderer._normalized_chart_rows({"₹10k–15k": 1})
+    assert renderer._prefer_income_table_fallback(
+        title="Income bands",
+        values={"₹10k–15k": 1},
+        chart_rows=sparse_chart_rows,
+    )
+
+    mixed_chart_rows = renderer._normalized_chart_rows({"₹10k–15k": "2", "Unknown": "n/a"})
+    assert renderer._prefer_income_table_fallback(
+        title="Income distribution",
+        values={"₹10k–15k": "2", "Unknown": "n/a"},
+        chart_rows=mixed_chart_rows,
+    )
+
+    borrowing_rows = renderer._normalized_chart_rows({"Borrower": 4, "Non-borrower": 2})
+    assert not renderer._prefer_income_table_fallback(
+        title="Borrowing behavior",
+        values={"Borrower": 4, "Non-borrower": 2},
+        chart_rows=borrowing_rows,
+    )
 
 
 def test_dashboard_empty_repository_shows_empty_states_without_fabricated_personas_or_quotes() -> None:
