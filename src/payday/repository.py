@@ -13,6 +13,18 @@ from payday.models import AnalysisResult, PersonaClassification, PipelineResult
 from payday.schema_versions import ANALYSIS_SCHEMA_VERSION, PERSONA_RULESET_VERSION
 
 _UNSET = object()
+_VALID_STATUS = {"pending", "processing", "completed", "failed"}
+_LEGACY_STATUS_MAP = {
+    "uploaded": "pending",
+    "upload": "pending",
+    "pending": "pending",
+    "processing": "processing",
+    "in_progress": "processing",
+    "completed": "completed",
+    "complete": "completed",
+    "failed": "failed",
+    "error": "failed",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +37,17 @@ class InterviewRecord:
     last_error: str | None
     created_at: str
     analysis_version: str | None = None
+    filename: str | None = None
+    file_path: str | None = None
+    transcript_text: str | None = None
+    insights_json: str | None = None
+    error_message: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "file_path", self.file_path or self.audio_url)
+        object.__setattr__(self, "filename", self.filename or PaydayRepository._filename_from_audio_url(self.file_path or self.audio_url))
+        object.__setattr__(self, "transcript_text", self.transcript_text if self.transcript_text is not None else self.transcript)
+        object.__setattr__(self, "error_message", self.error_message if self.error_message is not None else self.last_error)
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +87,12 @@ class InterviewListItem:
     persona: str | None
     confidence_score: float | None
     summary: str | None
+    filename: str | None = None
+    file_path: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "file_path", self.file_path or self.audio_url)
+        object.__setattr__(self, "filename", self.filename or PaydayRepository._filename_from_audio_url(self.file_path or self.audio_url))
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,8 +105,8 @@ class InterviewDetail:
 @dataclass(frozen=True, slots=True)
 class DashboardInterviewRecord:
     id: str
-    file_path: str
     filename: str
+    audio_url: str
     transcript: str | None
     status: str
     latest_stage: str
@@ -100,6 +129,15 @@ class DashboardInterviewRecord:
     analysis_version: str | None = None
     analyzed_at: str | None = None
     segmented_dialogue: list[dict[str, Any]] = field(default_factory=list)
+    file_path: str | None = None
+    transcript_text: str | None = None
+    insights_json: str | None = None
+    error_message: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "file_path", self.file_path or self.audio_url)
+        object.__setattr__(self, "transcript_text", self.transcript_text if self.transcript_text is not None else self.transcript)
+        object.__setattr__(self, "error_message", self.error_message if self.error_message is not None else self.last_error)
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +174,7 @@ class PaydayRepository:
         with self._connect() as connection:
             connection.executescript(schema_sql)
             self._ensure_interview_columns(connection)
+            self._migrate_legacy_interview_data(connection)
             self._ensure_structured_response_columns(connection)
             self._ensure_insight_columns(connection)
 
@@ -148,6 +187,10 @@ class PaydayRepository:
             connection.execute(
                 "ALTER TABLE interviews ADD COLUMN latest_stage TEXT NOT NULL DEFAULT 'upload'"
             )
+        if "audio_url" not in interview_columns:
+            connection.execute("ALTER TABLE interviews ADD COLUMN audio_url TEXT")
+        if "transcript" not in interview_columns:
+            connection.execute("ALTER TABLE interviews ADD COLUMN transcript TEXT")
         if "last_error" not in interview_columns:
             connection.execute("ALTER TABLE interviews ADD COLUMN last_error TEXT")
         if "analysis_schema_version" not in interview_columns:
@@ -156,6 +199,59 @@ class PaydayRepository:
             connection.execute("ALTER TABLE interviews ADD COLUMN persona_ruleset_version INTEGER")
         if "analysis_version" not in interview_columns:
             connection.execute("ALTER TABLE interviews ADD COLUMN analysis_version TEXT")
+        if "filename" not in interview_columns:
+            connection.execute("ALTER TABLE interviews ADD COLUMN filename TEXT")
+        if "file_path" not in interview_columns:
+            connection.execute("ALTER TABLE interviews ADD COLUMN file_path TEXT")
+        if "transcript_text" not in interview_columns:
+            connection.execute("ALTER TABLE interviews ADD COLUMN transcript_text TEXT")
+        if "insights_json" not in interview_columns:
+            connection.execute("ALTER TABLE interviews ADD COLUMN insights_json TEXT")
+        if "error_message" not in interview_columns:
+            connection.execute("ALTER TABLE interviews ADD COLUMN error_message TEXT")
+
+    def _migrate_legacy_interview_data(self, connection: sqlite3.Connection) -> None:
+        interview_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(interviews)").fetchall()
+        }
+        def _select_expr(column_name: str) -> str:
+            return column_name if column_name in interview_columns else f"NULL AS {column_name}"
+
+        rows = connection.execute(
+            f"""
+            SELECT
+                id,
+                {_select_expr("audio_url")},
+                {_select_expr("transcript")},
+                {_select_expr("last_error")},
+                status,
+                {_select_expr("filename")},
+                {_select_expr("file_path")},
+                {_select_expr("transcript_text")},
+                {_select_expr("error_message")}
+            FROM interviews
+            """
+        ).fetchall()
+        for row in rows:
+            legacy_path = str(row["audio_url"] or "").strip()
+            derived_file_path = str(row["file_path"] or "").strip() or legacy_path
+            derived_filename = str(row["filename"] or "").strip() or self._filename_from_audio_url(derived_file_path)
+            transcript_text = row["transcript_text"] if row["transcript_text"] is not None else row["transcript"]
+            error_message = row["error_message"] if row["error_message"] is not None else row["last_error"]
+            status = self._normalize_status(str(row["status"] or "pending"))
+            connection.execute(
+                """
+                UPDATE interviews
+                SET filename = ?,
+                    file_path = ?,
+                    transcript_text = ?,
+                    error_message = ?,
+                    status = ?
+                WHERE id = ?
+                """,
+                (derived_filename, derived_file_path, transcript_text, error_message, status, row["id"]),
+            )
 
     def _ensure_structured_response_columns(self, connection: sqlite3.Connection) -> None:
         structured_columns = {
@@ -184,34 +280,48 @@ class PaydayRepository:
         *,
         file_path: str,
         transcript: str | None = None,
-        status: str = "uploaded",
+        status: str = "pending",
         latest_stage: str = "upload",
         last_error: str | None = None,
         interview_id: str | None = None,
         created_at: str | None = None,
     ) -> InterviewRecord:
+        normalized_status = self._normalize_status(status)
+        filename = self._filename_from_audio_url(audio_url)
         record = InterviewRecord(
             id=interview_id or str(uuid4()),
             file_path=file_path,
             transcript=transcript,
-            status=status,
+            status=normalized_status,
             latest_stage=latest_stage,
             last_error=last_error,
             created_at=created_at or datetime.now(timezone.utc).isoformat(),
+            filename=filename,
+            file_path=audio_url,
+            transcript_text=transcript,
+            insights_json=None,
+            error_message=last_error,
         )
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO interviews (id, file_path, transcript, status, latest_stage, last_error, created_at, analysis_version)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO interviews (
+                    id, audio_url, filename, file_path, transcript, transcript_text, insights_json, last_error, error_message, status, latest_stage, created_at, analysis_version
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
                     record.file_path,
-                    record.transcript,
+                    record.filename,
+                    record.file_path,
+                    record.transcript_text,
+                    record.transcript_text,
+                    record.insights_json,
+                    record.error_message,
+                    record.error_message,
                     record.status,
                     record.latest_stage,
-                    record.last_error,
                     record.created_at,
                     record.analysis_version,
                 ),
@@ -229,29 +339,40 @@ class PaydayRepository:
         last_error: str | object = _UNSET,
     ) -> InterviewRecord:
         existing = self.get_interview(interview_id)
+        next_file_path = audio_url if audio_url is not None else existing.file_path
         updated = InterviewRecord(
             id=existing.id,
-            file_path=file_path if file_path is not None else existing.file_path,
-            transcript=transcript if transcript is not None else existing.transcript,
-            status=status if status is not None else existing.status,
+            audio_url=next_file_path,
+            transcript=transcript if transcript is not None else existing.transcript_text,
+            status=self._normalize_status(status) if status is not None else existing.status,
             latest_stage=latest_stage if latest_stage is not None else existing.latest_stage,
-            last_error=existing.last_error if last_error is _UNSET else last_error,
+            last_error=existing.error_message if last_error is _UNSET else last_error,
             created_at=existing.created_at,
             analysis_version=existing.analysis_version,
+            filename=self._filename_from_audio_url(next_file_path),
+            file_path=next_file_path,
+            transcript_text=transcript if transcript is not None else existing.transcript_text,
+            insights_json=existing.insights_json,
+            error_message=existing.error_message if last_error is _UNSET else last_error,
         )
         with self._connect() as connection:
             connection.execute(
                 """
                 UPDATE interviews
-                SET file_path = ?, transcript = ?, status = ?, latest_stage = ?, last_error = ?, analysis_version = ?
+                SET audio_url = ?, filename = ?, file_path = ?, transcript = ?, transcript_text = ?, insights_json = ?, last_error = ?, error_message = ?, status = ?, latest_stage = ?, analysis_version = ?
                 WHERE id = ?
                 """,
                 (
                     updated.file_path,
-                    updated.transcript,
+                    updated.filename,
+                    updated.file_path,
+                    updated.transcript_text,
+                    updated.transcript_text,
+                    updated.insights_json,
+                    updated.error_message,
+                    updated.error_message,
                     updated.status,
                     updated.latest_stage,
-                    updated.last_error,
                     updated.analysis_version,
                     interview_id,
                 ),
@@ -262,7 +383,20 @@ class PaydayRepository:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, file_path, transcript, status, latest_stage, last_error, created_at, analysis_version
+                SELECT
+                    id,
+                    COALESCE(file_path, audio_url) AS audio_url,
+                    COALESCE(transcript_text, transcript) AS transcript,
+                    status,
+                    latest_stage,
+                    COALESCE(error_message, last_error) AS last_error,
+                    created_at,
+                    analysis_version,
+                    filename,
+                    file_path,
+                    transcript_text,
+                    insights_json,
+                    error_message
                 FROM interviews
                 WHERE id = ?
                 """,
@@ -374,10 +508,29 @@ class PaydayRepository:
             connection.execute(
                 """
                 UPDATE interviews
-                SET analysis_schema_version = ?, analysis_version = ?
+                SET analysis_schema_version = ?, analysis_version = ?, insights_json = ?
                 WHERE id = ?
                 """,
-                (ANALYSIS_SCHEMA_VERSION, analysis_version, interview_id),
+                (
+                    ANALYSIS_SCHEMA_VERSION,
+                    analysis_version,
+                    json.dumps(
+                        {
+                            "smartphone_user": record.smartphone_user,
+                            "has_bank_account": record.has_bank_account,
+                            "per_household_earnings": record.per_household_earnings,
+                            "participant_personal_monthly_income": record.participant_personal_monthly_income,
+                            "total_household_monthly_income": record.total_household_monthly_income,
+                            "income_range": record.income_range,
+                            "borrowing_history": record.borrowing_history,
+                            "repayment_preference": record.repayment_preference,
+                            "loan_interest": record.loan_interest,
+                            "segmented_dialogue": record.segmented_dialogue,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    interview_id,
+                ),
             )
         return record
 
@@ -455,10 +608,18 @@ class PaydayRepository:
             connection.execute(
                 """
                 UPDATE interviews
-                SET transcript = ?, status = ?, latest_stage = ?, last_error = ?
+                SET transcript = ?, transcript_text = ?, last_error = ?, error_message = ?, status = ?, latest_stage = ?
                 WHERE id = ?
                 """,
-                (transcript, status, latest_stage, last_error, interview_id),
+                (
+                    transcript,
+                    transcript,
+                    last_error,
+                    last_error,
+                    self._normalize_status(status),
+                    latest_stage,
+                    interview_id,
+                ),
             )
             connection.execute(
                 """
@@ -533,10 +694,16 @@ class PaydayRepository:
             connection.execute(
                 """
                 UPDATE interviews
-                SET analysis_schema_version = ?, persona_ruleset_version = ?, analysis_version = ?
+                SET analysis_schema_version = ?, persona_ruleset_version = ?, analysis_version = ?, insights_json = ?
                 WHERE id = ?
                 """,
-                (ANALYSIS_SCHEMA_VERSION, PERSONA_RULESET_VERSION, analysis_version, interview_id),
+                (
+                    ANALYSIS_SCHEMA_VERSION,
+                    PERSONA_RULESET_VERSION,
+                    analysis_version,
+                    json.dumps(structured_response, ensure_ascii=False),
+                    interview_id,
+                ),
             )
         return self.get_dashboard_interview_detail(interview_id)
 
@@ -548,8 +715,8 @@ class PaydayRepository:
                 FROM interviews
                 LEFT JOIN insights ON insights.interview_id = interviews.id
                 LEFT JOIN structured_responses ON structured_responses.interview_id = interviews.id
-                WHERE interviews.transcript IS NOT NULL
-                  AND TRIM(interviews.transcript) <> ''
+                WHERE interviews.transcript_text IS NOT NULL
+                  AND TRIM(interviews.transcript_text) <> ''
                   AND (
                     interviews.analysis_schema_version IS NULL
                     OR interviews.analysis_schema_version < ?
@@ -573,19 +740,21 @@ class PaydayRepository:
         query = """
             SELECT
                 interviews.id,
-                interviews.file_path,
+                COALESCE(interviews.file_path, interviews.audio_url) AS audio_url,
                 interviews.status,
                 interviews.created_at,
                 insights.persona,
                 insights.confidence_score,
-                insights.summary
+                insights.summary,
+                interviews.filename,
+                interviews.file_path
             FROM interviews
             LEFT JOIN insights ON insights.interview_id = interviews.id
         """
         params: list[object] = []
         if status is not None:
             query += " WHERE interviews.status = ?"
-            params.append(status)
+            params.append(self._normalize_status(status))
         query += " ORDER BY interviews.created_at DESC, interviews.id DESC LIMIT ?"
         params.append(limit)
         with self._connect() as connection:
@@ -598,11 +767,13 @@ class PaydayRepository:
                 """
                 SELECT
                     interviews.id,
-                    interviews.file_path,
-                    interviews.transcript,
+                    interviews.filename,
+                    COALESCE(interviews.file_path, interviews.audio_url) AS file_path,
+                    COALESCE(interviews.transcript_text, interviews.transcript) AS transcript_text,
+                    interviews.insights_json,
                     interviews.status,
                     interviews.latest_stage,
-                    interviews.last_error,
+                    COALESCE(interviews.error_message, interviews.last_error) AS error_message,
                     interviews.created_at,
                     interviews.analysis_version AS interview_analysis_version,
                     structured_responses.smartphone_user,
@@ -637,7 +808,7 @@ class PaydayRepository:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, status, last_error, transcript
+                SELECT id, status, error_message, transcript_text
                 FROM interviews
                 ORDER BY created_at DESC, id DESC
                 LIMIT ?
@@ -649,8 +820,8 @@ class PaydayRepository:
             for row in rows
             if self._infer_transcript_quality(
                 status=row["status"],
-                transcript=row["transcript"],
-                last_error=row["last_error"],
+                transcript=row["transcript_text"],
+                last_error=row["error_message"],
             )
             in {"failed", "malformed"}
         ]
@@ -662,7 +833,7 @@ class PaydayRepository:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, status, last_error, transcript
+                SELECT id, status, error_message, transcript_text
                 FROM interviews
                 WHERE id IN ({placeholders})
                 ORDER BY created_at DESC, id DESC
@@ -674,8 +845,8 @@ class PaydayRepository:
             for row in rows
             if self._infer_transcript_quality(
                 status=row["status"],
-                transcript=row["transcript"],
-                last_error=row["last_error"],
+                transcript=row["transcript_text"],
+                last_error=row["error_message"],
             )
             in {"failed", "malformed"}
         ]
@@ -756,11 +927,13 @@ class PaydayRepository:
                 """
                 SELECT
                     interviews.id,
-                    interviews.file_path,
-                    interviews.transcript,
+                    interviews.filename,
+                    COALESCE(interviews.file_path, interviews.audio_url) AS file_path,
+                    COALESCE(interviews.transcript_text, interviews.transcript) AS transcript_text,
+                    interviews.insights_json,
                     interviews.status,
                     interviews.latest_stage,
-                    interviews.last_error,
+                    COALESCE(interviews.error_message, interviews.last_error) AS error_message,
                     interviews.created_at,
                     interviews.analysis_version AS interview_analysis_version,
                     structured_responses.smartphone_user,
@@ -909,17 +1082,17 @@ class PaydayRepository:
         payload = dict(row)
         transcript_quality = self._infer_transcript_quality(
             status=payload["status"],
-            transcript=payload["transcript"],
-            last_error=payload["last_error"],
+            transcript=payload["transcript_text"],
+            last_error=payload["error_message"],
         )
         return DashboardInterviewRecord(
             id=payload["id"],
-            file_path=payload["file_path"],
-            filename=self._filename_from_file_path(payload["file_path"]),
-            transcript=payload["transcript"],
+            filename=payload["filename"] or self._filename_from_audio_url(payload["file_path"]),
+            audio_url=payload["file_path"],
+            transcript=payload["transcript_text"],
             status=payload["status"],
             latest_stage=payload["latest_stage"],
-            last_error=payload["last_error"],
+            last_error=payload["error_message"],
             created_at=payload["created_at"],
             smartphone_user=self._int_to_bool(payload["smartphone_user"]),
             has_bank_account=self._int_to_bool(payload["has_bank_account"]),
@@ -938,6 +1111,10 @@ class PaydayRepository:
             transcript_quality=transcript_quality,
             analysis_version=payload.get("interview_analysis_version") or payload.get("insight_analysis_version") or payload.get("structured_analysis_version"),
             analyzed_at=payload.get("insight_analyzed_at") or payload.get("structured_analyzed_at"),
+            file_path=payload["file_path"],
+            transcript_text=payload["transcript_text"],
+            insights_json=payload["insights_json"],
+            error_message=payload["error_message"],
         )
 
 
@@ -1025,8 +1202,18 @@ class PaydayRepository:
         return []
 
     @staticmethod
-    def _filename_from_file_path(file_path: str) -> str:
-        return Path(file_path).name
+    def _normalize_status(value: str | None) -> str:
+        normalized = str(value or "").strip().lower()
+        mapped = _LEGACY_STATUS_MAP.get(normalized, normalized)
+        if mapped in _VALID_STATUS:
+            return mapped
+        return "pending"
+
+    @staticmethod
+    def _filename_from_audio_url(audio_url: str) -> str:
+        parsed = urlparse(audio_url)
+        path = parsed.path or audio_url
+        return Path(path).name
 
     @staticmethod
     def _infer_transcript_quality(*, status: str, transcript: str | None, last_error: str | None) -> str:
