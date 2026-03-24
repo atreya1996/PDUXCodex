@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from typing import Any, Protocol
 from urllib import error, request
@@ -18,6 +19,10 @@ class ExternalTranscriptionProviderError(RuntimeError):
 
 class TranscriptionProviderError(ValueError):
     """Raised when an unsupported transcription provider is configured."""
+
+
+class SampleModeDisabledError(RuntimeError):
+    """Raised when sample transcription is requested while sample mode is disabled."""
 
 
 class TranscriptionProviderAdapter(Protocol):
@@ -184,6 +189,10 @@ class TranscriptionService:
 
     def transcribe(self, asset: UploadedAsset, sample_mode: bool = False) -> Transcript:
         if sample_mode:
+            if not _is_sample_mode_enabled():
+                raise SampleModeDisabledError(
+                    "Sample-mode transcription is disabled. Set PAYDAY_USE_SAMPLE_MODE=true to enable sample transcript decoding."
+                )
             return self._sample_transcript(asset)
         return self._provider_transcript(asset)
 
@@ -296,10 +305,14 @@ def build_transcription_service(
 ) -> TranscriptionService:
     """Select the transcription service from environment-controlled provider settings."""
 
-    if sample_mode:
+    if sample_mode and _is_sample_mode_enabled():
         return TranscriptionService(settings)
     if settings.provider == "openai":
         return OpenAITranscriptionService(settings)
     raise TranscriptionProviderError(
         f"Unsupported transcription provider '{settings.provider}'. Use TRANSCRIPTION_PROVIDER=openai."
     )
+
+
+def _is_sample_mode_enabled() -> bool:
+    return os.getenv("PAYDAY_USE_SAMPLE_MODE", "").strip().lower() == "true"

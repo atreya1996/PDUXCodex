@@ -12,12 +12,15 @@ from typing import Any, Callable
 import streamlit as st
 
 from payday.analysis import (
+    NO_RELIABLE_QUOTE_PLACEHOLDER,
     bank_account_user_from_analysis,
+    clean_evidence_quotes,
     get_income_display_value,
     get_analysis_value,
     smartphone_user_from_analysis,
 )
 from payday.models import PipelineResult, ProcessingStatus
+from payday.pipeline import BINARY_TRANSCRIPT_DETECTED_ERROR
 from payday.personas import PERSONAS
 from payday.repository import DashboardInterviewRecord, DashboardStatusOverview
 
@@ -55,6 +58,10 @@ FILTER_SESSION_KEYS = {
     "toast_message": "dashboard_toast_message",
     "include_low_quality": "dashboard_include_low_quality_rows",
 }
+CARD_SUMMARY_SNIPPET_LIMIT = 120
+MAX_UI_TRANSCRIPT_CHARS = 12000
+MAX_MAIN_LIST_QUOTES = 3
+INTERVIEW_CARDS_PER_PAGE = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +175,7 @@ class DashboardRenderer:
         if not interviews:
             st.session_state[selected_key] = None
             st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = False
+            st.session_state[FILTER_SESSION_KEYS["interview_page"]] = 1
 
     def _render_pending_toast(self) -> None:
         toast = st.session_state.pop(FILTER_SESSION_KEYS["toast_message"], None)
@@ -261,7 +269,7 @@ class DashboardRenderer:
             help="Off by default so borrower/persona cohorts use only good-quality transcripts.",
         )
         st.sidebar.caption(
-            f"Showing {len(filtered)} of {len(all_interviews)} interviews. Durable interviews in SQLite: {status_overview.total_interviews}."
+            f"Showing {len(filtered)} of {len(all_interviews)} interviews. Saved interviews: {status_overview.total_interviews}."
         )
 
     def _render_overview(
@@ -278,6 +286,7 @@ class DashboardRenderer:
         )
         comparable, excluded_count = self._cohort_base(filtered)
         self._render_status_strip(all_interviews, status_overview)
+        self._render_transcription_failure_alert(filtered)
         self._render_analysis_version_notice(filtered)
         self._render_kpis(comparable, status_overview)
         self._render_quality_denominator_note(excluded_count=excluded_count, total_count=len(filtered))
@@ -340,7 +349,7 @@ class DashboardRenderer:
     ) -> None:
         self._render_page_intro(
             "Cohorts",
-            "Filters stay in the sidebar; this tab groups the current cohort into clean comparison tables.",
+            "Filters stay in the sidebar; this tab answers core research questions about digital access, borrowing behavior, and persona mix.",
         )
         comparable, excluded_count = self._cohort_base(filtered)
         self._render_analysis_version_notice(filtered)
@@ -412,6 +421,7 @@ class DashboardRenderer:
                     persona_description=persona.description,
                     count=persona_counts[persona_id],
                     non_target_count=non_target_count,
+                    sample_summary=sample_summary,
                     sample_quote=quote,
                 )
 
@@ -438,12 +448,13 @@ class DashboardRenderer:
             "Browse interview cards, then open a modal-style overlay for audio, transcript editing, formatted insights, and persona review.",
         )
         self._render_interviews_visual_regression_checklist()
+        self._render_transcription_failure_alert(filtered)
 
         if not filtered:
             self._render_empty_state(
                 "No interview cards yet",
                 sample_mode=sample_mode,
-                context="Upload audio files or intentionally load sample fixtures to create interview cards. Upload and process at least one interview, or intentionally load sample fixtures, to inspect transcript details here.",
+                context="Upload audio in the sidebar, then process at least one interview to review it here.",
             )
             return
 
@@ -583,12 +594,18 @@ class DashboardRenderer:
         if not overlay_rendered and st.session_state.get(FILTER_SESSION_KEYS["overlay_open"]):
             self._render_inline_detail_fallback(all_interviews=all_interviews)
 
-        self._render_interview_row_actions(filtered)
         self._render_overlay_debug_indicator()
+
+        total_cards = len(filtered)
+        visible_cards = self._visible_interview_cards(filtered, cards_per_page=INTERVIEW_CARDS_PER_PAGE)
+        if not visible_cards:
+            st.info("No interview cards available for the current page.")
+            return
+        st.caption(f"Showing {len(visible_cards)} of {total_cards} interviews.")
 
         st.markdown("<div class='pd-grid-section'>", unsafe_allow_html=True)
         card_columns = st.columns(2, gap="large")
-        for index, interview in enumerate(filtered):
+        for index, interview in enumerate(visible_cards):
             with card_columns[index % len(card_columns)]:
                 self._render_interview_card(
                     interview,
@@ -596,6 +613,17 @@ class DashboardRenderer:
                     all_interviews=all_interviews,
                 )
         st.markdown("</div>", unsafe_allow_html=True)
+
+        if len(visible_cards) < total_cards:
+            if st.button(
+                "Load more interviews",
+                key="load_more_interviews_cards",
+                use_container_width=True,
+            ):
+                st.session_state[FILTER_SESSION_KEYS["interview_page"]] = (
+                    st.session_state.get(FILTER_SESSION_KEYS["interview_page"], 1) + 1
+                )
+                st.rerun()
 
     def _render_interviews_visual_regression_checklist(self) -> None:
         st.markdown(
@@ -634,6 +662,20 @@ class DashboardRenderer:
         for column, status in zip(columns, STATUS_DISPLAY_ORDER, strict=False):
             with column:
                 self._render_metric_card(status.title(), str(counts.get(status, 0)), card_class="status-card")
+
+    def _render_transcription_failure_alert(self, interviews: list[DashboardInterview]) -> None:
+        failed_count = sum(
+            1
+            for interview in interviews
+            if interview.last_error
+            and BINARY_TRANSCRIPT_DETECTED_ERROR.lower() in interview.last_error.lower()
+        )
+        if failed_count <= 0:
+            return
+        if failed_count == 1:
+            st.error(BINARY_TRANSCRIPT_DETECTED_ERROR)
+            return
+        st.error(f"{BINARY_TRANSCRIPT_DETECTED_ERROR} ({failed_count} interviews affected)")
 
     def _render_filter_snapshot(
         self,
@@ -1062,7 +1104,7 @@ class DashboardRenderer:
             )
 
     def _render_evidence_highlights(self, interviews: list[DashboardInterview]) -> None:
-        quotes = [quote for interview in interviews for quote in interview.evidence_quotes][:4]
+        quotes = [quote for interview in interviews for quote in interview.evidence_quotes][:MAX_MAIN_LIST_QUOTES]
         if not quotes:
             st.info("No direct quotes are available for the filtered interviews yet.")
             return
@@ -1084,6 +1126,7 @@ class DashboardRenderer:
         persona_description: str,
         count: int,
         non_target_count: int,
+        sample_summary: str,
         sample_quote: str,
     ) -> None:
         st.markdown(
@@ -1097,6 +1140,7 @@ class DashboardRenderer:
                     <div class='persona-size'>{count}</div>
                 </div>
                 <div class='persona-meta'>Non-target in cohort: {non_target_count}</div>
+                <div class='persona-quote'>{html.escape(sample_summary)}</div>
                 <div class='persona-quote'>“{html.escape(sample_quote)}”</div>
             </div>
             """,
@@ -1112,7 +1156,7 @@ class DashboardRenderer:
     ) -> None:
         badge_class = "badge-nontarget" if interview.is_non_target else "badge-target"
         persona_label = html.escape(interview.persona_name)
-        summary = html.escape(self._truncate_text(interview.summary, limit=160) or "No summary captured yet.")
+        summary = html.escape(self._truncate_text(interview.summary, limit=CARD_SUMMARY_SNIPPET_LIMIT) or "No summary captured yet.")
         st.markdown(
             f"""
             <div class='pd-card interview-card'>
@@ -1155,8 +1199,9 @@ class DashboardRenderer:
                 st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = interview.id
                 st.rerun()
 
+        self._render_status_error_indicator(interview)
         if delete_disabled:
-            st.caption("Delete is unavailable because no backend delete handler was provided.")
+            st.caption("Delete is unavailable right now. Please refresh and try again.")
         elif st.session_state.get(FILTER_SESSION_KEYS["delete_confirm"]) == interview.id:
             st.warning("Confirm permanent delete for this interview and linked records.")
             confirm_col, cancel_col = st.columns(2, gap="small")
@@ -1206,6 +1251,7 @@ class DashboardRenderer:
         selected = self._merge_detail_record(selected, interview_detail_loader)
         transcript_edits: dict[str, str] = st.session_state[FILTER_SESSION_KEYS["transcripts"]]
         transcript_edits.setdefault(selected.id, selected.transcript)
+        transcript_edits[selected.id] = self._cap_transcript_text(transcript_edits[selected.id])
         current_json = json.dumps(selected.extracted_json, indent=2, ensure_ascii=False)
 
         message = st.session_state.get(FILTER_SESSION_KEYS["detail_message"])
@@ -1250,22 +1296,25 @@ class DashboardRenderer:
                 if audio_url:
                     st.caption(f"Stored audio path: {audio_url}")
 
-            st.markdown("#### Editable transcript")
-            updated_transcript = st.text_area(
-                "Transcript",
-                key=f"overlay_transcript_{selected.id}",
-                value=transcript_edits[selected.id],
-                height=260,
-                label_visibility="collapsed",
-            )
+            st.markdown("#### Transcript detail")
+            with st.expander("Editable transcript", expanded=False):
+                updated_transcript = st.text_area(
+                    "Transcript",
+                    key=f"overlay_transcript_{selected.id}",
+                    value=transcript_edits[selected.id],
+                    height=260,
+                    label_visibility="collapsed",
+                )
             transcript_edits[selected.id] = updated_transcript
+            if len(updated_transcript) >= MAX_UI_TRANSCRIPT_CHARS:
+                st.caption(f"Transcript display capped at {MAX_UI_TRANSCRIPT_CHARS:,} characters for UI safety.")
         with side_col:
             self._render_formatted_insights(selected)
 
         dialogue_turns = self._segmented_dialogue_for(selected)
         if dialogue_turns:
-            st.markdown("#### Transcript turns")
-            self._render_segmented_dialogue(dialogue_turns)
+            with st.expander("Transcript turns", expanded=False):
+                self._render_segmented_dialogue(dialogue_turns)
 
         transcript_changed = updated_transcript != selected.transcript
         action_col, delete_col = st.columns([2, 1], gap="medium")
@@ -1287,7 +1336,7 @@ class DashboardRenderer:
                     transcript_edits.pop(selected.id, None)
                     st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
                         "kind": "success",
-                        "message": "Selected interview re-analyzed. Structured responses and insights were overwritten in SQLite.",
+                        "message": "Interview analysis was refreshed.",
                     }
                 st.rerun()
             if st.button(
@@ -1307,7 +1356,7 @@ class DashboardRenderer:
                     transcript_edits.pop(selected.id, None)
                     st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
                         "kind": "success",
-                        "message": "Interview reprocessed and refreshed in SQLite.",
+                        "message": "Interview was refreshed.",
                     }
                 st.rerun()
 
@@ -1329,7 +1378,7 @@ class DashboardRenderer:
                         structured_json_changed=False,
                         save_interview_edits=save_interview_edits,
                         transcript_edits=transcript_edits,
-                        success_message="Transcript saved. Downstream analysis, persona derivation, and dashboard views were refreshed from SQLite.",
+                        success_message="Transcript saved and interview insights updated.",
                     )
             with json_col:
                 st.button(
@@ -1346,9 +1395,9 @@ class DashboardRenderer:
                     disabled=True,
                 )
             if save_interview_edits is None:
-                st.caption("Transcript save is unavailable because no backend save handler was provided.")
+                st.caption("Saving edits is unavailable right now. Please refresh and try again.")
             if reprocess_interview is None:
-                st.caption("Re-analyze selected interview is unavailable because no backend handler was provided.")
+                st.caption("Refresh analysis is unavailable right now. Please refresh and try again.")
             elif not transcript_changed:
                 st.caption("No transcript edits to save.")
             else:
@@ -1365,11 +1414,11 @@ class DashboardRenderer:
                 st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = selected.id
                 st.rerun()
             if delete_disabled:
-                st.caption("Delete is unavailable because no backend delete handler was provided.")
+                st.caption("Delete is unavailable right now. Please refresh and try again.")
 
         if st.session_state.get(FILTER_SESSION_KEYS["delete_confirm"]) == selected.id and delete_interview is not None:
             st.warning(
-                "Delete this interview from durable storage? This removes linked structured responses and insights, and deletes the stored audio asset when live storage is enabled."
+                "Delete this interview? This also removes its transcript, insights, and related audio file."
             )
             confirm_col, cancel_col = st.columns(2, gap="medium")
             with confirm_col:
@@ -1407,29 +1456,26 @@ class DashboardRenderer:
             st.markdown("**Summary**")
             st.write(selected.summary or "No summary captured yet.")
             st.markdown("**Transcript (read-only)**")
-            st.text_area(
-                "Fallback transcript",
-                value=selected.transcript,
-                height=220,
-                key=f"fallback_transcript_{selected.id}",
-                disabled=True,
-                label_visibility="collapsed",
-            )
+            with st.expander("Fallback transcript (read-only)", expanded=False):
+                st.text_area(
+                    "Fallback transcript",
+                    value=self._cap_transcript_text(selected.transcript),
+                    height=220,
+                    key=f"fallback_transcript_{selected.id}",
+                    disabled=True,
+                    label_visibility="collapsed",
+                )
             self._render_formatted_insights(selected)
             if st.button("Close fallback detail", key=f"close_fallback_{selected.id}", use_container_width=False):
                 st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = False
                 st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
                 st.rerun()
 
-    def _render_interview_row_actions(self, interviews: list[DashboardInterview]) -> None:
-        with st.expander("Quick row actions", expanded=False):
-            for interview in interviews:
-                row_cols = st.columns([2.8, 1.4, 1.2, 1], gap="small")
-                row_cols[0].markdown(f"**{html.escape(interview.filename)}**")
-                row_cols[1].caption(f"ID: {interview.id}")
-                row_cols[2].caption(interview.persona_name)
-                if row_cols[3].button("Open", key=f"open_row_{interview.id}", use_container_width=True):
-                    self._open_interview_overlay(interview.id)
+    def _render_status_error_indicator(self, interview: DashboardInterview) -> None:
+        status_label = interview.status.replace("_", " ").title()
+        st.caption(f"Status: {status_label}")
+        if interview.last_error:
+            st.error("Needs attention: this interview hit a processing error. Open it to review details.")
 
     def _render_overlay_debug_indicator(self) -> None:
         if not self._is_dev_mode():
@@ -1450,25 +1496,22 @@ class DashboardRenderer:
         st.toast(message, icon=icon)
         st.session_state[FILTER_SESSION_KEYS["toast_message"]] = None
 
-    def _open_interview_overlay(self, interview_id: str) -> None:
-        st.session_state[FILTER_SESSION_KEYS["selected"]] = interview_id
-        st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = True
-        st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
-        toast_payload = {
-            "kind": "success",
-            "message": f"Opened interview {interview_id}.",
-        }
-        st.session_state[FILTER_SESSION_KEYS["toast_message"]] = toast_payload
-        st.toast(toast_payload["message"], icon="✅")
-        st.rerun()
+    def _show_dev_regression_checklist(self) -> bool:
+        if self._is_dev_mode():
+            return True
+        return bool(st.session_state.get(FILTER_SESSION_KEYS["debug_toggle"], False))
 
-    def _is_dev_mode(self) -> bool:
-        dev_flags = (
-            os.getenv("PAYDAY_DEV_MODE", ""),
-            os.getenv("STREAMLIT_ENV", ""),
-            os.getenv("ENV", ""),
-        )
-        return any(flag.strip().lower() in {"1", "true", "yes", "dev", "development"} for flag in dev_flags)
+    def _is_reanalysis_enabled(self) -> bool:
+        raw_toggle = st.session_state.get(FILTER_SESSION_KEYS["reanalysis_toggle"])
+        if isinstance(raw_toggle, bool):
+            if raw_toggle:
+                return True
+        elif raw_toggle is not None and str(raw_toggle).strip().casefold() in {"1", "true", "yes", "on"}:
+            return True
+        raw_env = os.getenv("PAYDAY_ENABLE_REANALYSIS")
+        if raw_env is None:
+            return False
+        return raw_env.strip().casefold() in {"1", "true", "yes", "on"}
 
     def _render_formatted_insights(self, interview: DashboardInterview) -> None:
         sections = [
@@ -1513,7 +1556,7 @@ class DashboardRenderer:
                 unsafe_allow_html=True,
             )
 
-        quotes = interview.evidence_quotes[:3]
+        quotes = interview.evidence_quotes[:MAX_MAIN_LIST_QUOTES]
         quote_markup = "".join(f"<li>{html.escape(quote)}</li>" for quote in quotes) or "<li>No direct quote captured yet.</li>"
         st.markdown(
             f"""
@@ -1605,7 +1648,7 @@ class DashboardRenderer:
         if delete_interview is None:
             st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
                 "kind": "error",
-                "message": "Delete is unavailable because no backend delete handler was provided.",
+                "message": "Delete is unavailable right now. Please refresh and try again.",
             }
             st.session_state[FILTER_SESSION_KEYS["toast_message"]] = {
                 "kind": "error",
@@ -1639,7 +1682,7 @@ class DashboardRenderer:
                 st.session_state[FILTER_SESSION_KEYS["force_sqlite_reload"]] = True
                 st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
                     "kind": "success",
-                    "message": f"Deleted {interview.filename} ({interview.id}). Interview lists, overview KPIs, and cohort/persona tables were reloaded from SQLite.",
+                    "message": f"Deleted {interview.filename} ({interview.id}) and refreshed the dashboard.",
                 }
                 st.session_state[FILTER_SESSION_KEYS["toast_message"]] = {
                     "kind": "success",
@@ -1788,7 +1831,7 @@ class DashboardRenderer:
         borrowing_value = get_analysis_value(structured, "borrowing_history")
         loan_interest_value = get_analysis_value(structured, "loan_interest")
         summary = result.analysis.summary if result.analysis is not None else "Analysis pending."
-        evidence_quotes = tuple(result.analysis.evidence_quotes if result.analysis is not None else [])
+        evidence_quotes = tuple(clean_evidence_quotes(result.analysis.evidence_quotes if result.analysis is not None else []))
         segmented_dialogue = tuple(structured.get("segmented_dialogue", [])) if isinstance(structured.get("segmented_dialogue"), list) else ()
         persona_id = result.persona.persona_id if result.persona is not None else "persona_4"
         persona_name = result.persona.persona_name if result.persona is not None else PERSONA_LOOKUP["persona_4"]
@@ -1890,7 +1933,7 @@ class DashboardRenderer:
                 last_error=record.last_error,
             ),
             extracted_json=extracted_json,
-            evidence_quotes=tuple(record.key_quotes),
+            evidence_quotes=tuple(clean_evidence_quotes(record.key_quotes)),
             segmented_dialogue=tuple(record.segmented_dialogue),
             analysis_version=record.analysis_version,
             analyzed_at=record.analyzed_at,
@@ -1963,6 +2006,20 @@ class DashboardRenderer:
             if canonical_name.lower() == normalized:
                 return persona_id
         return "persona_4"
+
+    def _clean_quote_snippet(self, quotes: tuple[str, ...] | list[str]) -> str:
+        cleaned = clean_evidence_quotes(list(quotes), limit=1)
+        if cleaned:
+            return cleaned[0]
+        return NO_RELIABLE_QUOTE_PLACEHOLDER
+
+    def _clean_summary_snippet(self, summary: str) -> str:
+        normalized = re.sub(r"\s+", " ", str(summary or "")).strip()
+        if not normalized:
+            return "No clean summary available."
+        if "\x00" in normalized:
+            return "No clean summary available."
+        return self._truncate_text(normalized, limit=160)
 
     def _format_created_at(self, created_at: str) -> str:
         try:
@@ -2083,9 +2140,9 @@ class DashboardRenderer:
 
     def _render_empty_state(self, title: str, *, sample_mode: bool, context: str) -> None:
         sample_guidance = (
-            " Because sample mode is enabled, you can also intentionally load developer sample fixtures from the app layer."
+            " Sample data is on, so you can load sample interviews from the sidebar if needed."
             if sample_mode
-            else " To inspect demo content, enable the developer-only sample-mode path instead of relying on implicit fallback data."
+            else " To test with sample interviews, turn on sample mode in app settings."
         )
         st.info(f"{title}. {context}{sample_guidance}")
 
@@ -2113,6 +2170,26 @@ class DashboardRenderer:
         if len(normalized) <= limit:
             return normalized
         return f"{normalized[: limit - 1].rstrip()}…"
+
+    def _cap_transcript_text(self, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) <= MAX_UI_TRANSCRIPT_CHARS:
+            return normalized
+        return f"{normalized[:MAX_UI_TRANSCRIPT_CHARS].rstrip()}\n\n[Transcript capped for UI safety.]"
+
+    def _visible_interview_cards(
+        self,
+        interviews: list[DashboardInterview],
+        *,
+        cards_per_page: int,
+    ) -> list[DashboardInterview]:
+        total = len(interviews)
+        max_page = max(1, (total + cards_per_page - 1) // cards_per_page)
+        current_page = int(st.session_state.get(FILTER_SESSION_KEYS["interview_page"], 1))
+        current_page = min(max(current_page, 1), max_page)
+        st.session_state[FILTER_SESSION_KEYS["interview_page"]] = current_page
+        end_index = current_page * cards_per_page
+        return interviews[:end_index]
 
     def _evidence_quotes_for(
         self,
