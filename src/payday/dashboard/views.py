@@ -12,7 +12,9 @@ from typing import Any, Callable
 import streamlit as st
 
 from payday.analysis import (
+    NO_RELIABLE_QUOTE_PLACEHOLDER,
     bank_account_user_from_analysis,
+    clean_evidence_quotes,
     get_income_display_value,
     get_analysis_value,
     smartphone_user_from_analysis,
@@ -386,7 +388,8 @@ class DashboardRenderer:
         for index, persona_id in enumerate(persona_keys):
             persona = PERSONAS[persona_id]
             matches = [item for item in filtered if item.persona_id == persona_id]
-            quote = matches[0].evidence_quotes[0] if matches and matches[0].evidence_quotes else "No direct quote captured yet."
+            sample_summary = self._clean_summary_snippet(matches[0].summary if matches else "")
+            quote = self._clean_quote_snippet(matches[0].evidence_quotes if matches else ())
             non_target_count = sum(1 for item in matches if item.is_non_target)
             with columns[index % len(columns)]:
                 self._render_persona_card(
@@ -394,6 +397,7 @@ class DashboardRenderer:
                     persona_description=persona.description,
                     count=persona_counts[persona_id],
                     non_target_count=non_target_count,
+                    sample_summary=sample_summary,
                     sample_quote=quote,
                 )
 
@@ -967,6 +971,7 @@ class DashboardRenderer:
         persona_description: str,
         count: int,
         non_target_count: int,
+        sample_summary: str,
         sample_quote: str,
     ) -> None:
         st.markdown(
@@ -980,6 +985,7 @@ class DashboardRenderer:
                     <div class='persona-size'>{count}</div>
                 </div>
                 <div class='persona-meta'>Non-target in cohort: {non_target_count}</div>
+                <div class='persona-quote'>{html.escape(sample_summary)}</div>
                 <div class='persona-quote'>“{html.escape(sample_quote)}”</div>
             </div>
             """,
@@ -1659,7 +1665,7 @@ class DashboardRenderer:
         borrowing_value = get_analysis_value(structured, "borrowing_history")
         loan_interest_value = get_analysis_value(structured, "loan_interest")
         summary = result.analysis.summary if result.analysis is not None else "Analysis pending."
-        evidence_quotes = tuple(result.analysis.evidence_quotes if result.analysis is not None else [])
+        evidence_quotes = tuple(clean_evidence_quotes(result.analysis.evidence_quotes if result.analysis is not None else []))
         segmented_dialogue = tuple(structured.get("segmented_dialogue", [])) if isinstance(structured.get("segmented_dialogue"), list) else ()
         persona_id = result.persona.persona_id if result.persona is not None else "persona_4"
         persona_name = result.persona.persona_name if result.persona is not None else PERSONA_LOOKUP["persona_4"]
@@ -1751,7 +1757,7 @@ class DashboardRenderer:
             has_bank_account=record.has_bank_account,
             digital_access=self._digital_access_label(record.smartphone_user, record.has_bank_account),
             extracted_json=extracted_json,
-            evidence_quotes=tuple(record.key_quotes),
+            evidence_quotes=tuple(clean_evidence_quotes(record.key_quotes)),
             segmented_dialogue=tuple(record.segmented_dialogue),
             analysis_version=record.analysis_version,
             analyzed_at=record.analyzed_at,
@@ -1823,6 +1829,20 @@ class DashboardRenderer:
             if canonical_name.lower() == normalized:
                 return persona_id
         return "persona_4"
+
+    def _clean_quote_snippet(self, quotes: tuple[str, ...] | list[str]) -> str:
+        cleaned = clean_evidence_quotes(list(quotes), limit=1)
+        if cleaned:
+            return cleaned[0]
+        return NO_RELIABLE_QUOTE_PLACEHOLDER
+
+    def _clean_summary_snippet(self, summary: str) -> str:
+        normalized = re.sub(r"\s+", " ", str(summary or "")).strip()
+        if not normalized:
+            return "No clean summary available."
+        if "\x00" in normalized:
+            return "No clean summary available."
+        return self._truncate_text(normalized, limit=160)
 
     def _format_created_at(self, created_at: str) -> str:
         try:

@@ -244,6 +244,14 @@ def test_dashboard_renderer_chart_rows_validation_rejects_nested_or_missing_shap
     assert renderer._chart_rows_are_flat([{"count": 1, "share": 20.0}]) is False
 
 
+def test_dashboard_renderer_uses_neutral_placeholder_when_quotes_are_malformed() -> None:
+    renderer = DashboardRenderer()
+
+    placeholder = renderer._clean_quote_snippet(("0101010101", "///////"))
+
+    assert placeholder == "No reliable quote extracted"
+
+
 def test_dashboard_renderer_prefers_income_table_for_sparse_or_non_numeric_inputs() -> None:
     renderer = DashboardRenderer()
 
