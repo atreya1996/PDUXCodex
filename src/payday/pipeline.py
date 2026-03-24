@@ -221,7 +221,7 @@ class PaydayPipeline:
         self.repository.save_result(result)
         interview = self.repository.create_interview(
             interview_id=item.file_id,
-            audio_url=self.storage_service.build_audio_path(item.file_id, item.filename),
+            file_path=self.storage_service.build_file_path(item.file_id, item.filename),
             status=ProcessingStatus.PENDING.value,
             latest_stage=result.current_stage.value,
         )
@@ -241,6 +241,17 @@ class PaydayPipeline:
                 message="upload accepted",
             )
             result.asset = self.upload_audio(item)
+            if not Path(result.asset.file_path).exists():
+                self._record_failure(
+                    result,
+                    stage=PipelineStage.UPLOAD,
+                    error=(
+                        f"Uploaded file was not persisted at '{result.asset.file_path}'. "
+                        "Retry the upload and verify local disk permissions."
+                    ),
+                    message="upload persistence verification failed",
+                )
+                return result
 
             self._set_stage(
                 result,
@@ -472,7 +483,7 @@ class PaydayPipeline:
 
     def _dashboard_payload_from_record(self, detail: DashboardInterviewRecord) -> dict[str, Any]:
         return {
-            "audio_url": detail.audio_url,
+            "file_path": detail.file_path,
             "participant_profile": {
                 "smartphone_user": {"value": detail.smartphone_user},
                 "has_bank_account": {"value": detail.has_bank_account},
@@ -519,11 +530,11 @@ class PaydayPipeline:
         latest_stage: PipelineStage | None = None,
         last_error: str | object = None,
     ) -> None:
-        audio_url = self.storage_service.build_audio_path(result.file_id, result.filename)
+        file_path = self.storage_service.build_file_path(result.file_id, result.filename)
         try:
             self.repository.update_interview(
                 result.file_id,
-                audio_url=audio_url,
+                file_path=file_path,
                 transcript=transcript,
                 status=status.value if status is not None else None,
                 latest_stage=latest_stage.value if latest_stage is not None else None,
@@ -532,7 +543,7 @@ class PaydayPipeline:
         except KeyError:
             self.repository.create_interview(
                 interview_id=result.file_id,
-                audio_url=audio_url,
+                file_path=file_path,
                 transcript=transcript,
                 status=status.value if status is not None else ProcessingStatus.PENDING.value,
                 latest_stage=latest_stage.value if latest_stage is not None else result.current_stage.value,
@@ -574,16 +585,16 @@ class PaydayPipeline:
         self._sync_result(result)
 
     def _log_stage(self, message: str, result: PipelineResult, *, attempts: int | None = None) -> None:
+        stage_key = result.current_stage.value
+        stage_attempts = attempts if attempts is not None else result.attempts.get(stage_key)
         payload = {
             "file_id": result.file_id,
-            "filename": result.filename,
-            "stage": result.current_stage.value,
+            "stage": stage_key,
             "status": result.status.value,
+            "error": result.last_error,
+            "attempts": stage_attempts,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        if attempts is not None:
-            payload["attempts"] = attempts
-        if result.last_error:
-            payload["last_error"] = result.last_error
         logger.info("%s: %s", message, payload)
 
     def _persist_analysis_outputs(self, result: PipelineResult) -> None:
@@ -716,40 +727,6 @@ class PaydayPipeline:
             return False
         return None
 
-
-    def _set_stage(
-        self,
-        result: PipelineResult,
-        *,
-        stage: PipelineStage,
-        status: ProcessingStatus | None = None,
-        message: str | None = None,
-    ) -> None:
-        result.current_stage = stage
-        if status is not None:
-            result.status = status
-        if message:
-            logger.info("%s: %s (%s)", result.file_id, message, stage.value)
-
-    def _record_failure(
-        self,
-        result: PipelineResult,
-        *,
-        stage: PipelineStage,
-        error: str,
-        message: str | None = None,
-    ) -> None:
-        result.current_stage = stage
-        result.status = ProcessingStatus.FAILED
-        result.last_error = error
-        if not result.errors or result.errors[-1] != error:
-            result.errors.append(error)
-        logger.error("%s: %s (%s)", result.file_id, message or error, stage.value)
-        self._sync_result(result)
-
-    def _log_stage(self, message: str, result: PipelineResult, *, attempts: int | None = None) -> None:
-        suffix = f" after {attempts} attempt(s)" if attempts is not None else ""
-        logger.info("%s: %s%s", result.file_id, message, suffix)
 
     def _run_with_retries(self, stage: PipelineStage, operation: Callable[[], T]) -> tuple[T, int]:
         last_error: Exception | None = None

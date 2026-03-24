@@ -26,8 +26,16 @@ class StubOpenAITranscriptions:
         self.error = error
         self.calls: list[dict[str, object]] = []
 
-    def create(self, *, model: str, file: tuple[str, bytes, str]):
-        self.calls.append({"model": model, "file": file})
+    def create(self, *, model: str, file: object):
+        recorded_file: object = file
+        if hasattr(file, "read"):
+            payload = file.read()
+            file.seek(0)
+            recorded_file = {
+                "name": getattr(file, "name", ""),
+                "payload": payload,
+            }
+        self.calls.append({"model": model, "file": recorded_file})
         if self.error is not None:
             raise self.error
         return self.response

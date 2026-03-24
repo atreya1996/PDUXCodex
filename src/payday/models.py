@@ -34,6 +34,7 @@ class UploadedAsset:
     filename: str
     content_type: str
     size_bytes: int
+    file_path: str = ""
     raw_bytes: bytes = b""
     file_id: str = field(default_factory=lambda: uuid4().hex)
 
