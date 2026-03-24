@@ -1197,9 +1197,12 @@ class DashboardRenderer:
         badge_class = "badge-nontarget" if interview.is_non_target else "badge-target"
         persona_label = html.escape(interview.persona_name)
         summary = html.escape(self._truncate_text(interview.summary, limit=CARD_SUMMARY_SNIPPET_LIMIT) or "No summary captured yet.")
-        transcript_preview = html.escape(
-            self._truncate_text(interview.transcript, limit=CARD_SUMMARY_SNIPPET_LIMIT) or "Transcript pending."
+        transcript_preview_text = (
+            "Transcript unavailable due to failed/malformed transcription."
+            if interview.transcript_quality in {"failed", "malformed"}
+            else self._truncate_text(interview.transcript, limit=CARD_SUMMARY_SNIPPET_LIMIT) or "Transcript pending."
         )
+        transcript_preview = html.escape(transcript_preview_text)
         malformed_badge = self._malformed_transcript_badge(interview)
         malformed_badge_html = ""
         if malformed_badge:

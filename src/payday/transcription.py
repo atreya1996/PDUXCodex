@@ -341,7 +341,7 @@ def build_transcription_service(
 ) -> TranscriptionService:
     """Select the transcription service from environment-controlled provider settings."""
 
-    if sample_mode and _is_sample_mode_enabled():
+    if sample_mode:
         return TranscriptionService(settings)
     if settings.provider == "openai":
         return OpenAITranscriptionService(settings)
