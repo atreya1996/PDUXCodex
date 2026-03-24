@@ -9,6 +9,8 @@ from payday.analysis import (
     get_analysis_evidence_quotes,
     get_persona_signal_evidence_quotes,
     get_persona_signal_value,
+    has_borrowing_evidence,
+    get_analysis_field,
     get_analysis_value,
     smartphone_user_from_analysis,
 )
@@ -82,10 +84,10 @@ class PersonaService:
 
         return self._build_classification(
             PersonaDecision(
-                persona_key="persona_4",
+                persona_key="persona_2",
                 rationale=(
-                    "No higher-priority persona rule matched, so the deterministic classifier "
-                    "falls back to Persona 4."
+                    "No explicit non-borrowing evidence was found, so Persona 4 is not used as a generic "
+                    "fallback. The deterministic classifier falls back to Persona 2 for manual review."
                 ),
                 triggered_fields=(),
                 evidence_quotes=(),
@@ -191,8 +193,29 @@ class PersonaService:
         structured_output: dict[str, Any],
     ) -> PersonaDecision | None:
         borrowing_history = get_analysis_value(structured_output, "borrowing_history")
+        borrowing_field = get_analysis_field(structured_output, "borrowing_history")
         self_reliance_non_borrowing = get_persona_signal_value(structured_output, "self_reliance_non_borrowing")
-        if borrowing_history == "has_not_borrowed_recently" or self_reliance_non_borrowing is True:
+        borrowing_quotes = list(get_analysis_evidence_quotes(structured_output, "borrowing_history"))
+        non_borrowing_evidence = [
+            quote
+            for quote in borrowing_quotes + list(get_persona_signal_evidence_quotes(structured_output, "self_reliance_non_borrowing"))
+            if isinstance(quote, str) and quote.strip()
+        ]
+        has_structured_non_borrowing_observation = (
+            borrowing_history == "has_not_borrowed_recently"
+            and borrowing_field.get("status") == "observed"
+            and (
+                isinstance(borrowing_field.get("notes"), str)
+                and bool(borrowing_field.get("notes", "").strip())
+            )
+        )
+        has_explicit_non_borrowing_evidence = (
+            borrowing_history == "has_not_borrowed_recently" and bool(non_borrowing_evidence)
+        ) or (self_reliance_non_borrowing is True and bool(non_borrowing_evidence))
+        has_explicit_non_borrowing_evidence = has_explicit_non_borrowing_evidence or has_structured_non_borrowing_observation
+        if has_borrowing_evidence(structured_output):
+            return None
+        if has_explicit_non_borrowing_evidence:
             return PersonaDecision(
                 persona_key="persona_4",
                 rationale=(
@@ -200,10 +223,7 @@ class PersonaService:
                 ),
                 triggered_fields=("borrowing_history",),
                 evidence_quotes=tuple(
-                    (
-                        list(get_analysis_evidence_quotes(structured_output, "borrowing_history"))
-                        + list(get_persona_signal_evidence_quotes(structured_output, "self_reliance_non_borrowing"))
-                    )[:2]
+                    non_borrowing_evidence[:2]
                 ),
             )
         return None
