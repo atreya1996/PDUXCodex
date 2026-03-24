@@ -47,6 +47,8 @@ FILTER_SESSION_KEYS = {
     "borrowing": "dashboard_filter_borrowing",
     "persona": "dashboard_filter_persona",
     "digital_access": "dashboard_filter_digital_access",
+    "include_low_quality": "dashboard_include_low_quality",
+    "interview_page": "dashboard_interview_page",
     "search": "dashboard_search_query",
     "selected": "dashboard_selected_interview_id",
     "detail_open": "dashboard_detail_overlay_open",
@@ -160,6 +162,8 @@ class DashboardRenderer:
         st.session_state.setdefault(FILTER_SESSION_KEYS["borrowing"], [])
         st.session_state.setdefault(FILTER_SESSION_KEYS["persona"], [])
         st.session_state.setdefault(FILTER_SESSION_KEYS["digital_access"], [])
+        st.session_state.setdefault(FILTER_SESSION_KEYS["include_low_quality"], False)
+        st.session_state.setdefault(FILTER_SESSION_KEYS["interview_page"], 1)
         st.session_state.setdefault(FILTER_SESSION_KEYS["search"], "")
         st.session_state.setdefault(FILTER_SESSION_KEYS["detail_open"], False)
         st.session_state.setdefault(FILTER_SESSION_KEYS["transcripts"], {})

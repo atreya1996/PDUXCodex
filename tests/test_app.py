@@ -87,6 +87,7 @@ class _FakeAppService:
 
     def __init__(self) -> None:
         self.repository = self._FakeRepository()
+        self.batch_calls: list[list[object]] = []
 
     def list_results(self) -> list[object]:
         return []
@@ -125,6 +126,19 @@ class _FakeAppService:
 
     def list_stale_corrupted_interview_ids(self) -> list[str]:
         return []
+
+    def process_batch_uploads(self, items: list[object]) -> object:
+        self.batch_calls.append(items)
+        return type(
+            "BatchUploadResultStub",
+            (),
+            {
+                "completed_count": len(items),
+                "failed_count": 0,
+                "batch_id": "batch-0001",
+                "results": [],
+            },
+        )()
 
 
 class _FakeDashboardRenderer:
