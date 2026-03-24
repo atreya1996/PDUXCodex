@@ -297,6 +297,43 @@ def test_analysis_service_applies_defaults_and_tracks_missing_values() -> None:
     assert result.structured_output["key_quote_details"] == [{"original_text": "I use a basic phone", "english_translation": "I use a basic phone", "speaker_label": "unknown", "turn_index": None}]
 
 
+def test_analysis_service_filters_malformed_quotes_and_marks_transcript_quality() -> None:
+    adapter = SequenceAdapter(
+        responses=[
+            json.dumps(
+                {
+                    "smartphone_usage": {
+                        "value": "has_smartphone",
+                        "status": "observed",
+                        "evidence_quotes": ["010101010101", "I use WhatsApp every day"],
+                        "notes": "Direct evidence",
+                    },
+                    "summary": {
+                        "value": "Participant uses WhatsApp.",
+                        "status": "observed",
+                        "evidence_quotes": ["%%%%%%%///////", "I use WhatsApp every day"],
+                        "notes": "Grounded in transcript.",
+                    },
+                    "key_quotes": ["010101010101", "I use WhatsApp every day"],
+                }
+            )
+        ]
+    )
+    service = AnalysisService(adapter=adapter, settings=LLMSettings())
+    transcript = Transcript(
+        text="I use WhatsApp every day.",
+        provider="test-transcription",
+        model="test-model",
+    )
+
+    result = service.analyze(transcript)
+
+    assert result.structured_output["smartphone_usage"]["evidence_quotes"] == ["I use WhatsApp every day"]
+    assert result.structured_output["key_quotes"] == ["I use WhatsApp every day"]
+    assert result.structured_output["transcript_quality"]["status"] == "degraded"
+    assert result.structured_output["transcript_quality"]["dropped_malformed_quote_count"] >= 1
+
+
 def test_analysis_prompt_includes_weak_metadata_hints_and_separates_dialogue_when_evident() -> None:
     transcript = Transcript(
         text="Interviewer: Do you use WhatsApp? Participant: Yes, I use it every day.",
