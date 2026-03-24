@@ -5,11 +5,10 @@ CREATE TABLE IF NOT EXISTS interviews (
     file_path TEXT NOT NULL,
     transcript TEXT,
     transcript_text TEXT,
-    insights_json TEXT,
-    last_error TEXT,
-    error_message TEXT,
     status TEXT NOT NULL,
     latest_stage TEXT NOT NULL DEFAULT 'upload',
+    last_error TEXT,
+    error_message TEXT,
     created_at TEXT NOT NULL,
     analysis_version TEXT
 );

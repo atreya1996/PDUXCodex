@@ -193,6 +193,10 @@ class PaydayRepository:
             connection.execute("ALTER TABLE interviews ADD COLUMN transcript TEXT")
         if "last_error" not in interview_columns:
             connection.execute("ALTER TABLE interviews ADD COLUMN last_error TEXT")
+        if "transcript_text" not in interview_columns:
+            connection.execute("ALTER TABLE interviews ADD COLUMN transcript_text TEXT")
+        if "error_message" not in interview_columns:
+            connection.execute("ALTER TABLE interviews ADD COLUMN error_message TEXT")
         if "analysis_schema_version" not in interview_columns:
             connection.execute("ALTER TABLE interviews ADD COLUMN analysis_schema_version INTEGER")
         if "persona_ruleset_version" not in interview_columns:
@@ -306,22 +310,19 @@ class PaydayRepository:
             connection.execute(
                 """
                 INSERT INTO interviews (
-                    id, audio_url, filename, file_path, transcript, transcript_text, insights_json, last_error, error_message, status, latest_stage, created_at, analysis_version
+                    id, audio_url, transcript, transcript_text, status, latest_stage, last_error, error_message, created_at, analysis_version
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
-                    record.file_path,
-                    record.filename,
-                    record.file_path,
-                    record.transcript_text,
-                    record.transcript_text,
-                    record.insights_json,
-                    record.error_message,
-                    record.error_message,
+                    record.audio_url,
+                    record.transcript,
+                    record.transcript,
                     record.status,
                     record.latest_stage,
+                    record.last_error,
+                    record.last_error,
                     record.created_at,
                     record.analysis_version,
                 ),
@@ -359,20 +360,24 @@ class PaydayRepository:
             connection.execute(
                 """
                 UPDATE interviews
-                SET audio_url = ?, filename = ?, file_path = ?, transcript = ?, transcript_text = ?, insights_json = ?, last_error = ?, error_message = ?, status = ?, latest_stage = ?, analysis_version = ?
+                SET audio_url = ?,
+                    transcript = ?,
+                    transcript_text = ?,
+                    status = ?,
+                    latest_stage = ?,
+                    last_error = ?,
+                    error_message = ?,
+                    analysis_version = ?
                 WHERE id = ?
                 """,
                 (
-                    updated.file_path,
-                    updated.filename,
-                    updated.file_path,
-                    updated.transcript_text,
-                    updated.transcript_text,
-                    updated.insights_json,
-                    updated.error_message,
-                    updated.error_message,
+                    updated.audio_url,
+                    updated.transcript,
+                    updated.transcript,
                     updated.status,
                     updated.latest_stage,
+                    updated.last_error,
+                    updated.last_error,
                     updated.analysis_version,
                     interview_id,
                 ),
@@ -383,20 +388,7 @@ class PaydayRepository:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT
-                    id,
-                    COALESCE(file_path, audio_url) AS audio_url,
-                    COALESCE(transcript_text, transcript) AS transcript,
-                    status,
-                    latest_stage,
-                    COALESCE(error_message, last_error) AS last_error,
-                    created_at,
-                    analysis_version,
-                    filename,
-                    file_path,
-                    transcript_text,
-                    insights_json,
-                    error_message
+                SELECT id, audio_url, COALESCE(transcript_text, transcript) AS transcript, status, latest_stage, COALESCE(error_message, last_error) AS last_error, created_at, analysis_version
                 FROM interviews
                 WHERE id = ?
                 """,
@@ -608,18 +600,10 @@ class PaydayRepository:
             connection.execute(
                 """
                 UPDATE interviews
-                SET transcript = ?, transcript_text = ?, last_error = ?, error_message = ?, status = ?, latest_stage = ?
+                SET transcript = ?, transcript_text = ?, status = ?, latest_stage = ?, last_error = ?, error_message = ?
                 WHERE id = ?
                 """,
-                (
-                    transcript,
-                    transcript,
-                    last_error,
-                    last_error,
-                    self._normalize_status(status),
-                    latest_stage,
-                    interview_id,
-                ),
+                (transcript, transcript, status, latest_stage, last_error, last_error, interview_id),
             )
             connection.execute(
                 """
@@ -715,8 +699,8 @@ class PaydayRepository:
                 FROM interviews
                 LEFT JOIN insights ON insights.interview_id = interviews.id
                 LEFT JOIN structured_responses ON structured_responses.interview_id = interviews.id
-                WHERE interviews.transcript_text IS NOT NULL
-                  AND TRIM(interviews.transcript_text) <> ''
+                WHERE COALESCE(interviews.transcript_text, interviews.transcript) IS NOT NULL
+                  AND TRIM(COALESCE(interviews.transcript_text, interviews.transcript)) <> ''
                   AND (
                     interviews.analysis_schema_version IS NULL
                     OR interviews.analysis_schema_version < ?
@@ -767,13 +751,11 @@ class PaydayRepository:
                 """
                 SELECT
                     interviews.id,
-                    interviews.filename,
-                    COALESCE(interviews.file_path, interviews.audio_url) AS file_path,
-                    COALESCE(interviews.transcript_text, interviews.transcript) AS transcript_text,
-                    interviews.insights_json,
+                    interviews.audio_url,
+                    COALESCE(interviews.transcript_text, interviews.transcript) AS transcript,
                     interviews.status,
                     interviews.latest_stage,
-                    COALESCE(interviews.error_message, interviews.last_error) AS error_message,
+                    COALESCE(interviews.error_message, interviews.last_error) AS last_error,
                     interviews.created_at,
                     interviews.analysis_version AS interview_analysis_version,
                     structured_responses.smartphone_user,
@@ -808,7 +790,7 @@ class PaydayRepository:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, status, error_message, transcript_text
+                SELECT id, status, COALESCE(error_message, last_error) AS last_error, COALESCE(transcript_text, transcript) AS transcript
                 FROM interviews
                 ORDER BY created_at DESC, id DESC
                 LIMIT ?
@@ -833,7 +815,7 @@ class PaydayRepository:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, status, error_message, transcript_text
+                SELECT id, status, COALESCE(error_message, last_error) AS last_error, COALESCE(transcript_text, transcript) AS transcript
                 FROM interviews
                 WHERE id IN ({placeholders})
                 ORDER BY created_at DESC, id DESC
@@ -927,13 +909,11 @@ class PaydayRepository:
                 """
                 SELECT
                     interviews.id,
-                    interviews.filename,
-                    COALESCE(interviews.file_path, interviews.audio_url) AS file_path,
-                    COALESCE(interviews.transcript_text, interviews.transcript) AS transcript_text,
-                    interviews.insights_json,
+                    interviews.audio_url,
+                    COALESCE(interviews.transcript_text, interviews.transcript) AS transcript,
                     interviews.status,
                     interviews.latest_stage,
-                    COALESCE(interviews.error_message, interviews.last_error) AS error_message,
+                    COALESCE(interviews.error_message, interviews.last_error) AS last_error,
                     interviews.created_at,
                     interviews.analysis_version AS interview_analysis_version,
                     structured_responses.smartphone_user,
