@@ -53,6 +53,9 @@ FILTER_SESSION_KEYS = {
     "overlay_open": "dashboard_interview_overlay_open",
     "force_sqlite_reload": "dashboard_force_sqlite_reload",
     "toast_message": "dashboard_toast_message",
+    "open_interview_pending_id": "dashboard_open_interview_pending_id",
+    "open_interview_pending_at": "dashboard_open_interview_pending_at",
+    "overlay_fallback_reason": "dashboard_overlay_fallback_reason",
 }
 
 
@@ -148,6 +151,9 @@ class DashboardRenderer:
         st.session_state.setdefault(FILTER_SESSION_KEYS["delete_confirm"], None)
         st.session_state.setdefault(FILTER_SESSION_KEYS["overlay_open"], False)
         st.session_state.setdefault(FILTER_SESSION_KEYS["toast_message"], None)
+        st.session_state.setdefault(FILTER_SESSION_KEYS["open_interview_pending_id"], None)
+        st.session_state.setdefault(FILTER_SESSION_KEYS["open_interview_pending_at"], None)
+        st.session_state.setdefault(FILTER_SESSION_KEYS["overlay_fallback_reason"], None)
 
         selected_key = FILTER_SESSION_KEYS["selected"]
         if interviews and not st.session_state.get(selected_key):
@@ -157,6 +163,8 @@ class DashboardRenderer:
         if not interviews:
             st.session_state[selected_key] = None
             st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = False
+            st.session_state[FILTER_SESSION_KEYS["open_interview_pending_id"]] = None
+            st.session_state[FILTER_SESSION_KEYS["open_interview_pending_at"]] = None
 
     def _render_pending_toast(self) -> None:
         toast = st.session_state.pop(FILTER_SESSION_KEYS["toast_message"], None)
@@ -476,14 +484,18 @@ class DashboardRenderer:
         if reanalyze_interviews is None or reanalyze_stale_interviews is None:
             st.caption("Reanalysis actions are unavailable because one or more backend handlers were not provided.")
 
-        overlay_rendered = self._render_overlay_if_needed(
-            filtered=filtered,
-            all_interviews=all_interviews,
-            interview_detail_loader=interview_detail_loader,
-            save_interview_edits=save_interview_edits,
-            reprocess_interview=reprocess_interview,
-            delete_interview=delete_interview,
-        )
+        try:
+            overlay_rendered = self._render_overlay_if_needed(
+                filtered=filtered,
+                all_interviews=all_interviews,
+                interview_detail_loader=interview_detail_loader,
+                save_interview_edits=save_interview_edits,
+                reprocess_interview=reprocess_interview,
+                delete_interview=delete_interview,
+            )
+        except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+            st.session_state[FILTER_SESSION_KEYS["overlay_fallback_reason"]] = f"{type(exc).__name__}: {exc}"
+            overlay_rendered = False
         if not overlay_rendered and st.session_state.get(FILTER_SESSION_KEYS["overlay_open"]):
             self._render_inline_detail_fallback(all_interviews=all_interviews)
 
@@ -1013,12 +1025,17 @@ class DashboardRenderer:
             unsafe_allow_html=True,
         )
         open_col, delete_col = st.columns(2, gap="small")
+        open_pending = self._is_open_action_in_progress(interview.id)
         with open_col:
-            if st.button("Open", key=f"open_interview_{interview.id}", use_container_width=True, type="primary"):
-                st.session_state[FILTER_SESSION_KEYS["selected"]] = interview.id
-                st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = True
-                st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
-                st.rerun()
+            open_label = "Opening interview…" if open_pending else "Open"
+            if st.button(
+                open_label,
+                key=f"open_interview_{interview.id}",
+                use_container_width=True,
+                type="primary",
+                disabled=open_pending,
+            ):
+                self._open_interview_overlay(interview.id)
         with delete_col:
             delete_disabled = delete_interview is None
             if st.button(
@@ -1078,7 +1095,13 @@ class DashboardRenderer:
             st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = False
             return False
 
-        selected = self._merge_detail_record(selected, interview_detail_loader)
+        try:
+            selected = self._merge_detail_record(selected, interview_detail_loader)
+        except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+            st.session_state[FILTER_SESSION_KEYS["overlay_fallback_reason"]] = (
+                f"Interview detail loader failed for {selected_id}: {type(exc).__name__}: {exc}"
+            )
+            return False
         transcript_edits: dict[str, str] = st.session_state[FILTER_SESSION_KEYS["transcripts"]]
         transcript_edits.setdefault(selected.id, selected.transcript)
         current_json = json.dumps(selected.extracted_json, indent=2, ensure_ascii=False)
@@ -1100,6 +1123,10 @@ class DashboardRenderer:
                 f"<div class='overlay-title'>{html.escape(selected.filename)}</div>",
                 unsafe_allow_html=True,
             )
+            st.markdown(
+                f"<div class='overlay-id-pill' aria-live='polite'>Selected Interview ID: <strong>{html.escape(selected.id)}</strong></div>",
+                unsafe_allow_html=True,
+            )
             st.caption(
                 f"Interview ID: {selected.id} · Created: {selected.created_at} · Status: {selected.status} · Stage: {selected.current_stage}"
             )
@@ -1109,10 +1136,17 @@ class DashboardRenderer:
                 f"<div class='persona-badge {badge_class} overlay-badge'>{html.escape(selected.persona_name)}</div>",
                 unsafe_allow_html=True,
             )
-            if st.button("Close overlay", key=f"close_overlay_{selected.id}", use_container_width=True):
+            if st.button(
+                "Close overlay",
+                key=f"close_overlay_{selected.id}",
+                use_container_width=True,
+                help="Keyboard accessible: focus this button with Tab and press Enter or Space.",
+            ):
                 st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = False
                 st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+                st.session_state[FILTER_SESSION_KEYS["overlay_fallback_reason"]] = None
                 st.rerun()
+        st.caption("Keyboard tip: press Tab to focus controls, then Enter/Space to activate Close.")
 
         top_col, side_col = st.columns([1.3, 1], gap="large")
         with top_col:
@@ -1267,17 +1301,37 @@ class DashboardRenderer:
                     st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
                     st.rerun()
 
+        close_footer_col, _ = st.columns([1, 3], gap="small")
+        with close_footer_col:
+            if st.button(
+                "Close interview detail",
+                key=f"close_overlay_footer_{selected.id}",
+                use_container_width=True,
+                help="Keyboard accessible close control.",
+            ):
+                st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = False
+                st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+                st.session_state[FILTER_SESSION_KEYS["overlay_fallback_reason"]] = None
+                st.rerun()
+
         st.markdown("</div>", unsafe_allow_html=True)
         return True
 
     def _render_inline_detail_fallback(self, *, all_interviews: list[DashboardInterview]) -> None:
         selected_id = st.session_state.get(FILTER_SESSION_KEYS["selected"])
         selected = next((item for item in all_interviews if item.id == selected_id), None)
+        fallback_reason = st.session_state.get(FILTER_SESSION_KEYS["overlay_fallback_reason"])
         if selected is None:
             st.warning("Detail overlay could not be rendered. Select an interview again.")
             return
         st.warning("Overlay was requested but could not render in this session. Showing inline detail fallback.")
+        if isinstance(fallback_reason, str) and fallback_reason.strip():
+            st.caption(f"Fallback reason: {fallback_reason}")
         with st.expander(f"Inline detail fallback · {selected.filename}", expanded=True):
+            st.markdown(
+                f"<div class='overlay-id-pill'>Selected Interview ID: <strong>{html.escape(selected.id)}</strong></div>",
+                unsafe_allow_html=True,
+            )
             st.caption(f"Interview ID: {selected.id} · Status: {selected.status} · Stage: {selected.current_stage}")
             st.markdown("**Summary**")
             st.write(selected.summary or "No summary captured yet.")
@@ -1291,9 +1345,15 @@ class DashboardRenderer:
                 label_visibility="collapsed",
             )
             self._render_formatted_insights(selected)
-            if st.button("Close fallback detail", key=f"close_fallback_{selected.id}", use_container_width=False):
+            if st.button(
+                "Close fallback detail",
+                key=f"close_fallback_{selected.id}",
+                use_container_width=False,
+                help="Keyboard accessible close control.",
+            ):
                 st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = False
                 st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+                st.session_state[FILTER_SESSION_KEYS["overlay_fallback_reason"]] = None
                 st.rerun()
 
     def _render_interview_row_actions(self, interviews: list[DashboardInterview]) -> None:
@@ -1303,7 +1363,14 @@ class DashboardRenderer:
                 row_cols[0].markdown(f"**{html.escape(interview.filename)}**")
                 row_cols[1].caption(f"ID: {interview.id}")
                 row_cols[2].caption(interview.persona_name)
-                if row_cols[3].button("Open", key=f"open_row_{interview.id}", use_container_width=True):
+                open_pending = self._is_open_action_in_progress(interview.id)
+                label = "Opening…" if open_pending else "Open"
+                if row_cols[3].button(
+                    label,
+                    key=f"open_row_{interview.id}",
+                    use_container_width=True,
+                    disabled=open_pending,
+                ):
                     self._open_interview_overlay(interview.id)
 
     def _render_overlay_debug_indicator(self) -> None:
@@ -1325,16 +1392,37 @@ class DashboardRenderer:
         st.toast(message, icon=icon)
         st.session_state[FILTER_SESSION_KEYS["toast_message"]] = None
 
+    def _is_open_action_in_progress(self, interview_id: str) -> bool:
+        pending_id = st.session_state.get(FILTER_SESSION_KEYS["open_interview_pending_id"])
+        pending_at = st.session_state.get(FILTER_SESSION_KEYS["open_interview_pending_at"])
+        if pending_id != interview_id:
+            return False
+        try:
+            pending_seconds = float(pending_at)
+        except (TypeError, ValueError):
+            return False
+        elapsed = datetime.now(timezone.utc).timestamp() - pending_seconds
+        if elapsed < 0:
+            return False
+        if elapsed <= 1.2:
+            return True
+        st.session_state[FILTER_SESSION_KEYS["open_interview_pending_id"]] = None
+        st.session_state[FILTER_SESSION_KEYS["open_interview_pending_at"]] = None
+        return False
+
     def _open_interview_overlay(self, interview_id: str) -> None:
+        st.session_state[FILTER_SESSION_KEYS["open_interview_pending_id"]] = interview_id
+        st.session_state[FILTER_SESSION_KEYS["open_interview_pending_at"]] = datetime.now(timezone.utc).timestamp()
         st.session_state[FILTER_SESSION_KEYS["selected"]] = interview_id
         st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = True
         st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+        st.session_state[FILTER_SESSION_KEYS["overlay_fallback_reason"]] = None
         toast_payload = {
-            "kind": "success",
-            "message": f"Opened interview {interview_id}.",
+            "kind": "info",
+            "message": "Opening interview…",
         }
         st.session_state[FILTER_SESSION_KEYS["toast_message"]] = toast_payload
-        st.toast(toast_payload["message"], icon="✅")
+        st.toast(toast_payload["message"], icon="ℹ️")
         st.rerun()
 
     def _is_dev_mode(self) -> bool:
@@ -2171,6 +2259,18 @@ class DashboardRenderer:
             .overlay-badge {{
                 margin-bottom: 8px;
             }}
+            .overlay-id-pill {{
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                background: rgba(79, 70, 229, 0.16);
+                color: #C7D2FE;
+                border: 1px solid rgba(79, 70, 229, 0.4);
+                border-radius: 999px;
+                padding: 6px 12px;
+                font-size: 12px;
+                margin-bottom: 8px;
+            }}
             .badge-target {{
                 background: rgba(20, 184, 166, 0.14);
                 color: #99F6E4;
@@ -2251,6 +2351,7 @@ class DashboardRenderer:
             .stButton > button:focus-visible, .stDownloadButton > button:focus-visible {{
                 outline: 2px solid var(--pd-primary);
                 outline-offset: 2px;
+                box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.3);
             }}
             .stTextInput label, .stMultiSelect label, .stTextArea label, .stSelectbox label {{
                 font-size: 14px !important;
