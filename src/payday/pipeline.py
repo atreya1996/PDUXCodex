@@ -307,7 +307,7 @@ class PaydayPipeline:
                 payload = json.loads(extracted_json)
             except json.JSONDecodeError as exc:
                 raise ValueError(f"Extracted JSON is invalid: {exc.msg}") from exc
-            return self._analysis_from_payload(payload, transcript)
+            return self._analysis_from_payload(payload, transcript, evidence_mode="manual_edit")
 
         if transcript_changed:
             analysis, attempts = self.analyze_transcript(transcript)
@@ -317,12 +317,19 @@ class PaydayPipeline:
 
         return self._analysis_from_payload(self._dashboard_payload_from_record(detail), transcript)
 
-    def _analysis_from_payload(self, payload: dict[str, Any], transcript: Transcript) -> AnalysisResult:
+    def _analysis_from_payload(
+        self,
+        payload: dict[str, Any],
+        transcript: Transcript,
+        *,
+        evidence_mode: str = "strict",
+    ) -> AnalysisResult:
         normalized_payload = self._normalize_edit_payload(payload)
         try:
             structured_output = self.analysis_service._parse_and_validate(  # noqa: SLF001
                 json.dumps(normalized_payload, ensure_ascii=False),
                 transcript.text,
+                metadata={"evidence_mode": evidence_mode, "edit_source": "dashboard"},
             )
         except AnalysisSchemaError as exc:
             raise ValueError(str(exc)) from exc
@@ -338,6 +345,7 @@ class PaydayPipeline:
                 "analysis_model": "manual-json",
                 "json_attempts": 1,
                 "edit_source": "structured_json",
+                "evidence_mode": evidence_mode,
             },
             structured_output=structured_output,
             evidence_quotes=structured_output["key_quotes"],

@@ -47,7 +47,10 @@ FILTER_SESSION_KEYS = {
     "borrowing": "dashboard_filter_borrowing",
     "persona": "dashboard_filter_persona",
     "digital_access": "dashboard_filter_digital_access",
+    "include_low_quality": "dashboard_include_low_quality",
+    "interview_page": "dashboard_interview_page",
     "search": "dashboard_search_query",
+    "include_low_quality": "dashboard_include_low_quality",
     "selected": "dashboard_selected_interview_id",
     "detail_open": "dashboard_detail_overlay_open",
     "transcripts": "dashboard_transcript_edits",
@@ -63,9 +66,11 @@ FILTER_SESSION_KEYS = {
     "interview_page": "dashboard_interview_page",
 }
 CARD_SUMMARY_SNIPPET_LIMIT = 120
+CARD_TRANSCRIPT_PREVIEW_LIMIT = 80
 MAX_UI_TRANSCRIPT_CHARS = 12000
 MAX_MAIN_LIST_QUOTES = 3
 INTERVIEW_CARDS_PER_PAGE = 8
+MAX_TABLE_ROWS_PER_VIEW = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,7 +167,10 @@ class DashboardRenderer:
         st.session_state.setdefault(FILTER_SESSION_KEYS["borrowing"], [])
         st.session_state.setdefault(FILTER_SESSION_KEYS["persona"], [])
         st.session_state.setdefault(FILTER_SESSION_KEYS["digital_access"], [])
+        st.session_state.setdefault(FILTER_SESSION_KEYS["include_low_quality"], False)
+        st.session_state.setdefault(FILTER_SESSION_KEYS["interview_page"], 1)
         st.session_state.setdefault(FILTER_SESSION_KEYS["search"], "")
+        st.session_state.setdefault(FILTER_SESSION_KEYS["include_low_quality"], False)
         st.session_state.setdefault(FILTER_SESSION_KEYS["detail_open"], False)
         st.session_state.setdefault(FILTER_SESSION_KEYS["transcripts"], {})
         st.session_state.setdefault(FILTER_SESSION_KEYS["detail_message"], None)
@@ -198,11 +206,11 @@ class DashboardRenderer:
         st.toast(message, icon=icon)
 
     def _apply_filters(self, interviews: list[DashboardInterview]) -> list[DashboardInterview]:
-        search_query = st.session_state[FILTER_SESSION_KEYS["search"]].strip().lower()
-        income_filters = set(st.session_state[FILTER_SESSION_KEYS["income"]])
-        borrowing_filters = set(st.session_state[FILTER_SESSION_KEYS["borrowing"]])
-        persona_filters = set(st.session_state[FILTER_SESSION_KEYS["persona"]])
-        digital_filters = set(st.session_state[FILTER_SESSION_KEYS["digital_access"]])
+        search_query = str(st.session_state.get(FILTER_SESSION_KEYS["search"], "")).strip().lower()
+        income_filters = set(st.session_state.get(FILTER_SESSION_KEYS["income"], []))
+        borrowing_filters = set(st.session_state.get(FILTER_SESSION_KEYS["borrowing"], []))
+        persona_filters = set(st.session_state.get(FILTER_SESSION_KEYS["persona"], []))
+        digital_filters = set(st.session_state.get(FILTER_SESSION_KEYS["digital_access"], []))
 
         filtered: list[DashboardInterview] = []
         for interview in interviews:
@@ -290,7 +298,7 @@ class DashboardRenderer:
     ) -> None:
         self._render_page_intro(
             "Overview",
-            "Prominent KPIs, normalized portfolio views, and evidence-first summaries for the current filter set.",
+            "Use this page to quickly understand interview volume, digital access, borrowing behavior, and key supporting quotes for the current filters.",
         )
         comparable, excluded_count = self._cohort_base(filtered)
         self._render_status_strip(all_interviews, status_overview)
@@ -357,7 +365,7 @@ class DashboardRenderer:
     ) -> None:
         self._render_page_intro(
             "Cohorts",
-            "Filters stay in the sidebar; this tab answers core research questions about digital access, borrowing behavior, and persona mix.",
+            "Compare user insight groups from the selected interviews: digital access, borrowing behavior, and persona mix.",
         )
         comparable, excluded_count = self._cohort_base(filtered)
         self._render_analysis_version_notice(filtered)
@@ -389,12 +397,13 @@ class DashboardRenderer:
                 rows=self._build_cohort_rows(comparable, "persona_name"),
                 headers=("Persona", "Count", "% of filtered"),
             )
-            self._render_table_card(
-                title="Processing cohorts",
-                subtitle="Grouped by durable pipeline status.",
-                rows=self._build_cohort_rows(comparable, "status"),
-                headers=("Status", "Count", "% of filtered"),
-            )
+            if self._is_admin_mode():
+                self._render_table_card(
+                    title="Pipeline status cohorts (admin)",
+                    subtitle="Grouped by backend processing status for troubleshooting.",
+                    rows=self._build_cohort_rows(comparable, "status"),
+                    headers=("Status", "Count", "% of filtered"),
+                )
 
     def _render_personas(self, filtered: list[DashboardInterview], *, sample_mode: bool) -> None:
         self._render_page_intro(
@@ -453,9 +462,8 @@ class DashboardRenderer:
     ) -> None:
         self._render_page_intro(
             "Interviews",
-            "Browse interview cards, then open a modal-style overlay for audio, transcript editing, formatted insights, and persona review.",
+            "Browse interview cards, then open details to review audio, transcript evidence, and persona outcomes.",
         )
-        self._render_interviews_visual_regression_checklist()
         self._render_transcription_failure_alert(filtered)
 
         if not filtered:
@@ -466,49 +474,55 @@ class DashboardRenderer:
             )
             return
 
-        action_col1, action_col2, action_col3, action_col4 = st.columns(4, gap="small")
-        stale_count = len(list_stale_interview_ids()) if list_stale_interview_ids is not None else None
-        failed_malformed_count = len(list_failed_or_malformed_ids()) if list_failed_or_malformed_ids is not None else None
-        stale_corrupted_count = len(list_stale_corrupted_ids()) if list_stale_corrupted_ids is not None else None
+        reanalyze_filtered_clicked = False
+        reanalyze_stale_clicked = False
+        reprocess_failed_clicked = False
+        delete_stale_corrupted_clicked = False
+        if self._is_admin_mode():
+            self._render_interviews_visual_regression_checklist()
+            action_col1, action_col2, action_col3, action_col4 = st.columns(4, gap="small")
+            stale_count = len(list_stale_interview_ids()) if list_stale_interview_ids is not None else None
+            failed_malformed_count = len(list_failed_or_malformed_ids()) if list_failed_or_malformed_ids is not None else None
+            stale_corrupted_count = len(list_stale_corrupted_ids()) if list_stale_corrupted_ids is not None else None
 
-        with action_col1:
-            filtered_label = f"Reanalyze filtered ({len(filtered)})"
-            reanalyze_filtered_clicked = st.button(
-                filtered_label,
-                key="reanalyze_filtered_dashboard",
-                use_container_width=True,
-                disabled=reanalyze_interviews is None or not filtered,
-            )
-        with action_col2:
-            stale_label = "Reanalyze all stale"
-            if stale_count is not None:
-                stale_label += f" ({stale_count})"
-            reanalyze_stale_clicked = st.button(
-                stale_label,
-                key="reanalyze_stale_dashboard",
-                use_container_width=True,
-                disabled=reanalyze_stale_interviews is None or stale_count == 0,
-            )
-        with action_col3:
-            failed_malformed_label = "Reprocess failed/malformed"
-            if failed_malformed_count is not None:
-                failed_malformed_label += f" ({failed_malformed_count})"
-            reprocess_failed_clicked = st.button(
-                failed_malformed_label,
-                key="reprocess_failed_malformed_dashboard",
-                use_container_width=True,
-                disabled=reprocess_failed_or_malformed is None or failed_malformed_count == 0,
-            )
-        with action_col4:
-            delete_corrupted_label = "Delete stale corrupted"
-            if stale_corrupted_count is not None:
-                delete_corrupted_label += f" ({stale_corrupted_count})"
-            delete_stale_corrupted_clicked = st.button(
-                delete_corrupted_label,
-                key="delete_stale_corrupted_dashboard",
-                use_container_width=True,
-                disabled=delete_stale_corrupted is None or stale_corrupted_count == 0,
-            )
+            with action_col1:
+                filtered_label = f"Reanalyze filtered ({len(filtered)})"
+                reanalyze_filtered_clicked = st.button(
+                    filtered_label,
+                    key="reanalyze_filtered_dashboard",
+                    use_container_width=True,
+                    disabled=reanalyze_interviews is None or not filtered,
+                )
+            with action_col2:
+                stale_label = "Reanalyze all stale"
+                if stale_count is not None:
+                    stale_label += f" ({stale_count})"
+                reanalyze_stale_clicked = st.button(
+                    stale_label,
+                    key="reanalyze_stale_dashboard",
+                    use_container_width=True,
+                    disabled=reanalyze_stale_interviews is None or stale_count == 0,
+                )
+            with action_col3:
+                failed_malformed_label = "Reprocess failed/malformed"
+                if failed_malformed_count is not None:
+                    failed_malformed_label += f" ({failed_malformed_count})"
+                reprocess_failed_clicked = st.button(
+                    failed_malformed_label,
+                    key="reprocess_failed_malformed_dashboard",
+                    use_container_width=True,
+                    disabled=reprocess_failed_or_malformed is None or failed_malformed_count == 0,
+                )
+            with action_col4:
+                delete_corrupted_label = "Delete stale corrupted"
+                if stale_corrupted_count is not None:
+                    delete_corrupted_label += f" ({stale_corrupted_count})"
+                delete_stale_corrupted_clicked = st.button(
+                    delete_corrupted_label,
+                    key="delete_stale_corrupted_dashboard",
+                    use_container_width=True,
+                    disabled=delete_stale_corrupted is None or stale_corrupted_count == 0,
+                )
 
         if reanalyze_filtered_clicked:
             try:
@@ -588,7 +602,7 @@ class DashboardRenderer:
                 st.session_state[FILTER_SESSION_KEYS["force_sqlite_reload"]] = True
             st.rerun()
 
-        if reanalyze_interviews is None or reanalyze_stale_interviews is None:
+        if self._is_admin_mode() and (reanalyze_interviews is None or reanalyze_stale_interviews is None):
             st.caption("Reanalysis actions are unavailable because one or more backend handlers were not provided.")
 
         try:
@@ -609,11 +623,22 @@ class DashboardRenderer:
         self._render_overlay_debug_indicator()
 
         total_cards = len(filtered)
-        visible_cards = self._visible_interview_cards(filtered, cards_per_page=INTERVIEW_CARDS_PER_PAGE)
+        current_page, max_page = self._render_interview_pagination_controls(
+            total_cards=total_cards,
+            cards_per_page=INTERVIEW_CARDS_PER_PAGE,
+        )
+        visible_cards = self._visible_interview_cards(
+            filtered,
+            cards_per_page=INTERVIEW_CARDS_PER_PAGE,
+            page=current_page,
+        )
         if not visible_cards:
             st.info("No interview cards available for the current page.")
             return
-        st.caption(f"Showing {len(visible_cards)} of {total_cards} interviews.")
+        st.caption(
+            f"Showing page {current_page}/{max_page} with {len(visible_cards)} card(s) "
+            f"(capped at {INTERVIEW_CARDS_PER_PAGE} per page) from {total_cards} interviews."
+        )
 
         st.markdown("<div class='pd-grid-section'>", unsafe_allow_html=True)
         card_columns = st.columns(2, gap="large")
@@ -626,16 +651,6 @@ class DashboardRenderer:
                 )
         st.markdown("</div>", unsafe_allow_html=True)
 
-        if len(visible_cards) < total_cards:
-            if st.button(
-                "Load more interviews",
-                key="load_more_interviews_cards",
-                use_container_width=True,
-            ):
-                st.session_state[FILTER_SESSION_KEYS["interview_page"]] = (
-                    st.session_state.get(FILTER_SESSION_KEYS["interview_page"], 1) + 1
-                )
-                st.rerun()
 
     def _render_interviews_visual_regression_checklist(self) -> None:
         st.markdown(
@@ -702,7 +717,7 @@ class DashboardRenderer:
             ("Filtered interviews", str(len(filtered))),
             ("Portfolio interviews", str(len(all_interviews))),
             ("Durable interviews", str(status_overview.total_interviews)),
-            ("Search term", st.session_state[FILTER_SESSION_KEYS["search"]].strip() or "All"),
+            ("Search term", str(st.session_state.get(FILTER_SESSION_KEYS["search"], "")).strip() or "All"),
         ]
         columns = st.columns(len(values), gap="medium")
         for column, (label, value) in zip(columns, values, strict=False):
@@ -1058,9 +1073,10 @@ class DashboardRenderer:
         rows: list[tuple[str, int, str]],
         headers: tuple[str, str, str],
     ) -> None:
+        visible_rows = rows[:MAX_TABLE_ROWS_PER_VIEW]
         table_rows = "".join(
             f"<tr><td>{html.escape(label)}</td><td>{count}</td><td>{html.escape(share)}</td></tr>"
-            for label, count, share in rows
+            for label, count, share in visible_rows
         )
         st.markdown(
             f"""
@@ -1077,6 +1093,10 @@ class DashboardRenderer:
             """,
             unsafe_allow_html=True,
         )
+        if len(rows) > len(visible_rows):
+            st.caption(
+                f"Showing {len(visible_rows)} of {len(rows)} rows in this view to keep dashboard rendering fast."
+            )
 
     def _render_summary_blocks(self, interviews: list[DashboardInterview]) -> None:
         incomes = self._numeric_income_values(interviews)
@@ -1191,6 +1211,7 @@ class DashboardRenderer:
                     <span class='meta-value'>{html.escape(interview.analysis_version or "Unknown")}</span>
                 </div>
                 <div class='interview-summary'>{summary}</div>
+                <div class='interview-summary'><strong>Transcript preview:</strong> {transcript_preview}</div>
                 <div class='interview-meta-grid'>
                     <div><span class='meta-label'>Borrowing</span><span class='meta-value'>{html.escape(interview.borrowing_label)}</span></div>
                     <div><span class='meta-label'>Income</span><span class='meta-value'>{html.escape(interview.income_band)}</span></div>
@@ -1359,48 +1380,52 @@ class DashboardRenderer:
                 self._render_segmented_dialogue(dialogue_turns)
 
         transcript_changed = updated_transcript != selected.transcript
-        action_col, delete_col = st.columns([2, 1], gap="medium")
+        if self._is_admin_mode():
+            action_col, delete_col = st.columns([2, 1], gap="medium")
+        else:
+            action_col, delete_col = st.columns([1, 1], gap="medium")
         with action_col:
-            if st.button(
-                "Re-analyze selected interview",
-                key=f"reanalyze_selected_overlay_{selected.id}",
-                use_container_width=False,
-                disabled=reprocess_interview is None,
-            ):
-                try:
-                    reprocess_interview(selected.id)
-                except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
-                    st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                        "kind": "error",
-                        "message": f"Re-analysis failed: {exc}",
-                    }
-                else:
-                    transcript_edits.pop(selected.id, None)
-                    st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                        "kind": "success",
-                        "message": "Interview analysis was refreshed.",
-                    }
-                st.rerun()
-            if st.button(
-                "Reprocess interview",
-                key=f"reprocess_overlay_{selected.id}",
-                use_container_width=False,
-                disabled=reprocess_interview is None,
-            ):
-                try:
-                    reprocess_interview(selected.id)
-                except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
-                    st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                        "kind": "error",
-                        "message": f"Re-analysis failed: {exc}",
-                    }
-                else:
-                    transcript_edits.pop(selected.id, None)
-                    st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                        "kind": "success",
-                        "message": "Interview was refreshed.",
-                    }
-                st.rerun()
+            if self._is_admin_mode():
+                if st.button(
+                    "Re-analyze selected interview",
+                    key=f"reanalyze_selected_overlay_{selected.id}",
+                    use_container_width=False,
+                    disabled=reprocess_interview is None,
+                ):
+                    try:
+                        reprocess_interview(selected.id)
+                    except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+                        st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                            "kind": "error",
+                            "message": f"Re-analysis failed: {exc}",
+                        }
+                    else:
+                        transcript_edits.pop(selected.id, None)
+                        st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                            "kind": "success",
+                            "message": "Interview analysis was refreshed.",
+                        }
+                    st.rerun()
+                if st.button(
+                    "Reprocess interview",
+                    key=f"reprocess_overlay_{selected.id}",
+                    use_container_width=False,
+                    disabled=reprocess_interview is None,
+                ):
+                    try:
+                        reprocess_interview(selected.id)
+                    except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+                        st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                            "kind": "error",
+                            "message": f"Re-analysis failed: {exc}",
+                        }
+                    else:
+                        transcript_edits.pop(selected.id, None)
+                        st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                            "kind": "success",
+                            "message": "Interview was refreshed.",
+                        }
+                    st.rerun()
 
             save_disabled = save_interview_edits is None or not transcript_changed
             transcript_col, json_col, save_all_col = st.columns(3, gap="small")
@@ -1438,7 +1463,7 @@ class DashboardRenderer:
                 )
             if save_interview_edits is None:
                 st.caption("Saving edits is unavailable right now. Please refresh and try again.")
-            if reprocess_interview is None:
+            if self._is_admin_mode() and reprocess_interview is None:
                 st.caption("Refresh analysis is unavailable right now. Please refresh and try again.")
             elif not transcript_changed:
                 st.caption("No transcript edits to save.")
@@ -1446,19 +1471,24 @@ class DashboardRenderer:
                 st.caption("Saving reruns downstream analysis and persona derivation without exposing raw JSON in the UI.")
             st.caption("Structured JSON editing was intentionally removed from the main UI. The buttons remain visible for workflow continuity.")
         with delete_col:
-            delete_disabled = delete_interview is None
-            if st.button(
-                "Delete interview",
-                key=f"delete_interview_overlay_{selected.id}",
-                use_container_width=True,
-                disabled=delete_disabled,
-            ):
-                st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = selected.id
-                st.rerun()
-            if delete_disabled:
-                st.caption("Delete is unavailable right now. Please refresh and try again.")
+            if self._is_admin_mode():
+                delete_disabled = delete_interview is None
+                if st.button(
+                    "Delete interview",
+                    key=f"delete_interview_overlay_{selected.id}",
+                    use_container_width=True,
+                    disabled=delete_disabled,
+                ):
+                    st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = selected.id
+                    st.rerun()
+                if delete_disabled:
+                    st.caption("Delete is unavailable right now. Please refresh and try again.")
 
-        if st.session_state.get(FILTER_SESSION_KEYS["delete_confirm"]) == selected.id and delete_interview is not None:
+        if (
+            self._is_admin_mode()
+            and st.session_state.get(FILTER_SESSION_KEYS["delete_confirm"]) == selected.id
+            and delete_interview is not None
+        ):
             st.warning(
                 "Delete this interview? This also removes its transcript, insights, and related audio file."
             )
@@ -1608,13 +1638,25 @@ class DashboardRenderer:
         st.toast(toast_payload["message"], icon="ℹ️")
         st.rerun()
 
-    def _is_dev_mode(self) -> bool:
-        dev_flags = (
-            os.getenv("PAYDAY_DEV_MODE", ""),
-            os.getenv("STREAMLIT_ENV", ""),
-            os.getenv("ENV", ""),
-        )
-        return any(flag.strip().lower() in {"1", "true", "yes", "dev", "development"} for flag in dev_flags)
+    def _is_admin_mode(self) -> bool:
+        raw_value = st.session_state.get("payday_dev_mode")
+        if raw_value is None:
+            raw_value = st.session_state.get("payday_admin_mode")
+        if raw_value is None:
+            env_values = (
+                os.getenv("PAYDAY_ADMIN_MODE"),
+                os.getenv("PAYDAY_DEV_MODE"),
+                os.getenv("STREAMLIT_ENV"),
+                os.getenv("ENV"),
+            )
+            raw_value = next((value for value in env_values if value is not None), None)
+        if raw_value is None:
+            return False
+        if isinstance(raw_value, bool):
+            return raw_value
+        if isinstance(raw_value, str):
+            return raw_value.strip().casefold() in {"1", "true", "yes", "on", "admin", "dev", "development"}
+        return bool(raw_value)
 
     def _render_formatted_insights(self, interview: DashboardInterview) -> None:
         sections = [
@@ -2293,14 +2335,37 @@ class DashboardRenderer:
         interviews: list[DashboardInterview],
         *,
         cards_per_page: int,
+        page: int,
     ) -> list[DashboardInterview]:
         total = len(interviews)
-        max_page = max(1, (total + cards_per_page - 1) // cards_per_page)
+        max_page = max(1, (total + cards_per_page - 1) // cards_per_page) if cards_per_page > 0 else 1
+        safe_page = min(max(page, 1), max_page)
+        start_index = (safe_page - 1) * cards_per_page
+        end_index = start_index + cards_per_page
+        return interviews[start_index:end_index]
+
+    def _render_interview_pagination_controls(self, *, total_cards: int, cards_per_page: int) -> tuple[int, int]:
+        max_page = max(1, (total_cards + cards_per_page - 1) // cards_per_page) if cards_per_page > 0 else 1
         current_page = int(st.session_state.get(FILTER_SESSION_KEYS["interview_page"], 1))
         current_page = min(max(current_page, 1), max_page)
         st.session_state[FILTER_SESSION_KEYS["interview_page"]] = current_page
-        end_index = current_page * cards_per_page
-        return interviews[:end_index]
+
+        if max_page <= 1:
+            return current_page, max_page
+
+        pagination_cols = st.columns([1, 2, 1], gap="small")
+        with pagination_cols[0]:
+            if st.button("Previous page", key="interviews_page_prev", use_container_width=True, disabled=current_page <= 1):
+                st.session_state[FILTER_SESSION_KEYS["interview_page"]] = current_page - 1
+                st.rerun()
+        with pagination_cols[1]:
+            st.caption(f"Interviews page {current_page} of {max_page} ({cards_per_page} cards per page max).")
+        with pagination_cols[2]:
+            if st.button("Next page", key="interviews_page_next", use_container_width=True, disabled=current_page >= max_page):
+                st.session_state[FILTER_SESSION_KEYS["interview_page"]] = current_page + 1
+                st.rerun()
+
+        return current_page, max_page
 
     def _evidence_quotes_for(
         self,
