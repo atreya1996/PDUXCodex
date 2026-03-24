@@ -12,6 +12,7 @@ from payday.upload import SUPPORTED_UPLOAD_EXTENSIONS
 
 REFRESH_STATUS_FLAG = "dashboard_status_reloaded"
 FORCE_SQLITE_RELOAD_FLAG = "dashboard_force_sqlite_reload"
+REPROCESS_STALE_FLAG = "dashboard_reprocess_stale_result"
 
 
 @st.cache_resource
@@ -154,7 +155,7 @@ def main() -> None:
         save_interview_edits=getattr(app_service, "save_interview_edits", None),
         reprocess_interview=getattr(app_service, "reprocess_interview", None),
         reanalyze_interviews=getattr(app_service, "reanalyze_interviews", None),
-        delete_interview=getattr(app_service, "delete_interview", None),
+        delete_interview=getattr(app_service, "delete_interview", lambda _interview_id: False),
         sample_mode=settings.features.use_sample_mode,
     )
 
