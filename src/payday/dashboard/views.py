@@ -53,6 +53,7 @@ FILTER_SESSION_KEYS = {
     "overlay_open": "dashboard_interview_overlay_open",
     "force_sqlite_reload": "dashboard_force_sqlite_reload",
     "toast_message": "dashboard_toast_message",
+    "include_low_quality": "dashboard_include_low_quality_rows",
 }
 
 
@@ -79,6 +80,7 @@ class DashboardInterview:
     smartphone_user: bool | None
     has_bank_account: bool | None
     digital_access: str
+    transcript_quality: str
     extracted_json: dict[str, Any]
     evidence_quotes: tuple[str, ...]
     segmented_dialogue: tuple[dict[str, Any], ...] = ()
@@ -99,8 +101,12 @@ class DashboardRenderer:
         save_interview_edits: Callable[..., DashboardInterviewRecord] | None = None,
         reprocess_interview: Callable[[str], DashboardInterviewRecord] | None = None,
         reanalyze_interviews: Callable[[list[str]], list[DashboardInterviewRecord]] | None = None,
-        reanalyze_stale_interviews: Callable[[], list[DashboardInterviewRecord]] | None = None,
+        reanalyze_stale_interviews: Callable[[], dict[str, object]] | None = None,
         list_stale_interview_ids: Callable[[], list[str]] | None = None,
+        reprocess_failed_or_malformed: Callable[[], dict[str, object]] | None = None,
+        list_failed_or_malformed_ids: Callable[[], list[str]] | None = None,
+        delete_stale_corrupted: Callable[[], dict[str, object]] | None = None,
+        list_stale_corrupted_ids: Callable[[], list[str]] | None = None,
         delete_interview: Callable[[str], bool] | None = None,
         sample_mode: bool = False,
     ) -> None:
@@ -132,6 +138,10 @@ class DashboardRenderer:
                 reanalyze_interviews=reanalyze_interviews,
                 reanalyze_stale_interviews=reanalyze_stale_interviews,
                 list_stale_interview_ids=list_stale_interview_ids,
+                reprocess_failed_or_malformed=reprocess_failed_or_malformed,
+                list_failed_or_malformed_ids=list_failed_or_malformed_ids,
+                delete_stale_corrupted=delete_stale_corrupted,
+                list_stale_corrupted_ids=list_stale_corrupted_ids,
                 delete_interview=delete_interview,
                 sample_mode=sample_mode,
             )
@@ -148,6 +158,7 @@ class DashboardRenderer:
         st.session_state.setdefault(FILTER_SESSION_KEYS["delete_confirm"], None)
         st.session_state.setdefault(FILTER_SESSION_KEYS["overlay_open"], False)
         st.session_state.setdefault(FILTER_SESSION_KEYS["toast_message"], None)
+        st.session_state.setdefault(FILTER_SESSION_KEYS["include_low_quality"], False)
 
         selected_key = FILTER_SESSION_KEYS["selected"]
         if interviews and not st.session_state.get(selected_key):
@@ -244,6 +255,11 @@ class DashboardRenderer:
             key=FILTER_SESSION_KEYS["search"],
             placeholder="Search filename, quote, summary, transcript",
         )
+        st.sidebar.checkbox(
+            "Include failed/malformed in cohort metrics",
+            key=FILTER_SESSION_KEYS["include_low_quality"],
+            help="Off by default so borrower/persona cohorts use only good-quality transcripts.",
+        )
         st.sidebar.caption(
             f"Showing {len(filtered)} of {len(all_interviews)} interviews. Durable interviews in SQLite: {status_overview.total_interviews}."
         )
@@ -260,11 +276,13 @@ class DashboardRenderer:
             "Overview",
             "Prominent KPIs, normalized portfolio views, and evidence-first summaries for the current filter set.",
         )
+        comparable, excluded_count = self._cohort_base(filtered)
         self._render_status_strip(all_interviews, status_overview)
         self._render_analysis_version_notice(filtered)
-        self._render_kpis(filtered, status_overview)
+        self._render_kpis(comparable, status_overview)
+        self._render_quality_denominator_note(excluded_count=excluded_count, total_count=len(filtered))
 
-        if not filtered:
+        if not comparable:
             if all_interviews:
                 self._render_empty_state(
                     "No interviews match the current filters",
@@ -284,34 +302,34 @@ class DashboardRenderer:
             self._render_chart_card(
                 title="Income bands",
                 subtitle="Counts are normalized to the current filtered cohort.",
-                values=self._count_by(filtered, lambda item: item.income_band),
+                values=self._count_by(comparable, lambda item: item.income_band),
                 color=DESIGN_SYSTEM["primary"],
             )
             self._render_chart_card(
                 title="Borrowing behavior",
                 subtitle="Borrower vs non-borrower split across the filtered interviews.",
-                values=self._count_by(filtered, lambda item: item.borrowing_label),
+                values=self._count_by(comparable, lambda item: item.borrowing_label),
                 color="#22C55E",
             )
         with table_col:
             self._render_table_card(
                 title="Persona mix",
                 subtitle="Share of filtered interviews by assigned persona.",
-                rows=self._build_cohort_rows(filtered, "persona_name"),
+                rows=self._build_cohort_rows(comparable, "persona_name"),
                 headers=("Persona", "Count", "% of filtered"),
             )
             self._render_table_card(
                 title="Digital access",
                 subtitle="Targeting status based on smartphone and bank-account evidence.",
-                rows=self._build_cohort_rows(filtered, "digital_access"),
+                rows=self._build_cohort_rows(comparable, "digital_access"),
                 headers=("Cohort", "Count", "% of filtered"),
             )
 
         summary_col, quote_col = st.columns([1, 1], gap="large")
         with summary_col:
-            self._render_summary_blocks(filtered)
+            self._render_summary_blocks(comparable)
         with quote_col:
-            self._render_evidence_highlights(filtered)
+            self._render_evidence_highlights(comparable)
 
     def _render_cohorts(
         self,
@@ -324,10 +342,12 @@ class DashboardRenderer:
             "Cohorts",
             "Filters stay in the sidebar; this tab groups the current cohort into clean comparison tables.",
         )
+        comparable, excluded_count = self._cohort_base(filtered)
         self._render_analysis_version_notice(filtered)
         self._render_filter_snapshot(filtered, all_interviews, status_overview)
+        self._render_quality_denominator_note(excluded_count=excluded_count, total_count=len(filtered))
 
-        if not filtered:
+        if not comparable:
             st.info("No cohorts to summarize for the current filter set.")
             return
 
@@ -336,26 +356,26 @@ class DashboardRenderer:
             self._render_table_card(
                 title="Digital access cohorts",
                 subtitle="Grouped by eligibility and access signals.",
-                rows=self._build_cohort_rows(filtered, "digital_access"),
+                rows=self._build_cohort_rows(comparable, "digital_access"),
                 headers=("Cohort", "Count", "% of filtered"),
             )
             self._render_table_card(
                 title="Borrowing cohorts",
                 subtitle="Grouped by borrowing behavior label.",
-                rows=self._build_cohort_rows(filtered, "borrowing_label"),
+                rows=self._build_cohort_rows(comparable, "borrowing_label"),
                 headers=("Cohort", "Count", "% of filtered"),
             )
         with bottom_col:
             self._render_table_card(
                 title="Persona cohorts",
                 subtitle="Grouped by persona output shown in the dashboard.",
-                rows=self._build_cohort_rows(filtered, "persona_name"),
+                rows=self._build_cohort_rows(comparable, "persona_name"),
                 headers=("Persona", "Count", "% of filtered"),
             )
             self._render_table_card(
                 title="Processing cohorts",
                 subtitle="Grouped by durable pipeline status.",
-                rows=self._build_cohort_rows(filtered, "status"),
+                rows=self._build_cohort_rows(comparable, "status"),
                 headers=("Status", "Count", "% of filtered"),
             )
 
@@ -364,7 +384,9 @@ class DashboardRenderer:
             "Personas",
             "Card-based persona summaries with size, description, and supporting quote coverage.",
         )
-        if not filtered:
+        comparable, excluded_count = self._cohort_base(filtered)
+        self._render_quality_denominator_note(excluded_count=excluded_count, total_count=len(filtered))
+        if not comparable:
             self._render_empty_state(
                 "No personas to review yet",
                 sample_mode=sample_mode,
@@ -372,7 +394,7 @@ class DashboardRenderer:
             )
             return
 
-        persona_counts = self._count_by(filtered, lambda item: item.persona_id)
+        persona_counts = self._count_by(comparable, lambda item: item.persona_id)
         persona_keys = [persona_id for persona_id in PERSONAS if persona_id in persona_counts]
         if not persona_keys:
             st.info("No persona outputs are available for the current filters.")
@@ -381,7 +403,7 @@ class DashboardRenderer:
         columns = st.columns(2, gap="large")
         for index, persona_id in enumerate(persona_keys):
             persona = PERSONAS[persona_id]
-            matches = [item for item in filtered if item.persona_id == persona_id]
+            matches = [item for item in comparable if item.persona_id == persona_id]
             quote = matches[0].evidence_quotes[0] if matches and matches[0].evidence_quotes else "No direct quote captured yet."
             non_target_count = sum(1 for item in matches if item.is_non_target)
             with columns[index % len(columns)]:
@@ -402,8 +424,12 @@ class DashboardRenderer:
         save_interview_edits: Callable[..., DashboardInterviewRecord] | None,
         reprocess_interview: Callable[[str], DashboardInterviewRecord] | None,
         reanalyze_interviews: Callable[[list[str]], list[DashboardInterviewRecord]] | None,
-        reanalyze_stale_interviews: Callable[[], list[DashboardInterviewRecord]] | None,
+        reanalyze_stale_interviews: Callable[[], dict[str, object]] | None,
         list_stale_interview_ids: Callable[[], list[str]] | None,
+        reprocess_failed_or_malformed: Callable[[], dict[str, object]] | None,
+        list_failed_or_malformed_ids: Callable[[], list[str]] | None,
+        delete_stale_corrupted: Callable[[], dict[str, object]] | None,
+        list_stale_corrupted_ids: Callable[[], list[str]] | None,
         delete_interview: Callable[[str], bool] | None,
         sample_mode: bool,
     ) -> None:
@@ -421,8 +447,10 @@ class DashboardRenderer:
             )
             return
 
-        action_col1, action_col2 = st.columns(2, gap="small")
+        action_col1, action_col2, action_col3, action_col4 = st.columns(4, gap="small")
         stale_count = len(list_stale_interview_ids()) if list_stale_interview_ids is not None else None
+        failed_malformed_count = len(list_failed_or_malformed_ids()) if list_failed_or_malformed_ids is not None else None
+        stale_corrupted_count = len(list_stale_corrupted_ids()) if list_stale_corrupted_ids is not None else None
 
         with action_col1:
             filtered_label = f"Reanalyze filtered ({len(filtered)})"
@@ -442,6 +470,26 @@ class DashboardRenderer:
                 use_container_width=True,
                 disabled=reanalyze_stale_interviews is None or stale_count == 0,
             )
+        with action_col3:
+            failed_malformed_label = "Reprocess failed/malformed"
+            if failed_malformed_count is not None:
+                failed_malformed_label += f" ({failed_malformed_count})"
+            reprocess_failed_clicked = st.button(
+                failed_malformed_label,
+                key="reprocess_failed_malformed_dashboard",
+                use_container_width=True,
+                disabled=reprocess_failed_or_malformed is None or failed_malformed_count == 0,
+            )
+        with action_col4:
+            delete_corrupted_label = "Delete stale corrupted"
+            if stale_corrupted_count is not None:
+                delete_corrupted_label += f" ({stale_corrupted_count})"
+            delete_stale_corrupted_clicked = st.button(
+                delete_corrupted_label,
+                key="delete_stale_corrupted_dashboard",
+                use_container_width=True,
+                disabled=delete_stale_corrupted is None or stale_corrupted_count == 0,
+            )
 
         if reanalyze_filtered_clicked:
             try:
@@ -460,17 +508,65 @@ class DashboardRenderer:
 
         if reanalyze_stale_clicked:
             try:
-                refreshed_rows = reanalyze_stale_interviews()
+                stale_summary = reanalyze_stale_interviews()
             except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
                 st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
                     "kind": "error",
                     "message": f"Stale reanalysis failed: {exc}",
                 }
             else:
+                refreshed_count = len(stale_summary.get("reprocessed_ids", []))
                 st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
                     "kind": "success",
-                    "message": f"Reanalysis complete for {len(refreshed_rows)} stale interviews. Structured responses, insights, and personas were refreshed in SQLite.",
+                    "message": f"Reanalysis complete for {refreshed_count} stale interviews. Structured responses, insights, and personas were refreshed in SQLite.",
                 }
+            st.rerun()
+
+        if reprocess_failed_clicked:
+            try:
+                result = reprocess_failed_or_malformed()
+            except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+                st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                    "kind": "error",
+                    "message": f"Failed/malformed reprocess failed: {exc}",
+                }
+            else:
+                total = int(result.get("failed_or_malformed_count", 0))
+                refreshed = len(result.get("reprocessed_ids", []))
+                failed = result.get("failed", {})
+                kind = "success" if not failed else "error"
+                message = (
+                    f"Reprocessed {refreshed} of {total} failed/malformed interviews."
+                    if total
+                    else "No failed/malformed interviews were found."
+                )
+                if failed:
+                    message += " Remaining rows require delete + fresh transcription."
+                st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                    "kind": kind,
+                    "message": message,
+                }
+            st.rerun()
+
+        if delete_stale_corrupted_clicked:
+            try:
+                result = delete_stale_corrupted()
+            except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+                st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                    "kind": "error",
+                    "message": f"Delete stale corrupted failed: {exc}",
+                }
+            else:
+                deleted = len(result.get("deleted_ids", []))
+                total = int(result.get("stale_corrupted_count", 0))
+                st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                    "kind": "success",
+                    "message": (
+                        f"Deleted {deleted} stale corrupted interviews out of {total}. "
+                        "Re-upload source audio to recompute from fresh transcription only."
+                    ),
+                }
+                st.session_state[FILTER_SESSION_KEYS["force_sqlite_reload"]] = True
             st.rerun()
 
         if reanalyze_interviews is None or reanalyze_stale_interviews is None:
@@ -584,6 +680,29 @@ class DashboardRenderer:
         for column, (label, value) in zip(columns, metrics, strict=False):
             with column:
                 self._render_metric_card(label, value, card_class="kpi-card")
+
+    def _cohort_base(self, interviews: list[DashboardInterview]) -> tuple[list[DashboardInterview], int]:
+        if st.session_state.get(FILTER_SESSION_KEYS["include_low_quality"], False):
+            return interviews, 0
+        comparable = [item for item in interviews if self._is_transcript_quality_comparable(item)]
+        return comparable, len(interviews) - len(comparable)
+
+    def _is_transcript_quality_comparable(self, interview: DashboardInterview) -> bool:
+        return interview.transcript_quality == "good"
+
+    def _render_quality_denominator_note(self, *, excluded_count: int, total_count: int) -> None:
+        if total_count == 0:
+            return
+        if st.session_state.get(FILTER_SESSION_KEYS["include_low_quality"], False):
+            st.caption("Cohort denominator includes failed/malformed transcripts because the sidebar override is enabled.")
+            return
+        if excluded_count <= 0:
+            st.caption("Cohort denominator includes all filtered interviews (no transcript-quality exclusions).")
+            return
+        st.warning(
+            f"{excluded_count} interviews excluded due to transcription quality "
+            f"(failed/malformed) from a filtered set of {total_count}."
+        )
 
     def _render_metric_card(self, label: str, value: str, *, card_class: str = "") -> None:
         st.markdown(
@@ -1000,6 +1119,12 @@ class DashboardRenderer:
                 <div class='interview-card-top'>
                     <div class='interview-title'>{html.escape(interview.filename)}</div>
                     <div class='persona-badge {badge_class}'>{persona_label}</div>
+                </div>
+                <div class='interview-tags'>
+                    <span class='meta-label'>Transcript quality:</span>
+                    <span class='meta-value'>{html.escape(interview.transcript_quality.title())}</span>
+                    <span class='meta-label' style='margin-left:8px;'>Analysis version:</span>
+                    <span class='meta-value'>{html.escape(interview.analysis_version or "Unknown")}</span>
                 </div>
                 <div class='interview-summary'>{summary}</div>
                 <div class='interview-meta-grid'>
@@ -1689,6 +1814,11 @@ class DashboardRenderer:
             smartphone_user=smartphone_user,
             has_bank_account=has_bank_account,
             digital_access=digital_access,
+            transcript_quality=self._infer_transcript_quality(
+                status=result.status.value,
+                transcript=transcript,
+                last_error=result.last_error,
+            ),
             extracted_json=structured or self._empty_extracted_json(summary="Analysis pending."),
             evidence_quotes=evidence_quotes,
             segmented_dialogue=segmented_dialogue,
@@ -1754,6 +1884,11 @@ class DashboardRenderer:
             smartphone_user=record.smartphone_user,
             has_bank_account=record.has_bank_account,
             digital_access=self._digital_access_label(record.smartphone_user, record.has_bank_account),
+            transcript_quality=record.transcript_quality or self._infer_transcript_quality(
+                status=record.status,
+                transcript=transcript,
+                last_error=record.last_error,
+            ),
             extracted_json=extracted_json,
             evidence_quotes=tuple(record.key_quotes),
             segmented_dialogue=tuple(record.segmented_dialogue),
@@ -1798,6 +1933,7 @@ class DashboardRenderer:
             smartphone_user=repository_interview.smartphone_user,
             has_bank_account=repository_interview.has_bank_account,
             digital_access=repository_interview.digital_access,
+            transcript_quality=repository_interview.transcript_quality,
             extracted_json={
                 **cached_result.extracted_json,
                 **repository_interview.extracted_json,
@@ -1877,6 +2013,19 @@ class DashboardRenderer:
         if smartphone_user is True and has_bank_account is True:
             return "Smartphone + bank account"
         return "Unknown / partial"
+
+    def _infer_transcript_quality(self, *, status: str, transcript: str, last_error: str | None) -> str:
+        normalized_transcript = (transcript or "").strip()
+        normalized_error = (last_error or "").strip().lower()
+        if status == ProcessingStatus.FAILED.value:
+            return "failed"
+        if not normalized_transcript or normalized_transcript == "Transcript pending.":
+            return "malformed"
+        if len(normalized_transcript.split()) < 5:
+            return "malformed"
+        if any(token in normalized_error for token in ("transcription", "malformed", "invalid", "schema", "decode")):
+            return "malformed"
+        return "good"
 
     def _is_borrower_value(self, borrowing_value: str, transcript: str) -> bool:
         lowered = f"{borrowing_value} {transcript}".lower()

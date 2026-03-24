@@ -97,6 +97,7 @@ class DashboardInterviewRecord:
     key_quotes: list[str]
     persona: str | None
     confidence_score: float | None
+    transcript_quality: str | None = None
     analysis_version: str | None = None
     analyzed_at: str | None = None
     segmented_dialogue: list[dict[str, Any]] = field(default_factory=list)
@@ -633,6 +634,53 @@ class PaydayRepository:
             ).fetchall()
         return [self._dashboard_record_from_row(row) for row in rows]
 
+    def list_failed_or_malformed_interview_ids(self, *, limit: int = 500) -> list[str]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, status, last_error, transcript
+                FROM interviews
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [
+            str(row["id"])
+            for row in rows
+            if self._infer_transcript_quality(
+                status=row["status"],
+                transcript=row["transcript"],
+                last_error=row["last_error"],
+            )
+            in {"failed", "malformed"}
+        ]
+
+    def list_stale_corrupted_interview_ids(self, *, latest_analysis_version: str | None = None, limit: int = 500) -> list[str]:
+        stale_ids = set(self.list_stale_interview_ids(latest_analysis_version=latest_analysis_version, limit=limit))
+        if not stale_ids:
+            return []
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, status, last_error, transcript
+                FROM interviews
+                WHERE id IN ({placeholders})
+                ORDER BY created_at DESC, id DESC
+                """.format(placeholders=",".join("?" for _ in stale_ids)),
+                tuple(stale_ids),
+            ).fetchall()
+        return [
+            str(row["id"])
+            for row in rows
+            if self._infer_transcript_quality(
+                status=row["status"],
+                transcript=row["transcript"],
+                last_error=row["last_error"],
+            )
+            in {"failed", "malformed"}
+        ]
+
     def get_interview_detail(self, interview_id: str) -> InterviewDetail:
         interview = self.get_interview(interview_id)
         with self._connect() as connection:
@@ -860,6 +908,11 @@ class PaydayRepository:
 
     def _dashboard_record_from_row(self, row: sqlite3.Row) -> DashboardInterviewRecord:
         payload = dict(row)
+        transcript_quality = self._infer_transcript_quality(
+            status=payload["status"],
+            transcript=payload["transcript"],
+            last_error=payload["last_error"],
+        )
         return DashboardInterviewRecord(
             id=payload["id"],
             audio_url=payload["audio_url"],
@@ -883,6 +936,7 @@ class PaydayRepository:
             key_quotes=json.loads(payload["key_quotes"]) if payload["key_quotes"] else [],
             persona=payload["persona"],
             confidence_score=payload["confidence_score"],
+            transcript_quality=transcript_quality,
             analysis_version=payload.get("interview_analysis_version") or payload.get("insight_analysis_version") or payload.get("structured_analysis_version"),
             analyzed_at=payload.get("insight_analyzed_at") or payload.get("structured_analyzed_at"),
         )
@@ -976,3 +1030,17 @@ class PaydayRepository:
         parsed = urlparse(audio_url)
         path = parsed.path or audio_url
         return Path(path).name
+
+    @staticmethod
+    def _infer_transcript_quality(*, status: str, transcript: str | None, last_error: str | None) -> str:
+        normalized_transcript = (transcript or "").strip()
+        normalized_error = (last_error or "").strip().lower()
+        if status == "failed":
+            return "failed"
+        if not normalized_transcript:
+            return "malformed"
+        if len(normalized_transcript.split()) < 5:
+            return "malformed"
+        if any(token in normalized_error for token in ("transcription", "malformed", "invalid", "schema", "decode")):
+            return "malformed"
+        return "good"

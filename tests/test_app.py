@@ -75,6 +75,13 @@ class _FakeStreamlit:
 
 
 class _FakeAppService:
+    class _FakeRepository:
+        def list_stale_interview_ids(self) -> list[str]:
+            return []
+
+    def __init__(self) -> None:
+        self.repository = self._FakeRepository()
+
     def list_results(self) -> list[object]:
         return []
 
@@ -94,6 +101,24 @@ class _FakeAppService:
             "analysis": {"provider": "openai", "model": "gpt-4.1-mini", "required_key_present": False},
             "runtime_commit_sha": "abc123def456",
         }
+
+    def runtime_diagnostics(self) -> dict[str, object]:
+        return {"git_branch": "test", "git_commit": "abc123"}
+
+    def reprocess_stale_interviews(self) -> dict[str, object]:
+        return {"stale_count": 0, "reprocessed_ids": [], "failed": {}}
+
+    def reprocess_failed_or_malformed_interviews(self) -> dict[str, object]:
+        return {"failed_or_malformed_count": 0, "reprocessed_ids": [], "failed": {}}
+
+    def list_failed_or_malformed_interview_ids(self) -> list[str]:
+        return []
+
+    def delete_stale_corrupted_interviews(self) -> dict[str, object]:
+        return {"stale_corrupted_count": 0, "deleted_ids": [], "failed": {}}
+
+    def list_stale_corrupted_interview_ids(self) -> list[str]:
+        return []
 
 
 class _FakeDashboardRenderer:

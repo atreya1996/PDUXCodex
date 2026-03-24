@@ -102,24 +102,30 @@ class PaydayAppService:
             refreshed.append(self.reprocess_interview(interview_id))
         return refreshed
 
-    def reprocess_stale_interviews(self, *, limit: int = 500) -> dict[str, object]:
-        stale_ids = self.repository.list_stale_interview_ids(limit=limit)
+    def _reprocess_ids(self, interview_ids: list[str]) -> dict[str, object]:
         failed: dict[str, str] = {}
         reprocessed_ids: list[str] = []
-
-        for interview_id in stale_ids:
+        for interview_id in interview_ids:
             try:
                 self.reprocess_interview(interview_id)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 failed[interview_id] = str(exc)
             else:
                 reprocessed_ids.append(interview_id)
-
         return {
-            "stale_count": len(stale_ids),
+            "count": len(interview_ids),
             "reprocessed_ids": reprocessed_ids,
             "failed": failed,
         }
+
+    def reprocess_failed_or_malformed_interviews(self, *, limit: int = 500) -> dict[str, object]:
+        target_ids = self.repository.list_failed_or_malformed_interview_ids(limit=limit)
+        summary = self._reprocess_ids(target_ids)
+        summary["failed_or_malformed_count"] = summary.pop("count")
+        return summary
+
+    def list_failed_or_malformed_interview_ids(self, *, limit: int = 500) -> list[str]:
+        return self.repository.list_failed_or_malformed_interview_ids(limit=limit)
 
     def reanalyze_all_interviews(self) -> list[DashboardInterviewRecord]:
         interview_ids = [record.id for record in self.repository.list_recent_interviews(limit=10_000)]
@@ -127,20 +133,32 @@ class PaydayAppService:
 
     def reprocess_stale_interviews(self, *, limit: int = 500) -> dict[str, object]:
         stale_ids = self.repository.list_stale_interview_ids(limit=limit)
+        summary = self._reprocess_ids(stale_ids)
+        summary["stale_count"] = summary.pop("count")
+        return summary
+
+    def delete_stale_corrupted_interviews(self, *, limit: int = 500) -> dict[str, object]:
+        stale_corrupted_ids = self.repository.list_stale_corrupted_interview_ids(limit=limit)
+        deleted_ids: list[str] = []
         failed: dict[str, str] = {}
-        reprocessed_ids: list[str] = []
-        for interview_id in stale_ids:
+        for interview_id in stale_corrupted_ids:
             try:
-                self.reprocess_interview(interview_id)
+                deleted = self.delete_interview(interview_id)
             except Exception as exc:  # noqa: BLE001
                 failed[interview_id] = str(exc)
                 continue
-            reprocessed_ids.append(interview_id)
+            if deleted:
+                deleted_ids.append(interview_id)
+            else:
+                failed[interview_id] = "Interview was already deleted."
         return {
-            "stale_count": len(stale_ids),
-            "reprocessed_ids": reprocessed_ids,
+            "stale_corrupted_count": len(stale_corrupted_ids),
+            "deleted_ids": deleted_ids,
             "failed": failed,
         }
+
+    def list_stale_corrupted_interview_ids(self, *, limit: int = 500) -> list[str]:
+        return self.repository.list_stale_corrupted_interview_ids(limit=limit)
 
     def delete_interview(self, interview_id: str) -> bool:
         try:
