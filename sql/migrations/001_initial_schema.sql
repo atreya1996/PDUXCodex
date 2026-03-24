@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS interviews (
     id TEXT PRIMARY KEY,
-    audio_url TEXT NOT NULL,
+    file_path TEXT NOT NULL,
     transcript TEXT,
     status TEXT NOT NULL,
     created_at TEXT NOT NULL

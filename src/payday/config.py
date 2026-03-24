@@ -75,6 +75,11 @@ class DatabaseSettings:
 
 
 @dataclass(frozen=True)
+class StorageSettings:
+    uploads_root: str = "./data/uploads"
+
+
+@dataclass(frozen=True)
 class FeatureFlags:
     use_sample_mode: bool = False
     enable_uploads: bool = True
@@ -90,6 +95,7 @@ class Settings:
     llm: LLMSettings
     transcription: TranscriptionSettings
     features: FeatureFlags
+    storage: StorageSettings = StorageSettings()
 
 
 @lru_cache(maxsize=1)
@@ -98,6 +104,7 @@ def get_settings() -> Settings:
     return Settings(
         app_env=os.getenv("PAYDAY_APP_ENV", "development"),
         database=DatabaseSettings(sqlite_path=str(sqlite_path)),
+        storage=StorageSettings(uploads_root=os.getenv("PAYDAY_UPLOADS_ROOT", "./data/uploads")),
         supabase=SupabaseSettings(
             url=os.getenv("SUPABASE_URL", ""),
             anon_key=os.getenv("SUPABASE_ANON_KEY", ""),

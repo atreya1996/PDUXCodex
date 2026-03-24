@@ -99,7 +99,7 @@ def test_dashboard_renderer_prefers_durable_repository_values_for_status_rows() 
     )
     repository_record = DashboardInterviewRecord(
         id="interview-1",
-        audio_url="audio/interview-1/repo-name.wav",
+        file_path="audio/interview-1/repo-name.wav",
         filename="repo-name.wav",
         transcript="Repository transcript",
         status=ProcessingStatus.COMPLETED.value,
@@ -388,7 +388,7 @@ if not hasattr(renderer, "_render_status_error_indicator"):
     renderer._render_status_error_indicator = lambda *args, **kwargs: None
 record = DashboardInterviewRecord(
     id="interview-1",
-    audio_url="audio/interview-1/repo-name.wav",
+    file_path="audio/interview-1/repo-name.wav",
     filename="repo-name.wav",
     transcript="Repository transcript",
     status=ProcessingStatus.COMPLETED.value,
@@ -445,7 +445,7 @@ if not hasattr(renderer, "_render_status_error_indicator"):
     renderer._render_status_error_indicator = lambda *args, **kwargs: None
 record = DashboardInterviewRecord(
     id="interview-1",
-    audio_url="audio/interview-1/repo-name.wav",
+    file_path="audio/interview-1/repo-name.wav",
     filename="repo-name.wav",
     transcript="Repository transcript",
     status=ProcessingStatus.COMPLETED.value,
@@ -510,7 +510,7 @@ if not hasattr(renderer, "_render_status_error_indicator"):
     renderer._render_status_error_indicator = lambda *args, **kwargs: None
 record = DashboardInterviewRecord(
     id="interview-1",
-    audio_url="audio/interview-1/repo-name.wav",
+    file_path="audio/interview-1/repo-name.wav",
     filename="repo-name.wav",
     transcript="Repository transcript",
     status=ProcessingStatus.COMPLETED.value,
@@ -565,7 +565,7 @@ from payday.repository import DashboardInterviewRecord, DashboardStatusOverview
 renderer = DashboardRenderer()
 record = DashboardInterviewRecord(
     id="interview-1",
-    audio_url="audio/interview-1/repo-name.wav",
+    file_path="audio/interview-1/repo-name.wav",
     filename="repo-name.wav",
     transcript="Repository transcript",
     status=ProcessingStatus.COMPLETED.value,
@@ -610,7 +610,7 @@ from payday.repository import DashboardInterviewRecord, DashboardStatusOverview
 renderer = DashboardRenderer()
 record = DashboardInterviewRecord(
     id="interview-1",
-    audio_url="audio/interview-1/repo-name.wav",
+    file_path="audio/interview-1/repo-name.wav",
     filename="repo-name.wav",
     transcript="<span class='meta-label'>garbled</span>",
     status=ProcessingStatus.FAILED.value,
@@ -659,7 +659,7 @@ from payday.repository import DashboardInterviewRecord, DashboardStatusOverview
 renderer = DashboardRenderer()
 record = DashboardInterviewRecord(
     id="interview-1",
-    audio_url="audio/interview-1/repo-name.wav",
+    file_path="audio/interview-1/repo-name.wav",
     filename="repo-name.wav",
     transcript="Repository transcript",
     status=ProcessingStatus.COMPLETED.value,

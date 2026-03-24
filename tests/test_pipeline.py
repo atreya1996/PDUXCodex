@@ -8,7 +8,15 @@ from pathlib import Path
 import pytest
 
 from payday.analysis import AnalysisService, OpenAIAnalysisAdapter
-from payday.config import DatabaseSettings, FeatureFlags, LLMSettings, Settings, SupabaseSettings, TranscriptionSettings
+from payday.config import (
+    DatabaseSettings,
+    FeatureFlags,
+    LLMSettings,
+    Settings,
+    StorageSettings,
+    SupabaseSettings,
+    TranscriptionSettings,
+)
 from payday.dashboard.views import DashboardRenderer
 from payday.models import AnalysisResult, BatchUploadItem, PipelineResult, PipelineStage, ProcessingStatus, Transcript, UploadedAsset
 from payday.personas import PersonaService
@@ -176,6 +184,7 @@ def test_transcription_service_sample_mode_preserves_demo_behavior() -> None:
         "sample_mode": True,
         "filename": "demo.txt",
         "file_id": "file-123",
+        "file_path": "",
         "content_type": "text/plain",
         "size_bytes": 11,
         "source": "demo.txt",
@@ -241,6 +250,7 @@ def test_transcription_service_non_sample_mode_uses_openai_client_and_returns_me
         "sample_mode": False,
         "filename": "call.wav",
         "file_id": "file-456",
+        "file_path": "",
         "content_type": "audio/wav",
         "size_bytes": 4,
         "source": "call.wav",
@@ -303,8 +313,8 @@ def test_transcription_service_timeout_propagates_for_pipeline_retries(monkeypat
         service.transcribe(asset, sample_mode=False)
 
 
-def test_upload_service_normalizes_supported_openai_formats() -> None:
-    service = UploadService()
+def test_upload_service_normalizes_supported_openai_formats(tmp_path: Path) -> None:
+    service = UploadService(upload_dir=tmp_path)
 
     mp4_asset = service.create_asset("interview.mp4", "application/octet-stream", b"mp4-bytes")
     mpeg_asset = service.create_asset("interview.mpeg", "", b"mpeg-bytes")
@@ -313,14 +323,42 @@ def test_upload_service_normalizes_supported_openai_formats() -> None:
     assert mp4_asset.content_type == "video/mp4"
     assert mpeg_asset.content_type == "audio/mpeg"
     assert webm_asset.content_type == "audio/webm"
+    assert Path(mp4_asset.file_path).exists()
     assert SUPPORTED_UPLOAD_EXTENSIONS == ("mp3", "mp4", "mpeg", "mpga", "m4a", "wav", "webm", "ogg", "aac")
 
 
-def test_upload_service_rejects_unsupported_extensions() -> None:
-    service = UploadService()
+def test_upload_service_rejects_unsupported_extensions(tmp_path: Path) -> None:
+    service = UploadService(upload_dir=tmp_path)
 
     with pytest.raises(UploadValidationError, match="Unsupported upload format"):
         service.create_asset("notes.txt", "text/plain", b"hello")
+
+
+def test_upload_service_sanitizes_filename_and_prefixes_file_id(tmp_path: Path) -> None:
+    service = UploadService(upload_dir=tmp_path)
+
+    asset = service.create_asset("../voice note (1).wav", "audio/wav", b"RIFF", file_id="abc123")
+
+    assert asset.filename == "voice_note_1_.wav"
+    assert asset.file_path.endswith("abc123_voice_note_1_.wav")
+    assert Path(asset.file_path).read_bytes() == b"RIFF"
+
+
+def test_upload_service_rejects_content_type_extension_mismatch(tmp_path: Path) -> None:
+    service = UploadService(upload_dir=tmp_path)
+
+    with pytest.raises(UploadValidationError, match="extension '.wav' but content type 'video/mp4'"):
+        service.create_asset("clip.wav", "video/mp4", b"RIFF")
+
+
+def test_upload_service_rejects_empty_and_oversized_payloads(tmp_path: Path) -> None:
+    service = UploadService(upload_dir=tmp_path, max_file_size_bytes=5)
+
+    with pytest.raises(UploadValidationError, match="is empty"):
+        service.create_asset("empty.wav", "audio/wav", b"")
+
+    with pytest.raises(UploadValidationError, match="exceeds the 0 MB upload limit"):
+        service.create_asset("big.wav", "audio/wav", b"123456")
 
 
 def test_pipeline_accepts_mp4_and_mpeg_family_uploads() -> None:
@@ -362,6 +400,26 @@ def test_pipeline_process_upload_returns_completed_result() -> None:
     assert result.status is ProcessingStatus.COMPLETED
     assert result.current_stage is PipelineStage.STORAGE
     assert service.list_results()
+
+
+def test_pipeline_fails_before_transcription_when_persisted_upload_path_is_missing() -> None:
+    service = PaydayAppService(build_settings())
+    service.pipeline.upload_service.create_asset = lambda **_: UploadedAsset(  # type: ignore[method-assign]
+        filename="demo.wav",
+        content_type="audio/wav",
+        size_bytes=4,
+        file_path="data/uploads/missing_demo.wav",
+        raw_bytes=b"RIFF",
+        file_id="missing-file-id",
+    )
+
+    result = service.process_upload("demo.wav", "audio/wav", b"RIFF")
+
+    assert result.status is ProcessingStatus.FAILED
+    assert result.current_stage is PipelineStage.UPLOAD
+    assert result.transcript is None
+    assert result.last_error is not None
+    assert "was not persisted" in result.last_error
 
 
 def test_pipeline_rejects_binary_signature_transcript_before_analysis() -> None:
@@ -445,7 +503,7 @@ def test_pipeline_process_upload_persists_interview_structured_response_and_insi
 
     with sqlite3.connect(database_path) as connection:
         interview_row = connection.execute(
-            "SELECT id, audio_url, transcript, status, latest_stage, last_error FROM interviews WHERE id = ?",
+            "SELECT id, file_path, transcript, status, latest_stage, last_error FROM interviews WHERE id = ?",
             (result.file_id,),
         ).fetchone()
         structured_row = connection.execute(
@@ -473,7 +531,7 @@ def test_pipeline_process_upload_persists_interview_structured_response_and_insi
 
     assert interview_row is not None
     assert interview_row[0] == result.file_id
-    assert interview_row[1] == f"audio/{result.file_id}/demo.wav"
+    assert interview_row[1] == f"data/uploads/{result.file_id}/demo.wav"
     assert "WhatsApp every day" in interview_row[2]
     assert interview_row[3] == ProcessingStatus.COMPLETED.value
     assert interview_row[4] == PipelineStage.STORAGE.value
@@ -673,7 +731,7 @@ def test_repository_list_results_returns_pipeline_results_in_insertion_order() -
 
 def test_repository_crud_supports_interview_related_tables(tmp_path) -> None:
     repository = PaydayRepository(database_path=str(tmp_path / "payday.db"))
-    interview = repository.create_interview(audio_url="audio/interview-1/demo.wav", status="uploaded")
+    interview = repository.create_interview(file_path="audio/interview-1/demo.wav", status="uploaded")
 
     repository.update_interview(interview.id, transcript="A direct quote from the interview.", status="completed")
     repository.upsert_structured_response(
@@ -716,15 +774,15 @@ def test_repository_initialization_creates_missing_database_directory(tmp_path) 
     database_path = tmp_path / "nested" / "storage" / "payday.db"
 
     repository = PaydayRepository(database_path=str(database_path))
-    interview = repository.create_interview(audio_url="audio/interview-1/demo.wav")
+    interview = repository.create_interview(file_path="audio/interview-1/demo.wav")
 
     assert database_path.exists()
-    assert interview.audio_url == "audio/interview-1/demo.wav"
+    assert interview.file_path == "audio/interview-1/demo.wav"
 
 
 def test_repository_delete_interview_cascades_related_rows(tmp_path) -> None:
     repository = PaydayRepository(database_path=str(tmp_path / "cascade.db"))
-    interview = repository.create_interview(audio_url="audio/interview-1/demo.wav", status="completed")
+    interview = repository.create_interview(file_path="audio/interview-1/demo.wav", status="completed")
     repository.upsert_structured_response(
         interview.id,
         smartphone_user=True,
@@ -894,7 +952,7 @@ def test_app_service_save_interview_edits_accepts_dashboard_json_and_rederives_p
     )
 
     edited_payload = {
-        "audio_url": service.get_interview_detail(result.file_id).audio_url,
+        "file_path": service.get_interview_detail(result.file_id).file_path,
         "participant_profile": {
             "smartphone_user": {"value": False},
             "has_bank_account": {"value": True},
@@ -944,7 +1002,7 @@ def test_app_service_save_interview_edits_preserves_manual_income_evidence_quote
     )
 
     edited_payload = {
-        "audio_url": service.get_interview_detail(result.file_id).audio_url,
+        "file_path": service.get_interview_detail(result.file_id).file_path,
         "participant_profile": {
             "smartphone_user": {"value": True},
             "has_bank_account": {"value": True},
@@ -1138,7 +1196,7 @@ def test_processed_interviews_populate_dashboard_cohorts_personas_and_status(tmp
 
 
 def test_storage_service_builds_predictable_audio_paths() -> None:
-    storage = StorageService(SupabaseSettings())
+    storage = StorageService("./data/uploads")
     asset = UploadedAsset(
         filename="../demo clip.wav",
         content_type="audio/wav",
@@ -1146,12 +1204,12 @@ def test_storage_service_builds_predictable_audio_paths() -> None:
         raw_bytes=b"123",
     )
 
-    assert storage.build_audio_path("interview-123", asset.filename) == "audio/interview-123/demo_clip.wav"
+    assert storage.build_file_path("interview-123", asset.filename) == "data/uploads/interview-123/demo_clip.wav"
     assert storage.store_asset(asset, sample_mode=True) is True
 
 
-def test_storage_service_sample_mode_succeeds_without_storage_client() -> None:
-    storage = StorageService(SupabaseSettings())
+def test_storage_service_sample_mode_succeeds_without_local_write(tmp_path) -> None:
+    storage = StorageService(tmp_path / "uploads")
     asset = UploadedAsset(
         filename="sample.wav",
         content_type="audio/wav",
@@ -1159,14 +1217,13 @@ def test_storage_service_sample_mode_succeeds_without_storage_client() -> None:
         raw_bytes=b"demo",
     )
 
-    object_path = storage.upload_audio(asset, interview_id="interview-123", sample_mode=True)
-
-    assert object_path == "audio/interview-123/sample.wav"
+    object_path = storage.build_file_path(interview_id="interview-123", filename=asset.filename)
+    assert object_path.endswith("/interview-123/sample.wav")
     assert storage.store_asset(asset, sample_mode=True, interview_id="interview-123") is True
 
 
-def test_storage_service_live_mode_without_storage_client_fails() -> None:
-    storage = StorageService(SupabaseSettings())
+def test_storage_service_live_mode_writes_and_idempotently_deletes_file(tmp_path) -> None:
+    storage = StorageService(tmp_path / "uploads")
     asset = UploadedAsset(
         filename="live.wav",
         content_type="audio/wav",
@@ -1174,31 +1231,22 @@ def test_storage_service_live_mode_without_storage_client_fails() -> None:
         raw_bytes=b"demo",
     )
 
-    with pytest.raises(RuntimeError, match="configured storage client or explicit upload implementation"):
-        storage.upload_audio(asset, interview_id="interview-123", sample_mode=False)
-
-    with pytest.raises(RuntimeError, match="configured storage client or explicit upload implementation"):
-        storage.store_asset(asset, sample_mode=False, interview_id="interview-123")
-
-    with pytest.raises(RuntimeError, match="configured storage client or explicit delete implementation"):
-        storage.delete_asset("audio/interview-123/live.wav", sample_mode=False)
+    assert storage.store_asset(asset, sample_mode=False, interview_id="interview-123") is True
+    file_path = storage.build_file_path("interview-123", asset.filename)
+    assert Path(file_path).exists()
+    assert storage.delete_asset(file_path, sample_mode=False) is True
+    assert storage.delete_asset(file_path, sample_mode=False) is True
 
 
-def test_storage_service_live_mode_deletes_uploaded_asset_from_bucket() -> None:
-    storage_client = RecordingSupabaseStorageClient()
-    storage = StorageService(SupabaseSettings(storage_bucket="test-assets"), storage_client=storage_client)
-
-    deleted = storage.delete_asset(
-        "https://example.supabase.co/storage/v1/object/public/test-assets/audio/interview-123/live.wav",
-        sample_mode=False,
-    )
-
-    assert deleted is True
-    assert storage_client.bucket_names == ["test-assets"]
-    assert storage_client.bucket.remove_calls == [["audio/interview-123/live.wav"]]
+def test_storage_service_delete_asset_returns_false_for_directory(tmp_path) -> None:
+    root = tmp_path / "uploads"
+    interview_dir = root / "interview-123"
+    interview_dir.mkdir(parents=True)
+    storage = StorageService(root)
+    assert storage.delete_asset(str(interview_dir), sample_mode=False) is False
 
 
-def test_pipeline_marks_storage_persistence_failed_without_live_storage_client(tmp_path) -> None:
+def test_pipeline_marks_storage_persistence_completed_with_local_storage(tmp_path) -> None:
     database_path = tmp_path / "storage-failure.sqlite3"
     repository = PaydayRepository(database_path=str(database_path))
     settings = Settings(
@@ -1223,12 +1271,10 @@ def test_pipeline_marks_storage_persistence_failed_without_live_storage_client(t
 
     result = pipeline.process_upload("live.wav", "audio/wav", b"audio payload")
 
-    assert result.status is ProcessingStatus.FAILED
+    assert result.status is ProcessingStatus.COMPLETED
     assert result.current_stage is PipelineStage.STORAGE
-    assert result.persisted is False
-    assert result.errors == [
-        "Live storage upload requires a configured storage client or explicit upload implementation."
-    ]
+    assert result.persisted is True
+    assert result.errors == []
 
     with sqlite3.connect(database_path) as connection:
         interview_row = connection.execute(
@@ -1238,26 +1284,25 @@ def test_pipeline_marks_storage_persistence_failed_without_live_storage_client(t
 
     assert interview_row == (
         result.file_id,
-        ProcessingStatus.FAILED.value,
+        ProcessingStatus.COMPLETED.value,
         PipelineStage.STORAGE.value,
-        "Live storage upload requires a configured storage client or explicit upload implementation.",
+        None,
     )
 
 
-def test_pipeline_live_storage_persists_only_after_successful_upload(tmp_path) -> None:
+def test_pipeline_local_storage_persists_file_after_successful_upload(tmp_path) -> None:
     database_path = tmp_path / "storage-success.sqlite3"
     repository = PaydayRepository(database_path=str(database_path))
     settings = Settings(
         app_env="test",
         database=DatabaseSettings(sqlite_path=str(database_path)),
-        supabase=SupabaseSettings(storage_bucket="test-assets"),
+        supabase=SupabaseSettings(),
         llm=LLMSettings(provider="openai", model="gpt-test", api_key="analysis-key"),
         transcription=TranscriptionSettings(provider="openai", model="whisper-test", api_key="transcription-key"),
         features=FeatureFlags(use_sample_mode=False),
+        storage=StorageSettings(uploads_root=str(tmp_path / "uploads")),
     )
-    storage_client = RecordingSupabaseStorageClient()
     pipeline = PaydayAppService(settings, repository=repository).pipeline
-    pipeline.storage_service = StorageService(settings.supabase, storage_client=storage_client)
     pipeline.transcription_service = StaticTranscriptionService(settings.transcription)
     pipeline.analysis_service = AnalysisService(
         adapter=OpenAIAnalysisAdapter(
@@ -1274,14 +1319,7 @@ def test_pipeline_live_storage_persists_only_after_successful_upload(tmp_path) -
     assert result.status is ProcessingStatus.COMPLETED
     assert result.current_stage is PipelineStage.STORAGE
     assert result.persisted is True
-    assert storage_client.bucket_names == ["test-assets"]
-    assert storage_client.bucket.upload_calls == [
-        {
-            "path": f"audio/{result.file_id}/live.wav",
-            "payload": b"audio payload",
-            "file_options": {"content-type": "audio/wav"},
-        }
-    ]
+    assert Path(settings.storage.uploads_root, result.file_id, "live.wav").read_bytes() == b"audio payload"
 
     with sqlite3.connect(database_path) as connection:
         interview_row = connection.execute(
@@ -1302,17 +1340,19 @@ def test_app_service_delete_interview_removes_durable_rows_and_stored_audio(tmp_
     settings = Settings(
         app_env="test",
         database=DatabaseSettings(sqlite_path=database_path),
-        supabase=SupabaseSettings(storage_bucket="test-assets"),
+        supabase=SupabaseSettings(),
         llm=LLMSettings(provider="openai", model="gpt-test", api_key="analysis-key"),
         transcription=TranscriptionSettings(provider="openai", model="whisper-test", api_key="transcription-key"),
         features=FeatureFlags(use_sample_mode=False),
+        storage=StorageSettings(uploads_root=str(tmp_path / "uploads")),
     )
-    storage_client = RecordingSupabaseStorageClient()
     service = PaydayAppService(settings)
-    service.pipeline.storage_service = StorageService(settings.supabase, storage_client=storage_client)
+    stored_path = Path(settings.storage.uploads_root) / "delete-me-id" / "delete-me.wav"
+    stored_path.parent.mkdir(parents=True, exist_ok=True)
+    stored_path.write_bytes(b"existing audio")
     interview = service.repository.create_interview(
         interview_id="delete-me-id",
-        audio_url="audio/delete-me-id/delete-me.wav",
+        file_path=str(stored_path),
         transcript="I use WhatsApp and have a bank account.",
         status=ProcessingStatus.COMPLETED.value,
         latest_stage=PipelineStage.STORAGE.value,
@@ -1331,7 +1371,7 @@ def test_app_service_delete_interview_removes_durable_rows_and_stored_audio(tmp_
     assert deleted is True
     assert service.list_recent_interviews() == []
     assert service.get_status_overview().total_interviews == 0
-    assert storage_client.bucket.remove_calls == [["audio/delete-me-id/delete-me.wav"]]
+    assert not stored_path.exists()
     with pytest.raises(KeyError, match=interview.id):
         service.get_interview_detail(interview.id)
 
@@ -1456,7 +1496,7 @@ def test_app_service_reprocess_stale_interviews_recomputes_legacy_rows(tmp_path)
     service = PaydayAppService(build_settings(sqlite_path=database_path))
     interview = service.repository.create_interview(
         interview_id="legacy-row-1",
-        audio_url="audio/legacy-row-1/demo.wav",
+        file_path="audio/legacy-row-1/demo.wav",
         transcript="I use WhatsApp. I have a bank account. I have taken a loan.",
         status=ProcessingStatus.COMPLETED.value,
         latest_stage=PipelineStage.STORAGE.value,
@@ -1487,7 +1527,7 @@ def test_app_service_lists_and_deletes_stale_corrupted_rows(tmp_path) -> None:
     service = PaydayAppService(build_settings(sqlite_path=database_path))
     interview = service.repository.create_interview(
         interview_id="stale-bad-1",
-        audio_url="audio/stale-bad-1/demo.wav",
+        file_path="audio/stale-bad-1/demo.wav",
         transcript="bad",
         status=ProcessingStatus.FAILED.value,
         latest_stage=PipelineStage.TRANSCRIPTION.value,

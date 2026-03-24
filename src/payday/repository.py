@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 from uuid import uuid4
 
 from payday.analysis import DEFAULT_UNKNOWN_VALUE
@@ -31,7 +30,7 @@ _LEGACY_STATUS_MAP = {
 @dataclass(frozen=True, slots=True)
 class InterviewRecord:
     id: str
-    audio_url: str
+    file_path: str
     transcript: str | None
     status: str
     latest_stage: str
@@ -82,7 +81,7 @@ class InsightRecord:
 @dataclass(frozen=True, slots=True)
 class InterviewListItem:
     id: str
-    audio_url: str
+    file_path: str
     status: str
     created_at: str
     persona: str | None
@@ -279,7 +278,7 @@ class PaydayRepository:
     def create_interview(
         self,
         *,
-        audio_url: str,
+        file_path: str,
         transcript: str | None = None,
         status: str = "pending",
         latest_stage: str = "upload",
@@ -291,7 +290,7 @@ class PaydayRepository:
         filename = self._filename_from_audio_url(audio_url)
         record = InterviewRecord(
             id=interview_id or str(uuid4()),
-            audio_url=audio_url,
+            file_path=file_path,
             transcript=transcript,
             status=normalized_status,
             latest_stage=latest_stage,
@@ -333,7 +332,7 @@ class PaydayRepository:
         self,
         interview_id: str,
         *,
-        audio_url: str | None = None,
+        file_path: str | None = None,
         transcript: str | None = None,
         status: str | None = None,
         latest_stage: str | None = None,
@@ -986,8 +985,8 @@ class PaydayRepository:
         self._items[result.file_id] = result
         return result
 
-    def sync_pipeline_result(self, result: PipelineResult, *, audio_url: str) -> None:
-        interview = self._upsert_interview_from_result(result, audio_url=audio_url)
+    def sync_pipeline_result(self, result: PipelineResult, *, file_path: str) -> None:
+        interview = self._upsert_interview_from_result(result, file_path=file_path)
         if result.analysis is not None:
             self._upsert_structured_response_from_analysis(interview.id, result.analysis)
         if result.analysis is not None:
@@ -1019,12 +1018,12 @@ class PaydayRepository:
         path = Path(database_path).expanduser()
         return str(path)
 
-    def _upsert_interview_from_result(self, result: PipelineResult, *, audio_url: str) -> InterviewRecord:
+    def _upsert_interview_from_result(self, result: PipelineResult, *, file_path: str) -> InterviewRecord:
         transcript_text = result.transcript.text if result.transcript is not None else None
         try:
             return self.update_interview(
                 result.file_id,
-                audio_url=audio_url,
+                file_path=file_path,
                 transcript=transcript_text,
                 status=result.status.value,
                 latest_stage=result.current_stage.value,
@@ -1033,7 +1032,7 @@ class PaydayRepository:
         except KeyError:
             return self.create_interview(
                 interview_id=result.file_id,
-                audio_url=audio_url,
+                file_path=file_path,
                 transcript=transcript_text,
                 status=result.status.value,
                 latest_stage=result.current_stage.value,
