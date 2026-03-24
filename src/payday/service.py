@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import subprocess
+from pathlib import Path
 
 from payday.analysis import AnalysisService, build_analysis_adapter
 from payday.config import Settings, validate_runtime_settings
@@ -13,6 +15,7 @@ from payday.transcription import build_transcription_service
 from payday.upload import UploadService
 
 logger = logging.getLogger(__name__)
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class PaydayAppService:
@@ -39,6 +42,7 @@ class PaydayAppService:
             repository=self.repository,
             sample_mode=settings.features.use_sample_mode,
         )
+        logger.info("PayDay runtime diagnostics: %s", self.runtime_diagnostics())
         logger.info("PayDay runtime configuration loaded: %s", self.runtime_summary())
 
     def process_upload(self, filename: str, content_type: str, data: bytes) -> PipelineResult:
@@ -143,6 +147,35 @@ class PaydayAppService:
             "transcription_model": self.pipeline.transcription_service.settings.model,
             "database_path": self.repository.database_path,
         }
+
+    def runtime_diagnostics(self) -> dict[str, object]:
+        git_branch, git_commit = self._resolve_git_metadata()
+        return {
+            "git_branch": git_branch,
+            "git_commit": git_commit,
+            "database_path": self.repository.database_path,
+            "sample_mode": self.settings.features.use_sample_mode,
+        }
+
+    def _resolve_git_metadata(self) -> tuple[str, str]:
+        branch = self._run_git_command(["rev-parse", "--abbrev-ref", "HEAD"])
+        commit = self._run_git_command(["rev-parse", "--short", "HEAD"])
+        return branch or "unknown", commit or "unknown"
+
+    def _run_git_command(self, args: list[str]) -> str | None:
+        try:
+            completed = subprocess.run(
+                ["git", *args],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+        except OSError:
+            return None
+        if completed.returncode != 0:
+            return None
+        return completed.stdout.strip() or None
 
     def _delete_stored_audio_if_needed(self, *, interview_id: str, audio_url: str) -> None:
         if self.settings.features.use_sample_mode:

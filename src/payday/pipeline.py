@@ -604,7 +604,15 @@ class PaydayPipeline:
             "borrowing_history": self._read_value(structured_output, "borrowing_history"),
             "repayment_preference": self._read_value(structured_output, "repayment_preference"),
             "loan_interest": self._read_value(structured_output, "loan_interest"),
+            "segmented_dialogue": self._read_segmented_dialogue(structured_output),
         }
+
+    @staticmethod
+    def _read_segmented_dialogue(structured_output: dict[str, Any]) -> list[dict[str, Any]]:
+        segmented_dialogue = structured_output.get("segmented_dialogue")
+        if isinstance(segmented_dialogue, list):
+            return [turn for turn in segmented_dialogue if isinstance(turn, dict)]
+        return []
 
     def _confidence_score(self, structured_output: dict[str, Any]) -> float:
         confidence_signals = structured_output.get("confidence_signals")

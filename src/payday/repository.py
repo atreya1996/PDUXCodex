@@ -25,6 +25,7 @@ class InterviewRecord:
     latest_stage: str
     last_error: str | None
     created_at: str
+    analysis_version: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +154,8 @@ class PaydayRepository:
             connection.execute("ALTER TABLE interviews ADD COLUMN analysis_schema_version INTEGER")
         if "persona_ruleset_version" not in interview_columns:
             connection.execute("ALTER TABLE interviews ADD COLUMN persona_ruleset_version INTEGER")
+        if "analysis_version" not in interview_columns:
+            connection.execute("ALTER TABLE interviews ADD COLUMN analysis_version TEXT")
 
     def _ensure_structured_response_columns(self, connection: sqlite3.Connection) -> None:
         structured_columns = {
@@ -199,8 +202,8 @@ class PaydayRepository:
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO interviews (id, audio_url, transcript, status, latest_stage, last_error, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO interviews (id, audio_url, transcript, status, latest_stage, last_error, created_at, analysis_version)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
@@ -210,6 +213,7 @@ class PaydayRepository:
                     record.latest_stage,
                     record.last_error,
                     record.created_at,
+                    record.analysis_version,
                 ),
             )
         return record
@@ -233,12 +237,13 @@ class PaydayRepository:
             latest_stage=latest_stage if latest_stage is not None else existing.latest_stage,
             last_error=existing.last_error if last_error is _UNSET else last_error,
             created_at=existing.created_at,
+            analysis_version=existing.analysis_version,
         )
         with self._connect() as connection:
             connection.execute(
                 """
                 UPDATE interviews
-                SET audio_url = ?, transcript = ?, status = ?, latest_stage = ?, last_error = ?
+                SET audio_url = ?, transcript = ?, status = ?, latest_stage = ?, last_error = ?, analysis_version = ?
                 WHERE id = ?
                 """,
                 (
@@ -247,6 +252,7 @@ class PaydayRepository:
                     updated.status,
                     updated.latest_stage,
                     updated.last_error,
+                    updated.analysis_version,
                     interview_id,
                 ),
             )
@@ -256,7 +262,7 @@ class PaydayRepository:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, audio_url, transcript, status, latest_stage, last_error, created_at
+                SELECT id, audio_url, transcript, status, latest_stage, last_error, created_at, analysis_version
                 FROM interviews
                 WHERE id = ?
                 """,
@@ -368,10 +374,10 @@ class PaydayRepository:
             connection.execute(
                 """
                 UPDATE interviews
-                SET analysis_schema_version = ?
+                SET analysis_schema_version = ?, analysis_version = ?
                 WHERE id = ?
                 """,
-                (ANALYSIS_SCHEMA_VERSION, interview_id),
+                (ANALYSIS_SCHEMA_VERSION, analysis_version, interview_id),
             )
         return record
 
@@ -421,11 +427,12 @@ class PaydayRepository:
             connection.execute(
                 """
                 UPDATE interviews
-                SET persona_ruleset_version = ?
+                SET persona_ruleset_version = ?, analysis_version = COALESCE(?, analysis_version)
                 WHERE id = ?
                 """,
                 (
                     PERSONA_RULESET_VERSION,
+                    analysis_version,
                     interview_id,
                 ),
             )
@@ -466,10 +473,11 @@ class PaydayRepository:
                     borrowing_history,
                     repayment_preference,
                     loan_interest,
+                    segmented_dialogue,
                     analysis_version,
                     analyzed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(interview_id) DO UPDATE SET
                     smartphone_user = excluded.smartphone_user,
                     has_bank_account = excluded.has_bank_account,
@@ -480,6 +488,7 @@ class PaydayRepository:
                     borrowing_history = excluded.borrowing_history,
                     repayment_preference = excluded.repayment_preference,
                     loan_interest = excluded.loan_interest,
+                    segmented_dialogue = excluded.segmented_dialogue,
                     analysis_version = excluded.analysis_version,
                     analyzed_at = excluded.analyzed_at
                 """,
@@ -494,6 +503,7 @@ class PaydayRepository:
                     structured_response.get("borrowing_history"),
                     structured_response.get("repayment_preference"),
                     structured_response.get("loan_interest"),
+                    json.dumps(structured_response.get("segmented_dialogue") or [], ensure_ascii=False),
                     analysis_version,
                     analyzed_at,
                 ),
@@ -523,20 +533,21 @@ class PaydayRepository:
             connection.execute(
                 """
                 UPDATE interviews
-                SET analysis_schema_version = ?, persona_ruleset_version = ?
+                SET analysis_schema_version = ?, persona_ruleset_version = ?, analysis_version = ?
                 WHERE id = ?
                 """,
-                (ANALYSIS_SCHEMA_VERSION, PERSONA_RULESET_VERSION, interview_id),
+                (ANALYSIS_SCHEMA_VERSION, PERSONA_RULESET_VERSION, analysis_version, interview_id),
             )
         return self.get_dashboard_interview_detail(interview_id)
 
-    def list_stale_interview_ids(self, *, limit: int = 500) -> list[str]:
+    def list_stale_interview_ids(self, *, latest_analysis_version: str | None = None, limit: int = 500) -> list[str]:
         with self._connect() as connection:
             rows = connection.execute(
                 """
                 SELECT interviews.id
                 FROM interviews
                 LEFT JOIN insights ON insights.interview_id = interviews.id
+                LEFT JOIN structured_responses ON structured_responses.interview_id = interviews.id
                 WHERE interviews.transcript IS NOT NULL
                   AND TRIM(interviews.transcript) <> ''
                   AND (
@@ -545,11 +556,16 @@ class PaydayRepository:
                     OR interviews.persona_ruleset_version IS NULL
                     OR interviews.persona_ruleset_version < ?
                     OR insights.persona IS NULL
+                    OR structured_responses.interview_id IS NULL
+                    OR structured_responses.analysis_version IS NULL
+                    OR insights.analysis_version IS NULL
+                    OR structured_responses.analysis_version <> insights.analysis_version
+                    OR (? IS NOT NULL AND (interviews.analysis_version IS NULL OR interviews.analysis_version <> ?))
                   )
                 ORDER BY interviews.created_at DESC, interviews.id DESC
                 LIMIT ?
                 """,
-                (ANALYSIS_SCHEMA_VERSION, PERSONA_RULESET_VERSION, limit),
+                (ANALYSIS_SCHEMA_VERSION, PERSONA_RULESET_VERSION, latest_analysis_version, latest_analysis_version, limit),
             ).fetchall()
         return [str(row["id"]) for row in rows]
 
@@ -588,6 +604,7 @@ class PaydayRepository:
                     interviews.latest_stage,
                     interviews.last_error,
                     interviews.created_at,
+                    interviews.analysis_version AS interview_analysis_version,
                     structured_responses.smartphone_user,
                     structured_responses.has_bank_account,
                     structured_responses.per_household_earnings,
@@ -698,6 +715,7 @@ class PaydayRepository:
                     interviews.latest_stage,
                     interviews.last_error,
                     interviews.created_at,
+                    interviews.analysis_version AS interview_analysis_version,
                     structured_responses.smartphone_user,
                     structured_responses.has_bank_account,
                     structured_responses.per_household_earnings,
@@ -865,7 +883,7 @@ class PaydayRepository:
             key_quotes=json.loads(payload["key_quotes"]) if payload["key_quotes"] else [],
             persona=payload["persona"],
             confidence_score=payload["confidence_score"],
-            analysis_version=payload.get("insight_analysis_version") or payload.get("structured_analysis_version"),
+            analysis_version=payload.get("interview_analysis_version") or payload.get("insight_analysis_version") or payload.get("structured_analysis_version"),
             analyzed_at=payload.get("insight_analyzed_at") or payload.get("structured_analyzed_at"),
         )
 
