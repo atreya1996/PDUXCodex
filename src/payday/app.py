@@ -11,6 +11,7 @@ from payday.transcription import describe_transcription_file_size_limit
 from payday.upload import SUPPORTED_UPLOAD_EXTENSIONS
 
 REFRESH_STATUS_FLAG = "dashboard_status_reloaded"
+FORCE_SQLITE_RELOAD_FLAG = "dashboard_force_sqlite_reload"
 
 
 @st.cache_resource
@@ -21,9 +22,9 @@ def build_app_service() -> tuple[PaydayAppService, Settings]:
     return PaydayAppService(settings), settings
 
 
-def load_dashboard_state(app_service: PaydayAppService) -> dict[str, object]:
+def load_dashboard_state(app_service: PaydayAppService, *, force_sqlite_reload: bool = False) -> dict[str, object]:
     return {
-        "cached_results": app_service.list_results(),
+        "cached_results": [] if force_sqlite_reload else app_service.list_results(),
         "recent_interviews": app_service.list_recent_interviews(),
         "status_overview": app_service.get_status_overview(),
     }
@@ -123,7 +124,8 @@ def main() -> None:
             "Analysis is disabled by feature flag. The dashboard continues to show durable SQLite-backed interviews plus any current-session cache."
         )
 
-    dashboard_state = load_dashboard_state(app_service)
+    force_sqlite_reload = bool(st.session_state.pop(FORCE_SQLITE_RELOAD_FLAG, False))
+    dashboard_state = load_dashboard_state(app_service, force_sqlite_reload=force_sqlite_reload)
     dashboard.render(
         cached_results=dashboard_state["cached_results"],
         recent_interviews=dashboard_state["recent_interviews"],

@@ -44,6 +44,8 @@ FILTER_SESSION_KEYS = {
     "detail_message": "dashboard_detail_message",
     "delete_confirm": "dashboard_delete_confirm",
     "overlay_open": "dashboard_interview_overlay_open",
+    "force_sqlite_reload": "dashboard_force_sqlite_reload",
+    "toast_message": "dashboard_toast_message",
 }
 
 
@@ -129,6 +131,7 @@ class DashboardRenderer:
         st.session_state.setdefault(FILTER_SESSION_KEYS["detail_message"], None)
         st.session_state.setdefault(FILTER_SESSION_KEYS["delete_confirm"], None)
         st.session_state.setdefault(FILTER_SESSION_KEYS["overlay_open"], False)
+        st.session_state.setdefault(FILTER_SESSION_KEYS["toast_message"], None)
 
         selected_key = FILTER_SESSION_KEYS["selected"]
         if interviews and not st.session_state.get(selected_key):
@@ -369,6 +372,7 @@ class DashboardRenderer:
         all_interviews: list[DashboardInterview],
         interview_detail_loader: Callable[[str], DashboardInterviewRecord],
         save_interview_edits: Callable[..., DashboardInterviewRecord] | None,
+        reprocess_interview: Callable[[str], DashboardInterviewRecord] | None,
         delete_interview: Callable[[str], bool] | None,
         sample_mode: bool,
     ) -> None:
@@ -385,11 +389,20 @@ class DashboardRenderer:
             )
             return
 
+        toast_message = st.session_state.pop(FILTER_SESSION_KEYS["toast_message"], None)
+        if isinstance(toast_message, dict) and toast_message.get("message"):
+            toast_kind = str(toast_message.get("kind", "success"))
+            st.toast(
+                str(toast_message["message"]),
+                icon="✅" if toast_kind == "success" else "❌",
+            )
+
         self._render_overlay_if_needed(
             filtered=filtered,
             all_interviews=all_interviews,
             interview_detail_loader=interview_detail_loader,
             save_interview_edits=save_interview_edits,
+            reprocess_interview=reprocess_interview,
             delete_interview=delete_interview,
         )
 
@@ -397,7 +410,11 @@ class DashboardRenderer:
         card_columns = st.columns(2, gap="large")
         for index, interview in enumerate(filtered):
             with card_columns[index % len(card_columns)]:
-                self._render_interview_card(interview)
+                self._render_interview_card(
+                    interview,
+                    delete_interview=delete_interview,
+                    all_interviews=all_interviews,
+                )
         st.markdown("</div>", unsafe_allow_html=True)
 
     def _render_page_intro(self, title: str, subtitle: str) -> None:
@@ -650,7 +667,13 @@ class DashboardRenderer:
             unsafe_allow_html=True,
         )
 
-    def _render_interview_card(self, interview: DashboardInterview) -> None:
+    def _render_interview_card(
+        self,
+        interview: DashboardInterview,
+        *,
+        delete_interview: Callable[[str], bool] | None,
+        all_interviews: list[DashboardInterview],
+    ) -> None:
         badge_class = "badge-nontarget" if interview.is_non_target else "badge-target"
         persona_label = html.escape(interview.persona_name)
         summary = html.escape(self._truncate_text(interview.summary, limit=160) or "No summary captured yet.")
@@ -677,6 +700,41 @@ class DashboardRenderer:
             st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = True
             st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
             st.rerun()
+
+        with st.expander("Delete interview", expanded=False):
+            delete_disabled = delete_interview is None
+            if st.button(
+                f"Delete {interview.filename}",
+                key=f"delete_interview_card_{interview.id}",
+                use_container_width=True,
+                disabled=delete_disabled,
+            ):
+                st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = interview.id
+                st.rerun()
+            if delete_disabled:
+                st.caption("Delete is unavailable because no backend delete handler was provided.")
+            elif st.session_state.get(FILTER_SESSION_KEYS["delete_confirm"]) == interview.id:
+                st.warning("Confirm permanent delete for this interview and linked records.")
+                confirm_col, cancel_col = st.columns(2, gap="small")
+                with confirm_col:
+                    if st.button(
+                        "Confirm",
+                        key=f"confirm_delete_card_{interview.id}",
+                        use_container_width=True,
+                    ):
+                        self._delete_interview_and_refresh(
+                            interview=interview,
+                            all_interviews=all_interviews,
+                            delete_interview=delete_interview,
+                        )
+                with cancel_col:
+                    if st.button(
+                        "Cancel",
+                        key=f"cancel_delete_card_{interview.id}",
+                        use_container_width=True,
+                    ):
+                        st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+                        st.rerun()
 
     def _render_overlay_if_needed(
         self,
@@ -833,34 +891,11 @@ class DashboardRenderer:
                     key=f"confirm_delete_interview_{selected.id}",
                     use_container_width=True,
                 ):
-                    try:
-                        deleted = delete_interview(selected.id)
-                    except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
-                        st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                            "kind": "error",
-                            "message": f"Delete failed: {exc}",
-                        }
-                    else:
-                        if deleted:
-                            transcript_edits.pop(selected.id, None)
-                            st.session_state[FILTER_SESSION_KEYS["selected"]] = self._next_selected_id(
-                                all_interviews,
-                                deleted_id=selected.id,
-                            )
-                            st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = bool(
-                                st.session_state[FILTER_SESSION_KEYS["selected"]]
-                            )
-                            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                                "kind": "success",
-                                "message": "Interview deleted. Interview lists and overview counts were refreshed from durable storage.",
-                            }
-                        else:
-                            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
-                                "kind": "error",
-                                "message": f"Interview {selected.id} could not be deleted because it no longer exists.",
-                            }
-                        st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
-                        st.rerun()
+                    self._delete_interview_and_refresh(
+                        interview=selected,
+                        all_interviews=all_interviews,
+                        delete_interview=delete_interview,
+                    )
             with cancel_col:
                 if st.button(
                     "Cancel delete",
@@ -994,6 +1029,69 @@ class DashboardRenderer:
         if not remaining_ids:
             return None
         return remaining_ids[0]
+
+    def _delete_interview_and_refresh(
+        self,
+        *,
+        interview: DashboardInterview,
+        all_interviews: list[DashboardInterview],
+        delete_interview: Callable[[str], bool] | None,
+    ) -> None:
+        if delete_interview is None:
+            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                "kind": "error",
+                "message": "Delete is unavailable because no backend delete handler was provided.",
+            }
+            st.session_state[FILTER_SESSION_KEYS["toast_message"]] = {
+                "kind": "error",
+                "message": "Delete unavailable.",
+            }
+            st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+            st.rerun()
+
+        transcript_edits: dict[str, str] = st.session_state[FILTER_SESSION_KEYS["transcripts"]]
+        try:
+            deleted = delete_interview(interview.id)
+        except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+            st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                "kind": "error",
+                "message": f"Delete failed: {exc}",
+            }
+            st.session_state[FILTER_SESSION_KEYS["toast_message"]] = {
+                "kind": "error",
+                "message": f"Delete failed: {exc}",
+            }
+        else:
+            if deleted:
+                transcript_edits.pop(interview.id, None)
+                st.session_state[FILTER_SESSION_KEYS["selected"]] = self._next_selected_id(
+                    all_interviews,
+                    deleted_id=interview.id,
+                )
+                st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = bool(
+                    st.session_state[FILTER_SESSION_KEYS["selected"]]
+                )
+                st.session_state[FILTER_SESSION_KEYS["force_sqlite_reload"]] = True
+                st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                    "kind": "success",
+                    "message": "Interview deleted. Interview lists, overview KPIs, and cohort/persona tables were reloaded from SQLite.",
+                }
+                st.session_state[FILTER_SESSION_KEYS["toast_message"]] = {
+                    "kind": "success",
+                    "message": "Interview deleted and dashboard refreshed.",
+                }
+            else:
+                st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                    "kind": "error",
+                    "message": f"Interview {interview.id} could not be deleted because it no longer exists.",
+                }
+                st.session_state[FILTER_SESSION_KEYS["toast_message"]] = {
+                    "kind": "error",
+                    "message": f"Interview {interview.id} was already removed.",
+                }
+
+        st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+        st.rerun()
 
     def _build_cohort_rows(self, interviews: list[DashboardInterview], attribute: str) -> list[tuple[str, int, str]]:
         counts = self._count_by(interviews, lambda item: getattr(item, attribute))
