@@ -51,7 +51,8 @@ class StaticTranscriptionService(TranscriptionService):
         return Transcript(
             text=(
                 "I use WhatsApp every day. My bank account is active. "
-                "I borrow from neighbors when money is short."
+                "I earn ₹12,000 per month. I borrow from neighbors sometimes. "
+                "I repay monthly after salary. I am worried about scams."
             ),
             provider="openai",
             model=self.settings.model,
@@ -823,6 +824,59 @@ def test_app_service_save_interview_edits_accepts_dashboard_json_and_rederives_p
     assert reloaded_detail.summary == "Participant lacks a smartphone and avoids borrowing."
     assert reloaded_detail.key_quotes == ["I use a basic phone now."]
     assert reloaded_service.get_status_overview().status_counts == {ProcessingStatus.COMPLETED.value: 1}
+
+
+def test_app_service_save_interview_edits_preserves_manual_income_evidence_quotes(tmp_path) -> None:
+    database_path = str(tmp_path / "edit-json-income-manual.db")
+    service = PaydayAppService(build_settings(database_path))
+    result = service.process_upload(
+        "json-income-edit.wav",
+        "audio/wav",
+        b"I use WhatsApp and my bank account is active.",
+    )
+
+    edited_payload = {
+        "audio_url": service.get_interview_detail(result.file_id).audio_url,
+        "participant_profile": {
+            "smartphone_user": {"value": True},
+            "has_bank_account": {"value": True},
+        },
+        "participant_personal_monthly_income": {
+            "value": "₹9,000",
+            "status": "observed",
+            "evidence_quotes": ["Monthly salary around 9k from all homes"],
+            "notes": "Curated from manual review notes.",
+            "evidence_type": "direct",
+        },
+        "per_household_earnings": {"value": "unknown", "status": "unknown", "evidence_quotes": [], "notes": "", "evidence_type": "unknown"},
+        "total_household_monthly_income": {"value": "unknown", "status": "unknown", "evidence_quotes": [], "notes": "", "evidence_type": "unknown"},
+        "borrowing_history": {"value": "has_not_borrowed_recently", "status": "observed", "evidence_quotes": ["I avoid loans"], "notes": ""},
+        "repayment_preference": {"value": "monthly", "status": "observed", "evidence_quotes": ["monthly"], "notes": ""},
+        "loan_interest": {"value": "not_interested", "status": "observed", "evidence_quotes": ["not interested"], "notes": ""},
+        "summary": {"value": "Manual correction retains curated income quote.", "status": "observed", "evidence_quotes": ["Monthly salary around 9k from all homes"], "notes": ""},
+        "key_quotes": ["Monthly salary around 9k from all homes"],
+        "confidence_signals": {"observed_evidence": [], "missing_or_unknown": []},
+    }
+
+    saved_detail = service.save_interview_edits(
+        result.file_id,
+        transcript="I use WhatsApp and my bank account is active.",
+        extracted_json=json.dumps(edited_payload, ensure_ascii=False),
+        transcript_changed=False,
+        structured_json_changed=True,
+    )
+
+    assert saved_detail.participant_personal_monthly_income == "₹9,000"
+    assert saved_detail.income_range == "Participant monthly income: ₹9,000"
+    assert saved_detail.key_quotes == ["Monthly salary around 9k from all homes"]
+
+    persisted = service.repository.get_result(result.file_id)
+    assert persisted is not None
+    assert persisted.analysis is not None
+    assert persisted.analysis.structured_output["participant_personal_monthly_income"]["evidence_quotes"] == [
+        "Monthly salary around 9k from all homes"
+    ]
+    assert persisted.analysis.metrics["evidence_mode"] == "manual_edit"
 
 
 def test_dashboard_tabs_reflect_legacy_reprocessed_persona_examples_one_to_five(tmp_path) -> None:
