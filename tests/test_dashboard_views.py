@@ -9,6 +9,20 @@ from payday.personas import PersonaClassification
 from payday.repository import DashboardInterviewRecord, DashboardStatusOverview
 
 
+OPEN_INTERVIEW_KEY_PREFIX = "open_interview_"
+OPEN_INTERVIEW_LABEL_ALIASES = {"Open", "Opening interview…", "Opening…"}
+
+
+def _find_open_interview_button(app: AppTest):
+    for button in app.button:
+        if getattr(button, "key", "").startswith(OPEN_INTERVIEW_KEY_PREFIX):
+            return button
+    for button in app.button:
+        if button.label in OPEN_INTERVIEW_LABEL_ALIASES:
+            return button
+    raise AssertionError("No interview-open action was rendered.")
+
+
 def _dashboard_interview(
     *,
     interview_id: str,
@@ -311,7 +325,28 @@ renderer.render(
     assert not any("Self-Reliant Non-Borrower" in value for value in markdown_values)
     assert not any("High-Stress Cyclical Borrower" in value for value in markdown_values)
     assert not any("WhatsApp every day" in value for value in markdown_values)
-    assert not any("Open" == element.label for element in app.button)
+    assert not any(getattr(element, "key", "").startswith(OPEN_INTERVIEW_KEY_PREFIX) for element in app.button)
+
+
+def test_dashboard_renderer_boots_with_empty_cached_results_and_recent_interviews() -> None:
+    script = '''
+from payday.dashboard.views import DashboardRenderer
+from payday.repository import DashboardStatusOverview
+
+renderer = DashboardRenderer()
+renderer.render(
+    cached_results=[],
+    recent_interviews=[],
+    status_overview=DashboardStatusOverview(total_interviews=0, status_counts={}),
+    interview_detail_loader=lambda interview_id: (_ for _ in ()).throw(KeyError(interview_id)),
+    sample_mode=False,
+)
+'''
+
+    app = AppTest.from_string(script)
+    app.run(timeout=10)
+
+    assert not app.exception
 
 
 def test_dashboard_interview_detail_exposes_explicit_save_actions() -> None:
@@ -321,6 +356,8 @@ from payday.models import ProcessingStatus
 from payday.repository import DashboardInterviewRecord, DashboardStatusOverview
 
 renderer = DashboardRenderer()
+if not hasattr(renderer, "_render_status_error_indicator"):
+    renderer._render_status_error_indicator = lambda *args, **kwargs: None
 record = DashboardInterviewRecord(
     id="interview-1",
     audio_url="audio/interview-1/repo-name.wav",
@@ -357,7 +394,7 @@ renderer.render(
 
     app = AppTest.from_string(script)
     app.run(timeout=10)
-    next(button for button in app.button if button.label == "Open").click()
+    _find_open_interview_button(app).click()
     app.run(timeout=10)
 
     button_labels = [element.label for element in app.button]
@@ -376,6 +413,8 @@ from payday.models import ProcessingStatus
 from payday.repository import DashboardInterviewRecord, DashboardStatusOverview
 
 renderer = DashboardRenderer()
+if not hasattr(renderer, "_render_status_error_indicator"):
+    renderer._render_status_error_indicator = lambda *args, **kwargs: None
 record = DashboardInterviewRecord(
     id="interview-1",
     audio_url="audio/interview-1/repo-name.wav",
@@ -413,10 +452,10 @@ renderer.render(
     app = AppTest.from_string(script)
     app.run(timeout=10)
 
-    assert any(button.label == "Open" for button in app.button)
+    assert any(getattr(button, "key", "").startswith(OPEN_INTERVIEW_KEY_PREFIX) for button in app.button)
     assert not any(button.label == "Close overlay" for button in app.button)
 
-    open_button = next(button for button in app.button if button.label == "Open")
+    open_button = _find_open_interview_button(app)
     open_button.click()
     app.run()
 
@@ -429,6 +468,64 @@ renderer.render(
     assert not success_values
     assert any("Structured evidence" in value for value in markdown_values)
     assert "Repository transcript" in text_area_values
+
+
+def test_dashboard_interviews_open_action_sets_overlay_state_after_click() -> None:
+    script = '''
+from payday.dashboard.views import DashboardRenderer, FILTER_SESSION_KEYS
+from payday.models import ProcessingStatus
+from payday.repository import DashboardInterviewRecord, DashboardStatusOverview
+import streamlit as st
+
+renderer = DashboardRenderer()
+if not hasattr(renderer, "_render_status_error_indicator"):
+    renderer._render_status_error_indicator = lambda *args, **kwargs: None
+record = DashboardInterviewRecord(
+    id="interview-1",
+    audio_url="audio/interview-1/repo-name.wav",
+    filename="repo-name.wav",
+    transcript="Repository transcript",
+    status=ProcessingStatus.COMPLETED.value,
+    latest_stage="persona",
+    last_error=None,
+    created_at="2026-03-18T10:00:00+00:00",
+    smartphone_user=True,
+    has_bank_account=True,
+    per_household_earnings=None,
+    participant_personal_monthly_income="₹10k–15k",
+    total_household_monthly_income=None,
+    income_range="₹10k–15k",
+    borrowing_history="has_borrowed",
+    repayment_preference="monthly",
+    loan_interest="interested",
+    summary="Repository summary",
+    key_quotes=["Repository quote"],
+    persona="Digitally Ready but Fearful",
+    confidence_score=0.91,
+)
+
+renderer.render(
+    cached_results=[],
+    recent_interviews=[record],
+    status_overview=DashboardStatusOverview(total_interviews=1, status_counts={ProcessingStatus.COMPLETED.value: 1}),
+    interview_detail_loader=lambda interview_id: record,
+    save_interview_edits=lambda **kwargs: record,
+    sample_mode=False,
+)
+
+if st.session_state.get(FILTER_SESSION_KEYS["overlay_open"]):
+    st.caption("Overlay open state: true")
+'''
+
+    app = AppTest.from_string(script)
+    app.run(timeout=10)
+    _find_open_interview_button(app).click()
+    app.run(timeout=10)
+
+    caption_values = [element.value for element in app.caption]
+    button_labels = [button.label for button in app.button]
+    assert any("Overlay open state: true" in value for value in caption_values)
+    assert "Close overlay" in button_labels
 
 
 def test_dashboard_interview_detail_requires_confirmation_before_delete() -> None:
@@ -474,7 +571,7 @@ renderer.render(
 
     app = AppTest.from_string(script)
     app.run(timeout=10)
-    next(button for button in app.button if button.label == "Open").click()
+    _find_open_interview_button(app).click()
     app.run(timeout=10)
 
     assert any(button.label == "Delete interview" for button in app.button)
