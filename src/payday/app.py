@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -12,6 +14,7 @@ from payday.upload import SUPPORTED_UPLOAD_EXTENSIONS
 
 REFRESH_STATUS_FLAG = "dashboard_status_reloaded"
 FORCE_SQLITE_RELOAD_FLAG = "dashboard_force_sqlite_reload"
+REPROCESS_STALE_FLAG = "dashboard_reprocess_stale_result"
 
 
 @st.cache_resource
@@ -28,6 +31,24 @@ def load_dashboard_state(app_service: PaydayAppService, *, force_sqlite_reload: 
         "recent_interviews": app_service.list_recent_interviews(),
         "status_overview": app_service.get_status_overview(),
     }
+
+
+def get_runtime_git_banner() -> str:
+    try:
+        short_sha = (
+            subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True, stderr=subprocess.DEVNULL)
+            .strip()
+        )
+        branch = (
+            subprocess.check_output(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"], text=True, stderr=subprocess.DEVNULL
+            ).strip()
+        )
+        if short_sha and branch:
+            return f"Runtime commit: `{short_sha}` on `{branch}`"
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    return "Runtime commit: unavailable"
 
 
 def main() -> None:
@@ -50,6 +71,7 @@ def main() -> None:
     )
 
     st.sidebar.header("Upload interviews")
+    st.sidebar.caption(get_runtime_git_banner())
     st.sidebar.caption(
         "Start with one small recording to validate live processing, then scale up to a full batch. "
         f"Supported formats: {supported_formats_label}. Filters stay in session state for instant iteration."
