@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+from hashlib import sha1
+from pathlib import Path
+from datetime import datetime, timezone
 from collections.abc import Callable, Iterable
 from typing import Any, TypeVar
 from uuid import uuid4
@@ -163,6 +166,7 @@ class PaydayPipeline:
         )
 
         try:
+            analysis_metadata = self._analysis_metadata()
             analysis = self._analysis_from_edit(
                 transcript=transcript,
                 extracted_json=extracted_json,
@@ -170,6 +174,7 @@ class PaydayPipeline:
                 transcript_changed=transcript_changed,
                 structured_json_changed=structured_json_changed,
             )
+            analysis.metrics.update(analysis_metadata)
             result.analysis = analysis
             result.current_stage = PipelineStage.PERSONA
             result.persona = self.classify_persona(transcript, analysis)
@@ -188,6 +193,8 @@ class PaydayPipeline:
                     "persona": result.persona.persona_name,
                     "confidence_score": self._confidence_score(result.analysis.structured_output),
                 },
+                analysis_version=analysis_metadata["analysis_version"],
+                analyzed_at=analysis_metadata["analyzed_at"],
             )
             self.repository.save_result(result)
             return result
@@ -555,9 +562,13 @@ class PaydayPipeline:
             raise ValueError("Cannot persist analysis outputs without both analysis and persona results.")
 
         structured_output = result.analysis.structured_output
+        metadata = self._analysis_metadata()
+        result.analysis.metrics.update(metadata)
         self.repository.upsert_structured_response(
             result.file_id,
             **self._structured_response_fields(structured_output),
+            analysis_version=metadata["analysis_version"],
+            analyzed_at=metadata["analyzed_at"],
         )
         self.repository.upsert_insight(
             result.file_id,
@@ -565,7 +576,20 @@ class PaydayPipeline:
             key_quotes=list(result.analysis.evidence_quotes),
             persona=result.persona.persona_name,
             confidence_score=self._confidence_score(structured_output),
+            analysis_version=metadata["analysis_version"],
+            analyzed_at=metadata["analyzed_at"],
         )
+
+    def _analysis_metadata(self) -> dict[str, str]:
+        prompt_path = Path(__file__).resolve().parents[2] / "prompts" / "analysis_prompt.md"
+        prompt_text = prompt_path.read_text(encoding="utf-8")
+        prompt_hash = sha1(prompt_text.encode("utf-8")).hexdigest()[:12]
+        provider = self.analysis_service.adapter.provider_name
+        model = self.analysis_service.adapter.model_name
+        return {
+            "analysis_version": f"{provider}:{model}:{prompt_hash}",
+            "analyzed_at": datetime.now(timezone.utc).isoformat(),
+        }
 
     def _structured_response_fields(self, structured_output: dict[str, Any]) -> dict[str, Any]:
         smartphone_user = smartphone_user_from_analysis(structured_output)

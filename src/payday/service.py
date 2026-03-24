@@ -92,22 +92,15 @@ class PaydayAppService:
         )
         return self.repository.get_dashboard_interview_detail(interview_id)
 
-    def reprocess_stale_interviews(self, *, limit: int = 500) -> dict[str, object]:
-        stale_ids = self.repository.list_stale_interview_ids(limit=limit)
-        reprocessed: list[str] = []
-        failed: dict[str, str] = {}
-        for interview_id in stale_ids:
-            try:
-                self.reprocess_interview(interview_id)
-            except Exception as exc:
-                failed[interview_id] = str(exc)
-            else:
-                reprocessed.append(interview_id)
-        return {
-            "stale_count": len(stale_ids),
-            "reprocessed_ids": reprocessed,
-            "failed": failed,
-        }
+    def reanalyze_interviews(self, interview_ids: list[str]) -> list[DashboardInterviewRecord]:
+        refreshed: list[DashboardInterviewRecord] = []
+        for interview_id in interview_ids:
+            refreshed.append(self.reprocess_interview(interview_id))
+        return refreshed
+
+    def reanalyze_all_interviews(self) -> list[DashboardInterviewRecord]:
+        interview_ids = [record.id for record in self.repository.list_recent_interviews(limit=10_000)]
+        return self.reanalyze_interviews(interview_ids)
 
     def delete_interview(self, interview_id: str) -> bool:
         try:

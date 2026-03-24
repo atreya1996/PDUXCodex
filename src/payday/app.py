@@ -153,6 +153,7 @@ def main() -> None:
         interview_detail_loader=app_service.get_interview_detail,
         save_interview_edits=getattr(app_service, "save_interview_edits", None),
         reprocess_interview=getattr(app_service, "reprocess_interview", None),
+        reanalyze_interviews=getattr(app_service, "reanalyze_interviews", None),
         delete_interview=getattr(app_service, "delete_interview", None),
         sample_mode=settings.features.use_sample_mode,
     )

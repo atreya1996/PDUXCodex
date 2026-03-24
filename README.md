@@ -182,7 +182,12 @@ No live API keys are required in this mode.
 
 The dashboard also persists interview metadata, structured fields, and summaries into the local SQLite database at `PAYDAY_SQLITE_PATH`, so restarting Streamlit does not clear previously processed interviews as long as that file still exists.
 
-When prompts, persona rules, or `src/payday/analysis.py` change, do not judge the new behavior from old SQLite rows. Use the sidebar **Reprocess all stale interviews** action to refresh legacy rows created under older schema/ruleset versions, or delete/re-upload a specific interview when needed.
+When prompts or `src/payday/analysis.py` change, do not judge new behavior from stale rows. Use dashboard re-analysis actions so SQLite rows are actively rebuilt:
+
+- **Re-analyze selected interview** (Interview Detail overlay) reruns analysis + persona for one row and overwrites that interview's structured response/insight records.
+- **Re-analyze all interviews** (Interviews tab) reruns analysis + persona for every durable interview and overwrites all structured response/insight records.
+
+Each structured/insight row now stores `analysis_version` and `analyzed_at`, so Overview/Cohorts can surface mixed-version warnings and reviewers can trace which prompt/model revision produced each row.
 
 ### Demo workflow using `sample_data/`
 
