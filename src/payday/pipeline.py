@@ -241,6 +241,17 @@ class PaydayPipeline:
                 message="upload accepted",
             )
             result.asset = self.upload_audio(item)
+            if not Path(result.asset.file_path).exists():
+                self._record_failure(
+                    result,
+                    stage=PipelineStage.UPLOAD,
+                    error=(
+                        f"Uploaded file was not persisted at '{result.asset.file_path}'. "
+                        "Retry the upload and verify local disk permissions."
+                    ),
+                    message="upload persistence verification failed",
+                )
+                return result
 
             self._set_stage(
                 result,
