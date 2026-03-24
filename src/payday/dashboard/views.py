@@ -62,6 +62,9 @@ FILTER_SESSION_KEYS = {
     "open_interview_pending_id": "dashboard_open_interview_pending_id",
     "open_interview_pending_at": "dashboard_open_interview_pending_at",
     "overlay_fallback_reason": "dashboard_overlay_fallback_reason",
+    "debug_status_filters": "dashboard_debug_status_filters",
+    "debug_interview_id": "dashboard_debug_interview_id",
+    "debug_full_transcript": "dashboard_debug_full_transcript",
     "include_low_quality": "dashboard_include_low_quality",
     "interview_page": "dashboard_interview_page",
 }
@@ -71,6 +74,8 @@ MAX_UI_TRANSCRIPT_CHARS = 12000
 MAX_MAIN_LIST_QUOTES = 3
 INTERVIEW_CARDS_PER_PAGE = 8
 MAX_TABLE_ROWS_PER_VIEW = 10
+DEBUG_TRANSCRIPT_PREVIEW_LIMIT = 280
+DEBUG_MAX_DISPLAY_ROWS = 200
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,7 +142,7 @@ class DashboardRenderer:
         filtered = self._apply_filters(interviews)
         self._render_sidebar_filters(filtered, interviews, status_overview)
 
-        tabs = st.tabs(["Overview", "Cohorts", "Personas", "Interviews"])
+        tabs = st.tabs(["Overview", "Cohorts", "Personas", "Interviews", "Debug Console"])
         with tabs[0]:
             self._render_overview(filtered, interviews, status_overview, sample_mode=sample_mode)
         with tabs[1]:
@@ -161,6 +166,8 @@ class DashboardRenderer:
                 delete_interview=delete_interview,
                 sample_mode=sample_mode,
             )
+        with tabs[4]:
+            self._render_debug_console(all_interviews=interviews, status_overview=status_overview)
 
     def _initialize_session_state(self, interviews: list[DashboardInterview]) -> None:
         st.session_state.setdefault(FILTER_SESSION_KEYS["income"], [])
@@ -180,6 +187,9 @@ class DashboardRenderer:
         st.session_state.setdefault(FILTER_SESSION_KEYS["open_interview_pending_id"], None)
         st.session_state.setdefault(FILTER_SESSION_KEYS["open_interview_pending_at"], None)
         st.session_state.setdefault(FILTER_SESSION_KEYS["overlay_fallback_reason"], None)
+        st.session_state.setdefault(FILTER_SESSION_KEYS["debug_status_filters"], [])
+        st.session_state.setdefault(FILTER_SESSION_KEYS["debug_interview_id"], "")
+        st.session_state.setdefault(FILTER_SESSION_KEYS["debug_full_transcript"], False)
         st.session_state.setdefault(FILTER_SESSION_KEYS["interview_page"], 1)
 
         selected_key = FILTER_SESSION_KEYS["selected"]
@@ -192,6 +202,145 @@ class DashboardRenderer:
             st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = False
             st.session_state[FILTER_SESSION_KEYS["open_interview_pending_id"]] = None
             st.session_state[FILTER_SESSION_KEYS["open_interview_pending_at"]] = None
+
+    def _render_debug_console(
+        self,
+        *,
+        all_interviews: list[DashboardInterview],
+        status_overview: DashboardStatusOverview,
+    ) -> None:
+        self._render_page_intro(
+            "Debug Console",
+            "Read-only troubleshooting view for raw interview rows, failed jobs, and transcript inspection.",
+        )
+        st.info(
+            "Debug Console is read-only by default. Refreshing reloads durable rows from SQLite without mutating records."
+        )
+        controls = st.columns((1, 1, 1), gap="medium")
+        status_options = sorted({item.status for item in all_interviews})
+        with controls[0]:
+            st.multiselect(
+                "Status filter",
+                options=status_options,
+                key=FILTER_SESSION_KEYS["debug_status_filters"],
+                placeholder="All statuses",
+                help="Filter debug rows by processing status.",
+            )
+        with controls[1]:
+            st.text_input(
+                "Interview ID contains",
+                key=FILTER_SESSION_KEYS["debug_interview_id"],
+                placeholder="Paste full or partial interview ID",
+            )
+        with controls[2]:
+            if st.button("Refresh from DB", key="debug_refresh_from_db", use_container_width=True):
+                st.session_state[FILTER_SESSION_KEYS["force_sqlite_reload"]] = True
+                st.session_state[FILTER_SESSION_KEYS["toast_message"]] = {
+                    "kind": "success",
+                    "message": "Debug Console requested a durable SQLite refresh.",
+                }
+                st.rerun()
+
+        filtered_rows = self._filter_debug_rows(all_interviews)
+        status_counts = self._status_counts(filtered_rows, status_overview)
+        snapshot_cols = st.columns(3, gap="medium")
+        with snapshot_cols[0]:
+            self._render_metric_card("Filtered rows", str(len(filtered_rows)), card_class="compact-card")
+        with snapshot_cols[1]:
+            failed_like_count = sum(1 for row in filtered_rows if self._is_failed_or_malformed_row(row))
+            self._render_metric_card("Failed/malformed", str(failed_like_count), card_class="compact-card")
+        with snapshot_cols[2]:
+            self._render_metric_card(
+                "Completed rows",
+                str(status_counts.get(ProcessingStatus.COMPLETED.value, 0)),
+                card_class="compact-card",
+            )
+
+        st.markdown("#### Raw interview rows")
+        st.caption("Includes status, stage, and error message fields for backend troubleshooting.")
+        st.dataframe(
+            self._debug_table_records(filtered_rows),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        failed_rows = [row for row in filtered_rows if self._is_failed_or_malformed_row(row)]
+        st.markdown("#### Filtered failed jobs")
+        if not failed_rows:
+            st.success("No failed or malformed rows for the active filters.")
+        else:
+            st.dataframe(
+                self._debug_table_records(failed_rows),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        st.markdown("#### Transcript inspector")
+        st.toggle(
+            "Show full transcript text",
+            key=FILTER_SESSION_KEYS["debug_full_transcript"],
+            help="Off shows a preview snippet; on shows full transcript text for each row.",
+        )
+        show_full = bool(st.session_state.get(FILTER_SESSION_KEYS["debug_full_transcript"], False))
+        transcript_rows = filtered_rows[:MAX_TABLE_ROWS_PER_VIEW]
+        if transcript_rows:
+            for row in transcript_rows:
+                with st.expander(
+                    f"{row.filename} · {row.id} · {row.status}/{row.current_stage}",
+                    expanded=False,
+                ):
+                    transcript_text = row.transcript.strip() if row.transcript.strip() else "(Transcript unavailable)"
+                    if show_full:
+                        st.code(transcript_text)
+                    else:
+                        st.write(self._truncate_text(transcript_text, limit=DEBUG_TRANSCRIPT_PREVIEW_LIMIT))
+                    if row.last_error:
+                        st.caption(f"error_message: {row.last_error}")
+        else:
+            st.caption("No transcript rows for current filters.")
+
+        if self._debug_edit_tools_enabled():
+            st.warning("Debug edit tools are enabled by PAYDAY_ENABLE_DEBUG_EDIT_TOOLS=true.")
+        else:
+            st.caption("Edit tools are disabled. Set PAYDAY_ENABLE_DEBUG_EDIT_TOOLS=true to opt in explicitly.")
+
+    def _filter_debug_rows(self, interviews: list[DashboardInterview]) -> list[DashboardInterview]:
+        status_filters = {
+            status.strip().lower()
+            for status in st.session_state.get(FILTER_SESSION_KEYS["debug_status_filters"], [])
+        }
+        interview_id_query = str(st.session_state.get(FILTER_SESSION_KEYS["debug_interview_id"], "")).strip().lower()
+        filtered: list[DashboardInterview] = []
+        for interview in interviews:
+            if status_filters and interview.status.lower() not in status_filters:
+                continue
+            if interview_id_query and interview_id_query not in interview.id.lower():
+                continue
+            filtered.append(interview)
+        return filtered
+
+    def _debug_table_records(self, interviews: list[DashboardInterview]) -> list[dict[str, str]]:
+        rows: list[dict[str, str]] = []
+        for interview in interviews[:DEBUG_MAX_DISPLAY_ROWS]:
+            rows.append(
+                {
+                    "interview_id": interview.id,
+                    "filename": interview.filename,
+                    "status": interview.status,
+                    "stage": interview.current_stage,
+                    "error_message": interview.last_error or "",
+                    "created_at": interview.created_at,
+                }
+            )
+        return rows
+
+    def _is_failed_or_malformed_row(self, interview: DashboardInterview) -> bool:
+        if interview.status == ProcessingStatus.FAILED.value:
+            return True
+        return interview.transcript_quality in {"failed", "malformed"}
+
+    def _debug_edit_tools_enabled(self) -> bool:
+        return os.getenv("PAYDAY_ENABLE_DEBUG_EDIT_TOOLS", "").strip().lower() in {"1", "true", "yes", "on"}
 
     def _render_pending_toast(self) -> None:
         toast = st.session_state.pop(FILTER_SESSION_KEYS["toast_message"], None)
