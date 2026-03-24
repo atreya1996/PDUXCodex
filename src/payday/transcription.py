@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from typing import Any, Protocol
 from urllib import error, request
@@ -11,6 +12,16 @@ from payday.models import Transcript, UploadedAsset
 
 OPENAI_TRANSCRIPTION_DOCUMENTED_LIMIT_BYTES = 25_000_000
 OPENAI_TRANSCRIPTION_SAFE_FILE_LIMIT_BYTES = 24_000_000
+_NON_TEXT_TRANSCRIPT_RATIO_THRESHOLD = 0.3
+_BINARY_SIGNATURE_PATTERNS = (
+    "ftyp",
+    "id3",
+    "lame",
+    "moov",
+    "mdat",
+    "riff",
+)
+_ESCAPED_BINARY_HEX_PATTERN = re.compile(r"(?:\\x[0-9a-fA-F]{2}){4,}")
 
 
 class ExternalTranscriptionProviderError(RuntimeError):
@@ -31,6 +42,31 @@ class TranscriptionProviderAdapter(Protocol):
 
     def transcribe(self, asset: UploadedAsset) -> Transcript:
         """Return a transcript produced by an external provider."""
+
+
+def detect_malformed_transcript_reason(transcript_text: str) -> str | None:
+    normalized = transcript_text.lower()
+    if any(signature in normalized for signature in _BINARY_SIGNATURE_PATTERNS):
+        return "binary signature detected in transcript output"
+    if "\x00" * 8 in transcript_text or "\\x00" * 8 in transcript_text:
+        return "null-byte binary sequence detected in transcript output"
+    if _ESCAPED_BINARY_HEX_PATTERN.search(transcript_text):
+        return "escaped binary hex sequence detected in transcript output"
+
+    if not transcript_text:
+        return "empty transcript output"
+    suspicious_char_count = sum(
+        1
+        for char in transcript_text
+        if (not char.isprintable() and not char.isspace()) or char == "\ufffd"
+    )
+    non_text_ratio = suspicious_char_count / len(transcript_text)
+    if non_text_ratio > _NON_TEXT_TRANSCRIPT_RATIO_THRESHOLD:
+        return (
+            "excessive non-text character ratio "
+            f"({non_text_ratio:.0%}, threshold {_NON_TEXT_TRANSCRIPT_RATIO_THRESHOLD:.0%})"
+        )
+    return None
 
 
 def get_transcription_file_size_limit_bytes(settings: TranscriptionSettings) -> int | None:

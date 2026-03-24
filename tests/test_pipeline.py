@@ -20,6 +20,7 @@ from payday.transcription import (
     OpenAITranscriptionAdapter,
     SampleModeDisabledError,
     TranscriptionService,
+    detect_malformed_transcript_reason,
     describe_transcription_file_size_limit,
 )
 from payday.upload import SUPPORTED_UPLOAD_EXTENSIONS, UploadService, UploadValidationError
@@ -359,6 +360,53 @@ def test_pipeline_rejects_binary_signature_transcript_before_analysis() -> None:
     assert result.analysis is None
     assert result.persona is None
     assert result.last_error == "Transcription failed: binary payload detected, please retry or verify API key/provider."
+
+
+def test_pipeline_rejects_malformed_mp4_binary_fixture_before_analysis() -> None:
+    service = PaydayAppService(build_settings())
+    binary_payload = bytes.fromhex((Path("tests/fixtures") / "malformed_binary_mp4_hex.txt").read_text().strip())
+
+    result = service.process_upload("fixture-bad.mp4", "video/mp4", binary_payload)
+
+    assert result.status is ProcessingStatus.FAILED
+    assert result.current_stage is PipelineStage.TRANSCRIPTION
+    assert result.analysis is None
+    assert result.persona is None
+    assert result.last_error == "Transcription failed: binary payload detected, please retry or verify API key/provider."
+
+
+def test_pipeline_rejects_malformed_mp3_binary_fixture_before_analysis() -> None:
+    service = PaydayAppService(build_settings())
+    binary_payload = bytes.fromhex((Path("tests/fixtures") / "malformed_binary_mp3_hex.txt").read_text().strip())
+
+    result = service.process_upload("fixture-bad.mp3", "audio/mpeg", binary_payload)
+
+    assert result.status is ProcessingStatus.FAILED
+    assert result.current_stage is PipelineStage.TRANSCRIPTION
+    assert result.analysis is None
+    assert result.persona is None
+    assert result.last_error == "Transcription failed: binary payload detected, please retry or verify API key/provider."
+
+
+def test_pipeline_rejects_transcript_with_excessive_non_text_ratio_before_analysis() -> None:
+    service = PaydayAppService(build_settings())
+    malformed_payload = (b"\x01\x02\x03\x04\x05\x06\x07\x08" * 8) + b"ok"
+
+    result = service.process_upload("control-heavy.wav", "audio/wav", malformed_payload)
+
+    assert result.status is ProcessingStatus.FAILED
+    assert result.current_stage is PipelineStage.TRANSCRIPTION
+    assert result.analysis is None
+    assert result.persona is None
+    assert result.last_error is not None
+    assert result.last_error.startswith("Transcription failed: malformed transcript detected")
+
+
+def test_detect_malformed_transcript_reason_flags_binary_signatures_and_non_text_ratio() -> None:
+    assert detect_malformed_transcript_reason("\x00\x00\x00\x18ftypisom") == "binary signature detected in transcript output"
+    assert detect_malformed_transcript_reason("\x01\x02\x03\x04\x05\x06\x07\x08" * 8).startswith(
+        "excessive non-text character ratio"
+    )
 
 
 def test_pipeline_process_upload_persists_interview_structured_response_and_insight_rows(tmp_path) -> None:

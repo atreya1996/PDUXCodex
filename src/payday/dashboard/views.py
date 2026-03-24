@@ -20,7 +20,7 @@ from payday.analysis import (
     smartphone_user_from_analysis,
 )
 from payday.models import PipelineResult, ProcessingStatus
-from payday.pipeline import BINARY_TRANSCRIPT_DETECTED_ERROR
+from payday.pipeline import BINARY_TRANSCRIPT_DETECTED_ERROR, MALFORMED_TRANSCRIPT_DETECTED_ERROR_PREFIX
 from payday.personas import PERSONAS
 from payday.repository import DashboardInterviewRecord, DashboardStatusOverview
 
@@ -59,6 +59,8 @@ FILTER_SESSION_KEYS = {
     "open_interview_pending_id": "dashboard_open_interview_pending_id",
     "open_interview_pending_at": "dashboard_open_interview_pending_at",
     "overlay_fallback_reason": "dashboard_overlay_fallback_reason",
+    "include_low_quality": "dashboard_include_low_quality",
+    "interview_page": "dashboard_interview_page",
 }
 CARD_SUMMARY_SNIPPET_LIMIT = 120
 MAX_UI_TRANSCRIPT_CHARS = 12000
@@ -170,6 +172,7 @@ class DashboardRenderer:
         st.session_state.setdefault(FILTER_SESSION_KEYS["open_interview_pending_id"], None)
         st.session_state.setdefault(FILTER_SESSION_KEYS["open_interview_pending_at"], None)
         st.session_state.setdefault(FILTER_SESSION_KEYS["overlay_fallback_reason"], None)
+        st.session_state.setdefault(FILTER_SESSION_KEYS["interview_page"], 1)
 
         selected_key = FILTER_SESSION_KEYS["selected"]
         if interviews and not st.session_state.get(selected_key):
@@ -677,14 +680,17 @@ class DashboardRenderer:
             1
             for interview in interviews
             if interview.last_error
-            and BINARY_TRANSCRIPT_DETECTED_ERROR.lower() in interview.last_error.lower()
+            and (
+                BINARY_TRANSCRIPT_DETECTED_ERROR.lower() in interview.last_error.lower()
+                or MALFORMED_TRANSCRIPT_DETECTED_ERROR_PREFIX.lower() in interview.last_error.lower()
+            )
         )
         if failed_count <= 0:
             return
         if failed_count == 1:
-            st.error(BINARY_TRANSCRIPT_DETECTED_ERROR)
+            st.error("One interview failed transcription validation (binary/malformed transcript detected).")
             return
-        st.error(f"{BINARY_TRANSCRIPT_DETECTED_ERROR} ({failed_count} interviews affected)")
+        st.error(f"{failed_count} interviews failed transcription validation (binary/malformed transcript detected).")
 
     def _render_filter_snapshot(
         self,
@@ -1166,6 +1172,10 @@ class DashboardRenderer:
         badge_class = "badge-nontarget" if interview.is_non_target else "badge-target"
         persona_label = html.escape(interview.persona_name)
         summary = html.escape(self._truncate_text(interview.summary, limit=CARD_SUMMARY_SNIPPET_LIMIT) or "No summary captured yet.")
+        malformed_badge = self._malformed_transcript_badge(interview)
+        malformed_badge_html = ""
+        if malformed_badge:
+            malformed_badge_html = f"<div class='persona-badge badge-malformed'>{html.escape(malformed_badge)}</div>"
         st.markdown(
             f"""
             <div class='pd-card interview-card'>
@@ -1174,6 +1184,7 @@ class DashboardRenderer:
                     <div class='persona-badge {badge_class}'>{persona_label}</div>
                 </div>
                 <div class='interview-tags'>
+                    {malformed_badge_html}
                     <span class='meta-label'>Transcript quality:</span>
                     <span class='meta-value'>{html.escape(interview.transcript_quality.title())}</span>
                     <span class='meta-label' style='margin-left:8px;'>Analysis version:</span>
@@ -2176,6 +2187,14 @@ class DashboardRenderer:
             return "malformed"
         return "good"
 
+    def _malformed_transcript_badge(self, interview: DashboardInterview) -> str | None:
+        error_text = (interview.last_error or "").lower()
+        if "malformed transcript" in error_text or BINARY_TRANSCRIPT_DETECTED_ERROR.lower() in error_text:
+            return "Malformed transcript"
+        if interview.transcript_quality == "malformed":
+            return "Malformed transcript"
+        return None
+
     def _is_borrower_value(self, borrowing_value: str, transcript: str) -> bool:
         lowered = f"{borrowing_value} {transcript}".lower()
         return any(token in lowered for token in ("borrow", "loan", "moneylender", "neighbors", "employer")) and not any(
@@ -2510,6 +2529,12 @@ class DashboardRenderer:
                 background: rgba(244, 63, 94, 0.14);
                 color: #FDA4AF;
                 border-color: rgba(244, 63, 94, 0.24);
+            }}
+            .badge-malformed {{
+                background: rgba(245, 158, 11, 0.14);
+                color: #FDE68A;
+                border-color: rgba(245, 158, 11, 0.35);
+                margin-right: 10px;
             }}
             .dialogue-speaker {{
                 color: #A5B4FC;
