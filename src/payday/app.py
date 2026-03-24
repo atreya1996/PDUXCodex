@@ -14,7 +14,7 @@ from payday.upload import SUPPORTED_UPLOAD_EXTENSIONS
 
 REFRESH_STATUS_FLAG = "dashboard_status_reloaded"
 FORCE_SQLITE_RELOAD_FLAG = "dashboard_force_sqlite_reload"
-REPROCESS_STALE_FLAG = "dashboard_reprocess_stale_result"
+RUNTIME_METADATA_RELOAD_FLAG = "dashboard_runtime_metadata_reloaded"
 
 
 @st.cache_resource
@@ -87,14 +87,21 @@ def main() -> None:
 
     upload_count = len(uploaded_files) if uploaded_files else 0
     runtime_summary = app_service.runtime_summary()
+    runtime_diagnostics = app_service.runtime_diagnostics()
     st.sidebar.write(
         {
             "files_selected": upload_count,
             "analysis_enabled": settings.features.enable_analysis,
-            "sqlite_path": settings.database.sqlite_path,
             **runtime_summary,
         }
     )
+    st.sidebar.subheader("Runtime diagnostics")
+    st.sidebar.json(runtime_diagnostics, expanded=False)
+    if st.sidebar.button("Reload runtime metadata", use_container_width=True):
+        st.session_state[RUNTIME_METADATA_RELOAD_FLAG] = True
+        st.rerun()
+    if st.session_state.pop(RUNTIME_METADATA_RELOAD_FLAG, False):
+        st.sidebar.success("Reloaded runtime metadata from current process and git state.")
 
     st.sidebar.caption("Reload the latest durable interview rows from SQLite after a rerun or batch completion.")
     if st.sidebar.button("Refresh status", use_container_width=True):
