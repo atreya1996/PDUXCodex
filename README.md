@@ -65,6 +65,7 @@ cp .env.example .env
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
 | `PAYDAY_APP_ENV` | No | `development` | Labels the runtime environment in the UI. |
+| `PAYDAY_RELEASE_SHA` | No | `""` | Commit SHA rendered in sidebar runtime metadata (`Runtime commit SHA`). |
 | `PAYDAY_DATABASE_PATH` | No | `data/payday.db` | Local SQLite file used for repository persistence and dashboard reads. |
 | `PAYDAY_USE_SAMPLE_MODE` | No | `true` | Enables mock/demo processing without live APIs. |
 | `PAYDAY_ENABLE_UPLOADS` | No | `true` | Toggles the upload widget. |
@@ -162,6 +163,16 @@ Open the local URL printed by Streamlit, then:
 
 - leave sample mode on for a demo without live providers, or
 - switch sample mode off and provide live Supabase/LLM/transcription credentials.
+
+## Release workflow and deployment checklist
+
+Deployment source-of-truth branch is **`main`**. Use `docs/release_workflow.md` for the required release process, CI gates, and deployment checklist, including SHA matching across:
+
+- merged commit SHA,
+- deployed commit SHA, and
+- runtime sidebar SHA.
+
+After deployment, use the sidebar action **Refresh status + release metadata** once to reload durable status and runtime release metadata. Track shipped UX/features and commit mappings in `docs/release_notes.md`.
 
 ## How to use sample/mock mode without live APIs
 

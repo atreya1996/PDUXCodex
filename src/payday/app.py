@@ -95,20 +95,18 @@ def main() -> None:
             **runtime_summary,
         }
     )
-    st.sidebar.subheader("Runtime diagnostics")
-    st.sidebar.json(runtime_diagnostics, expanded=False)
-    if st.sidebar.button("Reload runtime metadata", use_container_width=True):
-        st.session_state[RUNTIME_METADATA_RELOAD_FLAG] = True
-        st.rerun()
-    if st.session_state.pop(RUNTIME_METADATA_RELOAD_FLAG, False):
-        st.sidebar.success("Reloaded runtime metadata from current process and git state.")
+    st.sidebar.caption(f"Runtime commit SHA: `{runtime_summary.get('runtime_commit_sha', 'unknown')}`")
 
-    st.sidebar.caption("Reload the latest durable interview rows from SQLite after a rerun or batch completion.")
-    if st.sidebar.button("Refresh status", use_container_width=True):
+    st.sidebar.caption(
+        "Reload durable interview status and runtime release metadata (including commit SHA) after reruns or deployments."
+    )
+    if st.sidebar.button("Refresh status + release metadata", use_container_width=True):
+        build_app_service.clear()
         st.session_state[REFRESH_STATUS_FLAG] = True
+        st.session_state[FORCE_SQLITE_RELOAD_FLAG] = True
         st.rerun()
     if st.session_state.pop(REFRESH_STATUS_FLAG, False):
-        st.sidebar.success("Reloaded durable interview statuses from SQLite.")
+        st.sidebar.success("Reloaded durable interview status and release metadata.")
 
     st.sidebar.caption("Recompute interviews saved under older analysis/persona schema versions.")
     if st.sidebar.button("Reprocess all stale interviews", use_container_width=True):
