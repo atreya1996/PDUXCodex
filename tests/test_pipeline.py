@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import types
 from pathlib import Path
@@ -566,6 +567,96 @@ def test_pipeline_process_upload_persists_failed_interview_status_to_file_backed
     assert detail.interview.last_error == "transcription failed after 3 attempts: hard transcription failure"
     assert detail.structured_response is None
     assert detail.insight is None
+
+
+def test_pipeline_stage_helpers_sync_result_and_interview_state(tmp_path) -> None:
+    database_path = tmp_path / "pipeline-stage-sync.sqlite3"
+    repository = PaydayRepository(database_path=str(database_path))
+    pipeline = PaydayAppService(build_settings(), repository=repository).pipeline
+    result = PipelineResult(file_id="stage-sync-1", filename="stage-sync.wav")
+
+    pipeline._set_stage(  # noqa: SLF001
+        result,
+        stage=PipelineStage.TRANSCRIPTION,
+        status=ProcessingStatus.PROCESSING,
+        message="transcription started",
+    )
+    saved = repository.get_result(result.file_id)
+    assert saved is not None
+    assert saved.status is ProcessingStatus.PROCESSING
+    assert saved.current_stage is PipelineStage.TRANSCRIPTION
+    interview_after_processing = repository.get_interview_detail(result.file_id).interview
+    assert interview_after_processing.status == ProcessingStatus.PROCESSING.value
+    assert interview_after_processing.latest_stage == PipelineStage.TRANSCRIPTION.value
+    assert interview_after_processing.last_error is None
+
+    pipeline._record_failure(  # noqa: SLF001
+        result,
+        stage=PipelineStage.ANALYSIS,
+        error="analysis crashed",
+        message="analysis failed",
+    )
+    failed = repository.get_result(result.file_id)
+    assert failed is not None
+    assert failed.status is ProcessingStatus.FAILED
+    assert failed.current_stage is PipelineStage.ANALYSIS
+    assert failed.last_error == "analysis crashed"
+    interview_after_failure = repository.get_interview_detail(result.file_id).interview
+    assert interview_after_failure.status == ProcessingStatus.FAILED.value
+    assert interview_after_failure.latest_stage == PipelineStage.ANALYSIS.value
+    assert interview_after_failure.last_error == "analysis crashed"
+
+
+def test_store_results_failure_syncs_failed_storage_state_and_logs_structured_payload(
+    tmp_path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    database_path = tmp_path / "pipeline-storage-failure.sqlite3"
+    repository = PaydayRepository(database_path=str(database_path))
+    pipeline = PaydayAppService(build_settings(), repository=repository).pipeline
+    pipeline.storage_service.store_asset = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("disk unavailable"))
+
+    result = PipelineResult(
+        file_id="store-fail-1",
+        filename="store-fail.wav",
+        status=ProcessingStatus.PROCESSING,
+        current_stage=PipelineStage.PERSONA,
+        asset=UploadedAsset(
+            filename="store-fail.wav",
+            content_type="audio/wav",
+            size_bytes=4,
+            raw_bytes=b"RIFF",
+            file_id="store-fail-1",
+        ),
+    )
+    repository.save_result(result)
+    repository.create_interview(interview_id=result.file_id, audio_url="audio/store-fail-1/store-fail.wav")
+
+    with pytest.raises(RuntimeError, match="disk unavailable"):
+        pipeline.store_results(result)
+
+    saved = repository.get_result(result.file_id)
+    assert saved is not None
+    assert saved.status is ProcessingStatus.FAILED
+    assert saved.current_stage is PipelineStage.STORAGE
+    assert saved.last_error == "disk unavailable"
+    assert saved.errors[-1] == "disk unavailable"
+    interview = repository.get_interview_detail(result.file_id).interview
+    assert interview.status == ProcessingStatus.FAILED.value
+    assert interview.latest_stage == PipelineStage.STORAGE.value
+    assert interview.last_error == "disk unavailable"
+
+    storage_failed_record = next(
+        record for record in caplog.records if record.msg == "%s: %s" and record.args[0] == "storage failed"
+    )
+    storage_failed_payload = storage_failed_record.args[1]
+    assert storage_failed_payload["file_id"] == result.file_id
+    assert storage_failed_payload["stage"] == PipelineStage.STORAGE.value
+    assert storage_failed_payload["status"] == ProcessingStatus.FAILED.value
+    assert storage_failed_payload["error"] == "disk unavailable"
+    assert storage_failed_payload["attempts"] is None
+    assert "timestamp" in storage_failed_payload
 
 
 def test_pipeline_marks_external_analysis_provider_errors_as_failed_results() -> None:
