@@ -97,6 +97,8 @@ class DashboardInterview:
     has_bank_account: bool | None
     digital_access: str
     transcript_quality: str
+    data_malformed: bool
+    data_malformed_details: tuple[str, ...]
     extracted_json: dict[str, Any]
     evidence_quotes: tuple[str, ...]
     segmented_dialogue: tuple[dict[str, Any], ...] = ()
@@ -1668,8 +1670,17 @@ class DashboardRenderer:
 
     def _render_status_error_indicator(self, interview: DashboardInterview) -> None:
         if not interview.last_error:
-            return
-        st.caption(f"Latest pipeline error: {interview.last_error}")
+            if interview.data_malformed and interview.data_malformed_details:
+                st.caption("Latest pipeline error: none")
+            else:
+                return
+        else:
+            st.caption(f"Latest pipeline error: {interview.last_error}")
+        if interview.data_malformed:
+            st.caption("Data malformed: yes")
+            if interview.data_malformed_details and self._is_dev_mode():
+                details = "; ".join(interview.data_malformed_details)
+                st.caption(f"[dev] malformed_details: {details}")
 
     def _render_formatted_insights(self, interview: DashboardInterview) -> None:
         sections = [
@@ -2020,6 +2031,8 @@ class DashboardRenderer:
                 transcript=transcript,
                 last_error=result.last_error,
             ),
+            data_malformed=False,
+            data_malformed_details=(),
             extracted_json=structured or self._empty_extracted_json(summary="Analysis pending."),
             evidence_quotes=evidence_quotes,
             segmented_dialogue=segmented_dialogue,
@@ -2030,8 +2043,8 @@ class DashboardRenderer:
         )
 
     def _from_repository_record(self, record: DashboardInterviewRecord) -> DashboardInterview:
-        summary = record.summary or "Analysis pending."
-        transcript = record.transcript or "Transcript pending."
+        summary = self._clean_summary_snippet(record.summary or "Analysis pending.")
+        transcript = self._safe_transcript_text(record.transcript or "Transcript pending.")
         persona_name = record.persona or PERSONA_LOOKUP["persona_4"]
         persona_id = self._persona_id_from_name(persona_name)
         borrowing_value = record.borrowing_history or "unknown"
@@ -2090,6 +2103,8 @@ class DashboardRenderer:
                 transcript=transcript,
                 last_error=record.last_error,
             ),
+            data_malformed=record.data_malformed,
+            data_malformed_details=tuple(record.data_malformed_details),
             extracted_json=extracted_json,
             evidence_quotes=tuple(clean_evidence_quotes(record.key_quotes)),
             segmented_dialogue=tuple(record.segmented_dialogue),
@@ -2135,6 +2150,8 @@ class DashboardRenderer:
             has_bank_account=repository_interview.has_bank_account,
             digital_access=repository_interview.digital_access,
             transcript_quality=repository_interview.transcript_quality,
+            data_malformed=repository_interview.data_malformed,
+            data_malformed_details=repository_interview.data_malformed_details,
             extracted_json={
                 **cached_result.extracted_json,
                 **repository_interview.extracted_json,
@@ -2177,7 +2194,19 @@ class DashboardRenderer:
             return "No clean summary available."
         if "\x00" in normalized:
             return "No clean summary available."
+        if "<" in normalized and ">" in normalized:
+            return "No clean summary available."
         return self._truncate_text(normalized, limit=160)
+
+    def _safe_transcript_text(self, transcript: str) -> str:
+        normalized = str(transcript or "").strip()
+        if not normalized:
+            return "Transcript pending."
+        if "\x00" in normalized:
+            return "Transcript unavailable due to malformed stored data."
+        if "<" in normalized and ">" in normalized:
+            return "Transcript unavailable due to malformed stored data."
+        return normalized
 
     def _format_created_at(self, created_at: str) -> str:
         try:
@@ -2246,6 +2275,8 @@ class DashboardRenderer:
         error_text = (interview.last_error or "").lower()
         if "malformed transcript" in error_text or BINARY_TRANSCRIPT_DETECTED_ERROR.lower() in error_text:
             return "Malformed transcript"
+        if interview.data_malformed:
+            return "Data malformed"
         if interview.transcript_quality == "malformed":
             return "Malformed transcript"
         return None

@@ -259,6 +259,43 @@ def test_dashboard_renderer_chart_rows_validation_rejects_nested_or_missing_shap
     assert renderer._chart_rows_are_flat([{"count": 1, "share": 20.0}]) is False
 
 
+def test_dashboard_renderer_sanitizes_repository_html_fields_and_surfaces_malformed_tag() -> None:
+    renderer = DashboardRenderer()
+    repository_record = DashboardInterviewRecord(
+        id="interview-malformed",
+        audio_url="audio/interview-malformed/file.wav",
+        filename="file.wav",
+        transcript="<div><strong>raw html transcript</strong></div>",
+        status=ProcessingStatus.COMPLETED.value,
+        latest_stage="storage",
+        last_error=None,
+        created_at="2026-03-18T10:00:00+00:00",
+        smartphone_user=True,
+        has_bank_account=True,
+        per_household_earnings=None,
+        participant_personal_monthly_income=None,
+        total_household_monthly_income=None,
+        income_range=None,
+        borrowing_history="has_borrowed",
+        repayment_preference="monthly",
+        loan_interest="interested",
+        summary="<div class='interview-summary'>raw html summary</div>",
+        key_quotes=[],
+        persona="Digitally Ready but Fearful",
+        confidence_score=0.7,
+        segmented_dialogue=[],
+        data_malformed=True,
+        data_malformed_details=["insights.summary contained HTML-like content"],
+    )
+
+    interview = renderer._from_repository_record(repository_record)
+
+    assert interview.summary == "No clean summary available."
+    assert interview.transcript == "Transcript unavailable due to malformed stored data."
+    assert interview.data_malformed is True
+    assert renderer._malformed_transcript_badge(interview) == "Data malformed"
+
+
 def test_dashboard_renderer_uses_neutral_placeholder_when_quotes_are_malformed() -> None:
     renderer = DashboardRenderer()
 
