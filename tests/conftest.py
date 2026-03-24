@@ -4,6 +4,8 @@ import builtins
 import sys
 import types
 
+import pytest
+
 from payday.analysis import build_analysis_adapter
 
 
@@ -51,3 +53,8 @@ builtins.StubOpenAITranscriptions = StubOpenAITranscriptions
 builtins.StubOpenAIClient = StubOpenAIClient
 builtins.StubTranscriptionResponse = StubTranscriptionResponse
 builtins.FakeOpenAITimeoutError = FakeOpenAITimeoutError
+
+
+@pytest.fixture(autouse=True)
+def enable_sample_mode_env_for_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAYDAY_USE_SAMPLE_MODE", "true")

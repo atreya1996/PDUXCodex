@@ -37,12 +37,15 @@ TOP_LEVEL_SCHEMA_KEYS = FIELD_NAMES + (
     "income_mentions",
     "confidence_signals",
     "segmented_dialogue",
+    "transcript_quality",
 )
 ALLOWED_FIELD_STATUSES = {"observed", "unknown", "missing"}
 ALLOWED_EVIDENCE_TYPES = {"direct", "inferred_or_uncertain", "unknown"}
 ALLOWED_SPEAKER_CONFIDENCE = {"high", "medium", "low"}
+ALLOWED_TRANSCRIPT_QUALITY_STATUS = {"clean", "degraded"}
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 OPENAI_REQUEST_TIMEOUT_SECONDS = 60
+NO_RELIABLE_QUOTE_PLACEHOLDER = "No reliable quote extracted"
 
 
 class AnalysisProviderAdapter(Protocol):
@@ -258,6 +261,11 @@ class HeuristicAnalysisAdapter:
             segmented_dialogue=segmented_dialogue,
         )
         payload["confidence_signals"] = _build_confidence_signals(payload)
+        payload["transcript_quality"] = {
+            "status": "clean",
+            "dropped_malformed_quote_count": 0,
+            "notes": [],
+        }
         extra_keys = set(payload) - set(expected_schema)
         if extra_keys:
             raise AnalysisSchemaError(
@@ -558,6 +566,11 @@ class AnalysisService:
                 "observed_evidence": ["string"],
                 "missing_or_unknown": ["string"],
             },
+            "transcript_quality": {
+                "status": "clean|degraded",
+                "dropped_malformed_quote_count": "integer",
+                "notes": ["string"],
+            },
             "segmented_dialogue": [
                 {
                     "turn_index": "integer",
@@ -625,10 +638,17 @@ class AnalysisService:
             )
 
         normalized: dict[str, Any] = {}
+        dropped_malformed_quote_count = 0
         for field_name in FIELD_NAMES:
-            normalized[field_name] = self._normalize_field(field_name, payload.get(field_name), transcript_text)
+            field_payload, dropped_count = self._normalize_field(field_name, payload.get(field_name), transcript_text)
+            normalized[field_name] = field_payload
+            dropped_malformed_quote_count += dropped_count
 
-        normalized["key_quotes"] = self._normalize_quote_list(payload.get("key_quotes"), transcript_text)
+        normalized["key_quotes"], dropped_key_quote_count = self._normalize_quote_list(
+            payload.get("key_quotes"),
+            transcript_text,
+        )
+        dropped_malformed_quote_count += dropped_key_quote_count
         normalized["key_quote_details"] = self._normalize_key_quote_details(
             payload.get("key_quote_details"),
             normalized["key_quotes"],
@@ -646,17 +666,21 @@ class AnalysisService:
             payload.get("segmented_dialogue"),
             transcript_text,
         )
+        normalized["transcript_quality"] = self._normalize_transcript_quality(
+            payload.get("transcript_quality"),
+            dropped_malformed_quote_count=dropped_malformed_quote_count,
+        )
         return normalized
 
-    def _normalize_field(self, field_name: str, value: Any, transcript_text: str) -> dict[str, Any]:
+    def _normalize_field(self, field_name: str, value: Any, transcript_text: str) -> tuple[dict[str, Any], int]:
         if value is None:
             return AnalysisField(
                 notes=f"Fallback default applied because '{field_name}' was missing from the provider response.",
-            ).as_dict()
+            ).as_dict(), 0
 
         if isinstance(value, str):
             normalized_status = "unknown" if value.strip().lower() == DEFAULT_UNKNOWN_VALUE else "observed"
-            return AnalysisField(value=value.strip() or DEFAULT_UNKNOWN_VALUE, status=normalized_status).as_dict()
+            return AnalysisField(value=value.strip() or DEFAULT_UNKNOWN_VALUE, status=normalized_status).as_dict(), 0
 
         if not isinstance(value, dict):
             raise AnalysisSchemaError(f"Field '{field_name}' must be an object or string.")
@@ -666,7 +690,10 @@ class AnalysisService:
         if normalized_status not in ALLOWED_FIELD_STATUSES:
             raise AnalysisSchemaError(f"Field '{field_name}' has invalid status '{normalized_status}'.")
 
-        evidence_quotes = self._normalize_quote_list(value.get("evidence_quotes"), transcript_text)
+        evidence_quotes, dropped_malformed_quote_count = self._normalize_quote_list(
+            value.get("evidence_quotes"),
+            transcript_text,
+        )
         notes = str(value.get("notes", "")).strip()
         evidence_type = str(value.get("evidence_type", "")).strip().lower() or (
             "direct" if normalized_status == "observed" and evidence_quotes else "unknown"
@@ -691,22 +718,26 @@ class AnalysisService:
             notes=notes,
             evidence_type=evidence_type,
             english_translation=english_translation,
-        ).as_dict()
+        ).as_dict(), dropped_malformed_quote_count
 
-    def _normalize_quote_list(self, value: Any, transcript_text: str) -> list[str]:
+    def _normalize_quote_list(self, value: Any, transcript_text: str) -> tuple[list[str], int]:
         if value is None:
-            return []
+            return [], 0
         if not isinstance(value, list):
             raise AnalysisSchemaError("Quote collections must be arrays of strings.")
 
         normalized_quotes: list[str] = []
+        dropped_malformed_quote_count = 0
         for item in value:
             if not isinstance(item, str):
                 raise AnalysisSchemaError("Quotes must be strings.")
             aligned = _align_quote_to_transcript(item, transcript_text)
+            if not _is_reliable_quote_text(aligned):
+                dropped_malformed_quote_count += 1
+                continue
             if aligned and aligned not in normalized_quotes:
                 normalized_quotes.append(aligned)
-        return normalized_quotes
+        return normalized_quotes, dropped_malformed_quote_count
 
     def _normalize_confidence_signals(
         self,
@@ -751,7 +782,7 @@ class AnalysisService:
             if not isinstance(item, dict):
                 raise AnalysisSchemaError("Each key quote detail must be an object.")
             original_text = _align_quote_to_transcript(str(item.get("original_text", "")).strip(), transcript_text)
-            if not original_text:
+            if not _is_reliable_quote_text(original_text):
                 continue
             speaker_label = str(item.get("speaker_label", "unknown")).strip().lower() or "unknown"
             turn_index = item.get("turn_index")
@@ -798,7 +829,7 @@ class AnalysisService:
                 raise AnalysisSchemaError(
                     f"Income mention '{meaning_label or 'unknown'}' has invalid evidence_type '{evidence_type}'."
                 )
-            if not meaning_label or not evidence_quote:
+            if not meaning_label or not _is_reliable_quote_text(evidence_quote):
                 continue
 
             normalized_item = {
@@ -840,7 +871,7 @@ class AnalysisService:
                 )
 
             aligned_text = _align_quote_to_transcript(utterance_text, transcript_text)
-            if not aligned_text:
+            if not _is_reliable_quote_text(aligned_text):
                 continue
 
             normalized_turn = {
@@ -854,6 +885,33 @@ class AnalysisService:
             if normalized_turn not in normalized_turns:
                 normalized_turns.append(normalized_turn)
         return normalized_turns
+
+    def _normalize_transcript_quality(
+        self,
+        value: Any,
+        *,
+        dropped_malformed_quote_count: int,
+    ) -> dict[str, Any]:
+        status = "degraded" if dropped_malformed_quote_count > 0 else "clean"
+        notes: list[str] = []
+        if dropped_malformed_quote_count > 0:
+            notes.append("Malformed or non-linguistic quote candidates were removed before evidence storage.")
+
+        if value is not None:
+            if not isinstance(value, dict):
+                raise AnalysisSchemaError("'transcript_quality' must be an object.")
+            provided_status = str(value.get("status", "")).strip().lower()
+            if provided_status and provided_status not in ALLOWED_TRANSCRIPT_QUALITY_STATUS:
+                raise AnalysisSchemaError(
+                    f"'transcript_quality.status' must be one of {sorted(ALLOWED_TRANSCRIPT_QUALITY_STATUS)}."
+                )
+            notes.extend(_string_list(value.get("notes")))
+
+        return {
+            "status": status,
+            "dropped_malformed_quote_count": dropped_malformed_quote_count,
+            "notes": _dedupe_preserve_order(notes),
+        }
 
 
 def build_analysis_adapter(settings: LLMSettings, *, sample_mode: bool) -> AnalysisProviderAdapter:
@@ -931,6 +989,25 @@ def _align_quote_to_transcript(candidate: str, transcript_text: str) -> str:
         return candidate
     end = start + len(candidate)
     return transcript_text[start:end]
+
+
+def _is_reliable_quote_text(value: str) -> bool:
+    text = str(value).strip()
+    if len(text) < 4:
+        return False
+    if text.lower() == NO_RELIABLE_QUOTE_PLACEHOLDER.lower():
+        return False
+    if not any(char.isalpha() for char in text):
+        return False
+    if re.fullmatch(r"[01\s|,.;:_\-]{4,}", text):
+        return False
+    compact = text.replace(" ", "")
+    if len(compact) >= 24 and re.fullmatch(r"[A-Za-z0-9+/=]+", compact):
+        return False
+    punctuation_count = sum(1 for char in text if not char.isalnum() and not char.isspace())
+    if punctuation_count / max(len(text), 1) > 0.45:
+        return False
+    return True
 
 
 def get_income_display_value(structured_output: dict[str, Any]) -> str | None:
@@ -1168,7 +1245,7 @@ def get_analysis_evidence_quotes(structured_output: dict[str, Any], field_name: 
     evidence_quotes = field.get("evidence_quotes")
     if not isinstance(evidence_quotes, list):
         return []
-    return [quote for quote in evidence_quotes if isinstance(quote, str) and quote.strip()]
+    return clean_evidence_quotes(evidence_quotes)
 
 
 def smartphone_user_from_analysis(structured_output: dict[str, Any]) -> bool | None:
@@ -1204,7 +1281,22 @@ def get_persona_signal_evidence_quotes(structured_output: dict[str, Any], signal
         evidence = signal.get("evidence")
     if not isinstance(evidence, list):
         return []
-    return [quote for quote in evidence if isinstance(quote, str) and quote.strip()]
+    return clean_evidence_quotes(evidence)
+
+
+def clean_evidence_quotes(quotes: list[Any] | tuple[Any, ...], *, limit: int | None = None) -> list[str]:
+    cleaned: list[str] = []
+    for item in quotes:
+        if not isinstance(item, str):
+            continue
+        normalized = item.strip()
+        if not _is_reliable_quote_text(normalized):
+            continue
+        if normalized not in cleaned:
+            cleaned.append(normalized)
+        if limit is not None and len(cleaned) >= limit:
+            break
+    return cleaned
 
 
 def has_borrowing_evidence(structured_output: dict[str, Any]) -> bool:

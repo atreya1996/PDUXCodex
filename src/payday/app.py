@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 
 import streamlit as st
@@ -15,6 +16,49 @@ from payday.upload import SUPPORTED_UPLOAD_EXTENSIONS
 REFRESH_STATUS_FLAG = "dashboard_status_reloaded"
 FORCE_SQLITE_RELOAD_FLAG = "dashboard_force_sqlite_reload"
 REPROCESS_STALE_FLAG = "dashboard_reprocess_stale_result"
+DEFAULT_ENV_MAX_BATCH_BYTES = 45_000_000
+DEFAULT_ENV_MAX_FILE_BYTES = 20_000_000
+DEFAULT_CHUNK_SIZE = 3
+MIN_CHUNK_SIZE = 1
+MAX_CHUNK_SIZE = 3
+NEAR_LIMIT_WARNING_RATIO = 0.85
+
+
+def _get_runtime_limit_bytes(env_var: str, default_value: int) -> int:
+    raw_value = os.getenv(env_var, "").strip()
+    if not raw_value:
+        return default_value
+    try:
+        parsed_mb = float(raw_value)
+    except ValueError:
+        return default_value
+    if parsed_mb <= 0:
+        return default_value
+    return int(parsed_mb * 1_000_000)
+
+
+def _get_chunk_size() -> int:
+    raw_value = os.getenv("PAYDAY_UPLOAD_BATCH_CHUNK_SIZE", "").strip()
+    if not raw_value:
+        return DEFAULT_CHUNK_SIZE
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        return DEFAULT_CHUNK_SIZE
+    return min(MAX_CHUNK_SIZE, max(MIN_CHUNK_SIZE, parsed))
+
+
+def _format_megabytes(value_bytes: int) -> str:
+    return f"{value_bytes / 1_000_000:.1f} MB"
+
+
+def _is_payload_too_large_error(message: str) -> bool:
+    normalized = message.lower()
+    return "413" in normalized or "payload too large" in normalized or "request entity too large" in normalized
+
+
+def _chunk_upload_items(items: list[BatchUploadItem], chunk_size: int) -> list[list[BatchUploadItem]]:
+    return [items[index : index + chunk_size] for index in range(0, len(items), chunk_size)]
 
 
 @st.cache_resource
@@ -58,12 +102,23 @@ def main() -> None:
     dashboard = DashboardRenderer()
     supported_formats_label = ", ".join(extension.upper() for extension in SUPPORTED_UPLOAD_EXTENSIONS)
     upload_limit_guidance = describe_transcription_file_size_limit(settings.transcription)
+    environment_file_limit_bytes = _get_runtime_limit_bytes(
+        "PAYDAY_ENV_MAX_UPLOAD_FILE_MB", DEFAULT_ENV_MAX_FILE_BYTES
+    )
+    environment_batch_limit_bytes = _get_runtime_limit_bytes(
+        "PAYDAY_ENV_MAX_UPLOAD_BATCH_MB", DEFAULT_ENV_MAX_BATCH_BYTES
+    )
+    upload_chunk_size = _get_chunk_size()
     upload_help_text = (
         "Choose 1 to 10 interview recordings in "
         f"{supported_formats_label}. Start with one file for a live smoke test, then try a full batch."
     )
     if upload_limit_guidance:
         upload_help_text = f"{upload_help_text} {upload_limit_guidance}"
+    upload_help_text = (
+        f"{upload_help_text} Runtime guardrails: max {_format_megabytes(environment_file_limit_bytes)} per file "
+        f"and {_format_megabytes(environment_batch_limit_bytes)} per batch."
+    )
 
     st.title("PayDay interview review")
     st.caption(
@@ -78,6 +133,11 @@ def main() -> None:
     )
     if upload_limit_guidance:
         st.sidebar.info(upload_limit_guidance)
+    st.sidebar.info(
+        "Deployment/runtime upload guardrails: "
+        f"{_format_megabytes(environment_file_limit_bytes)} per file, "
+        f"{_format_megabytes(environment_batch_limit_bytes)} per batch."
+    )
     uploaded_files = st.sidebar.file_uploader(
         "Audio batch",
         type=list(SUPPORTED_UPLOAD_EXTENSIONS),
@@ -86,11 +146,26 @@ def main() -> None:
     )
 
     upload_count = len(uploaded_files) if uploaded_files else 0
+    file_sizes = [len(file.getvalue()) for file in uploaded_files] if uploaded_files else []
+    total_selected_size = sum(file_sizes)
+    largest_selected_file = max(file_sizes) if file_sizes else 0
+    near_environment_limit = (
+        environment_batch_limit_bytes > 0
+        and total_selected_size >= int(environment_batch_limit_bytes * NEAR_LIMIT_WARNING_RATIO)
+    )
+
+    if near_environment_limit and total_selected_size <= environment_batch_limit_bytes:
+        st.sidebar.warning(
+            "Selected uploads are near the deployment request limit "
+            f"({_format_megabytes(total_selected_size)} of {_format_megabytes(environment_batch_limit_bytes)}). "
+            "If processing fails with HTTP 413, retry with fewer files per batch."
+        )
     runtime_summary = app_service.runtime_summary()
-    runtime_diagnostics = app_service.runtime_diagnostics()
     st.sidebar.write(
         {
             "files_selected": upload_count,
+            "batch_size_mb": round(total_selected_size / 1_000_000, 2),
+            "largest_file_mb": round(largest_selected_file / 1_000_000, 2),
             "analysis_enabled": settings.features.enable_analysis,
             **runtime_summary,
         }
@@ -132,6 +207,18 @@ def main() -> None:
     if st.sidebar.button("Process batch", type="primary", use_container_width=True, disabled=process_disabled):
         if upload_count < 1 or upload_count > 10:
             st.sidebar.warning("Please upload between 1 and 10 audio files.")
+        elif largest_selected_file > environment_file_limit_bytes:
+            st.sidebar.error(
+                "One or more files exceed the deployment/runtime per-file limit "
+                f"({_format_megabytes(environment_file_limit_bytes)}). "
+                "Compress/split oversized recordings before retrying."
+            )
+        elif total_selected_size > environment_batch_limit_bytes:
+            st.sidebar.error(
+                "Combined selection exceeds the deployment/runtime batch limit "
+                f"({_format_megabytes(total_selected_size)} > {_format_megabytes(environment_batch_limit_bytes)}). "
+                "Remove files or run multiple smaller batches."
+            )
         else:
             items = [
                 BatchUploadItem(
@@ -141,22 +228,32 @@ def main() -> None:
                 )
                 for file in uploaded_files
             ]
-            with st.spinner("Processing uploaded interviews..."):
-                batch_result = app_service.process_batch_uploads(items)
+            chunks = _chunk_upload_items(items, upload_chunk_size)
+            chunk_results = []
+            with st.spinner("Processing uploaded interviews in smaller chunks..."):
+                for chunk_index, chunk in enumerate(chunks, start=1):
+                    st.sidebar.caption(f"Processing chunk {chunk_index}/{len(chunks)} ({len(chunk)} files).")
+                    chunk_results.append(app_service.process_batch_uploads(chunk))
 
+            completed_count = sum(result.completed_count for result in chunk_results)
+            failed_count = sum(result.failed_count for result in chunk_results)
+            batch_ids = ", ".join(result.batch_id[:8] for result in chunk_results)
             summary_message = (
-                f"Processed batch {batch_result.batch_id[:8]} with {batch_result.completed_count} completed and "
-                f"{batch_result.failed_count} failed."
+                f"Processed {len(items)} files across {len(chunks)} chunk(s) [{batch_ids}] with "
+                f"{completed_count} completed and {failed_count} failed."
             )
-            if batch_result.failed_count == 0:
+            if failed_count == 0:
                 st.sidebar.success(summary_message)
-            elif batch_result.completed_count == 0:
+            elif completed_count == 0:
                 st.sidebar.error(summary_message)
             else:
                 st.sidebar.warning(summary_message)
 
             failed_results = [
-                result for result in batch_result.results if result.status is ProcessingStatus.FAILED
+                result
+                for chunk_result in chunk_results
+                for result in chunk_result.results
+                if result.status is ProcessingStatus.FAILED
             ]
             for failed_result in failed_results:
                 error_message = (
@@ -165,6 +262,11 @@ def main() -> None:
                     else "Processing failed before transcription began."
                 )
                 st.sidebar.error(f"{failed_result.filename}: {error_message}")
+                if _is_payload_too_large_error(error_message):
+                    st.sidebar.warning(
+                        "HTTP 413 guidance: retry with fewer files (2-3 per run), compress audio, "
+                        "or lower duration/bitrate before re-uploading."
+                    )
 
     if not settings.features.enable_analysis:
         st.warning(
@@ -181,6 +283,12 @@ def main() -> None:
         save_interview_edits=getattr(app_service, "save_interview_edits", None),
         reprocess_interview=getattr(app_service, "reprocess_interview", None),
         reanalyze_interviews=getattr(app_service, "reanalyze_interviews", None),
+        reanalyze_stale_interviews=lambda: app_service.reprocess_stale_interviews(),
+        list_stale_interview_ids=lambda: app_service.repository.list_stale_interview_ids(),
+        reprocess_failed_or_malformed=lambda: app_service.reprocess_failed_or_malformed_interviews(),
+        list_failed_or_malformed_ids=lambda: app_service.list_failed_or_malformed_interview_ids(),
+        delete_stale_corrupted=lambda: app_service.delete_stale_corrupted_interviews(),
+        list_stale_corrupted_ids=lambda: app_service.list_stale_corrupted_interview_ids(),
         delete_interview=getattr(app_service, "delete_interview", lambda _interview_id: False),
         sample_mode=settings.features.use_sample_mode,
     )

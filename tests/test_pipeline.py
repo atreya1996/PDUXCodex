@@ -18,6 +18,7 @@ from payday.storage import StorageService
 from payday.transcription import (
     OPENAI_TRANSCRIPTION_SAFE_FILE_LIMIT_BYTES,
     OpenAITranscriptionAdapter,
+    SampleModeDisabledError,
     TranscriptionService,
     describe_transcription_file_size_limit,
 )
@@ -179,6 +180,21 @@ def test_transcription_service_sample_mode_preserves_demo_behavior() -> None:
     }
 
 
+def test_transcription_service_sample_mode_requires_explicit_env_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAYDAY_USE_SAMPLE_MODE", "false")
+    service = TranscriptionService(TranscriptionSettings())
+    asset = UploadedAsset(
+        filename="demo.txt",
+        content_type="text/plain",
+        size_bytes=11,
+        raw_bytes=b"hello world",
+        file_id="file-123",
+    )
+
+    with pytest.raises(SampleModeDisabledError, match="PAYDAY_USE_SAMPLE_MODE=true"):
+        service.transcribe(asset, sample_mode=True)
+
+
 def test_transcription_service_non_sample_mode_uses_openai_client_and_returns_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     install_fake_openai_module(monkeypatch)
     transcriptions = StubOpenAITranscriptions(response=StubTranscriptionResponse("Real transcript", language="hi", duration=8.25))
@@ -212,6 +228,39 @@ def test_transcription_service_non_sample_mode_uses_openai_client_and_returns_me
         "language": "hi",
         "duration_seconds": 8.25,
     }
+
+
+@pytest.mark.parametrize(
+    ("filename", "content_type", "payload"),
+    [
+        ("sample_lame.mp3", "audio/mpeg", b"ID3\x04\x00\x00\x00\x00\x00\x15LAME3.100\x00\x00\x00\x00\x00\x00\x00audio"),
+        ("sample_ftyp.mp4", "video/mp4", b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2\x00\x00\x00\x00\x00\x00\x00\x00payload"),
+    ],
+)
+def test_transcription_service_non_sample_mode_uses_provider_output_not_raw_decode(
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    content_type: str,
+    payload: bytes,
+) -> None:
+    install_fake_openai_module(monkeypatch)
+    transcriptions = StubOpenAITranscriptions(response=StubTranscriptionResponse("Provider transcript only"))
+    client = StubOpenAIClient(transcriptions)
+    service = TranscriptionService(TranscriptionSettings(api_key="test-key"), client=client)
+    asset = UploadedAsset(
+        filename=filename,
+        content_type=content_type,
+        size_bytes=len(payload),
+        raw_bytes=payload,
+        file_id=f"file-{filename}",
+    )
+
+    transcript = service.transcribe(asset, sample_mode=False)
+
+    assert transcript.text == "Provider transcript only"
+    assert "ftyp" not in transcript.text.lower()
+    assert "lame" not in transcript.text.lower()
+    assert len(transcriptions.calls) == 1
 
 
 def test_transcription_service_non_sample_mode_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -294,6 +343,22 @@ def test_pipeline_process_upload_returns_completed_result() -> None:
     assert result.status is ProcessingStatus.COMPLETED
     assert result.current_stage is PipelineStage.STORAGE
     assert service.list_results()
+
+
+def test_pipeline_rejects_binary_signature_transcript_before_analysis() -> None:
+    service = PaydayAppService(build_settings())
+
+    result = service.process_upload(
+        "bad.mp4",
+        "video/mp4",
+        b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00\x00\x00\x00\x00",
+    )
+
+    assert result.status is ProcessingStatus.FAILED
+    assert result.current_stage is PipelineStage.TRANSCRIPTION
+    assert result.analysis is None
+    assert result.persona is None
+    assert result.last_error == "Transcription failed: binary payload detected, please retry or verify API key/provider."
 
 
 def test_pipeline_process_upload_persists_interview_structured_response_and_insight_rows(tmp_path) -> None:
@@ -1253,6 +1318,36 @@ def test_app_service_reprocess_stale_interviews_recomputes_legacy_rows(tmp_path)
     assert interview.id in summary["reprocessed_ids"]
     assert refreshed.persona is not None
     assert interview.id not in stale_after
+
+
+def test_app_service_lists_and_deletes_stale_corrupted_rows(tmp_path) -> None:
+    database_path = str(tmp_path / "stale-corrupted.sqlite3")
+    service = PaydayAppService(build_settings(sqlite_path=database_path))
+    interview = service.repository.create_interview(
+        interview_id="stale-bad-1",
+        audio_url="audio/stale-bad-1/demo.wav",
+        transcript="bad",
+        status=ProcessingStatus.FAILED.value,
+        latest_stage=PipelineStage.TRANSCRIPTION.value,
+        last_error="transcription malformed payload",
+    )
+    with service.repository._connect() as connection:  # noqa: SLF001
+        connection.execute(
+            """
+            UPDATE interviews
+            SET analysis_schema_version = NULL, persona_ruleset_version = NULL
+            WHERE id = ?
+            """,
+            (interview.id,),
+        )
+
+    stale_corrupted_before = service.list_stale_corrupted_interview_ids()
+    deletion_summary = service.delete_stale_corrupted_interviews()
+
+    assert interview.id in stale_corrupted_before
+    assert deletion_summary["stale_corrupted_count"] == 1
+    assert interview.id in deletion_summary["deleted_ids"]
+    assert deletion_summary["failed"] == {}
 
 
 def test_persona_classifier_supports_legacy_nested_structured_output_for_personas_one_to_five() -> None:

@@ -219,6 +219,7 @@ def build_sample_interviews(
                 smartphone_user=sample["smartphone_user"],
                 has_bank_account=sample["has_bank_account"],
                 digital_access=digital_access,
+                transcript_quality="good",
                 extracted_json=extracted_json,
                 evidence_quotes=(transcript.split(". ")[0],),
                 segmented_dialogue=tuple(extracted_json["segmented_dialogue"]),
