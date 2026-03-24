@@ -11,6 +11,7 @@ from payday.transcription import describe_transcription_file_size_limit
 from payday.upload import SUPPORTED_UPLOAD_EXTENSIONS
 
 REFRESH_STATUS_FLAG = "dashboard_status_reloaded"
+REPROCESS_STALE_FLAG = "dashboard_stale_reprocessed"
 
 
 @st.cache_resource
@@ -79,6 +80,26 @@ def main() -> None:
         st.rerun()
     if st.session_state.pop(REFRESH_STATUS_FLAG, False):
         st.sidebar.success("Reloaded durable interview statuses from SQLite.")
+
+    st.sidebar.caption("Recompute interviews saved under older analysis/persona schema versions.")
+    if st.sidebar.button("Reprocess all stale interviews", use_container_width=True):
+        st.session_state[REPROCESS_STALE_FLAG] = app_service.reprocess_stale_interviews()
+        st.rerun()
+    stale_reprocess_result = st.session_state.pop(REPROCESS_STALE_FLAG, None)
+    if isinstance(stale_reprocess_result, dict):
+        stale_count = int(stale_reprocess_result.get("stale_count", 0))
+        refreshed_count = len(stale_reprocess_result.get("reprocessed_ids", []))
+        failed = stale_reprocess_result.get("failed", {})
+        if stale_count == 0:
+            st.sidebar.info("No stale interviews were found.")
+        elif failed:
+            st.sidebar.warning(
+                f"Reprocessed {refreshed_count} of {stale_count} stale interviews; {len(failed)} failed."
+            )
+            for interview_id, error in list(failed.items())[:5]:
+                st.sidebar.error(f"{interview_id}: {error}")
+        else:
+            st.sidebar.success(f"Reprocessed all {stale_count} stale interviews.")
 
     process_disabled = not settings.features.enable_analysis or upload_count == 0
     if st.sidebar.button("Process batch", type="primary", use_container_width=True, disabled=process_disabled):
