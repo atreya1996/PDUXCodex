@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -101,6 +102,8 @@ class DashboardInterviewRecord:
     analysis_version: str | None = None
     analyzed_at: str | None = None
     segmented_dialogue: list[dict[str, Any]] = field(default_factory=list)
+    data_malformed: bool = False
+    data_malformed_details: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -632,6 +635,50 @@ class PaydayRepository:
                 """,
                 (limit,),
             ).fetchall()
+            migrated_ids = {
+                str(row["id"])
+                for row in rows
+                if self._migrate_legacy_html_fragments(connection, row)
+            }
+            if migrated_ids:
+                refreshed_rows = connection.execute(
+                    """
+                    SELECT
+                        interviews.id,
+                        interviews.audio_url,
+                        interviews.transcript,
+                        interviews.status,
+                        interviews.latest_stage,
+                        interviews.last_error,
+                        interviews.created_at,
+                        interviews.analysis_version AS interview_analysis_version,
+                        structured_responses.smartphone_user,
+                        structured_responses.has_bank_account,
+                        structured_responses.per_household_earnings,
+                        structured_responses.participant_personal_monthly_income,
+                        structured_responses.total_household_monthly_income,
+                        structured_responses.income_range,
+                        structured_responses.borrowing_history,
+                        structured_responses.repayment_preference,
+                        structured_responses.loan_interest,
+                        structured_responses.segmented_dialogue,
+                        structured_responses.analysis_version AS structured_analysis_version,
+                        structured_responses.analyzed_at AS structured_analyzed_at,
+                        insights.summary,
+                        insights.key_quotes,
+                        insights.persona,
+                        insights.confidence_score,
+                        insights.analysis_version AS insight_analysis_version,
+                        insights.analyzed_at AS insight_analyzed_at
+                    FROM interviews
+                    LEFT JOIN structured_responses ON structured_responses.interview_id = interviews.id
+                    LEFT JOIN insights ON insights.interview_id = interviews.id
+                    WHERE interviews.id IN ({placeholders})
+                    """.format(placeholders=",".join("?" for _ in migrated_ids)),
+                    tuple(migrated_ids),
+                ).fetchall()
+                refreshed_lookup = {str(row["id"]): row for row in refreshed_rows}
+                rows = [refreshed_lookup.get(str(row["id"]), row) for row in rows]
         return [self._dashboard_record_from_row(row) for row in rows]
 
     def list_failed_or_malformed_interview_ids(self, *, limit: int = 500) -> list[str]:
@@ -789,6 +836,43 @@ class PaydayRepository:
                 """,
                 (interview_id,),
             ).fetchone()
+            if row is not None and self._migrate_legacy_html_fragments(connection, row):
+                row = connection.execute(
+                    """
+                    SELECT
+                        interviews.id,
+                        interviews.audio_url,
+                        interviews.transcript,
+                        interviews.status,
+                        interviews.latest_stage,
+                        interviews.last_error,
+                        interviews.created_at,
+                        interviews.analysis_version AS interview_analysis_version,
+                        structured_responses.smartphone_user,
+                        structured_responses.has_bank_account,
+                        structured_responses.per_household_earnings,
+                        structured_responses.participant_personal_monthly_income,
+                        structured_responses.total_household_monthly_income,
+                        structured_responses.income_range,
+                        structured_responses.borrowing_history,
+                        structured_responses.repayment_preference,
+                        structured_responses.loan_interest,
+                        structured_responses.segmented_dialogue,
+                        structured_responses.analysis_version AS structured_analysis_version,
+                        structured_responses.analyzed_at AS structured_analyzed_at,
+                        insights.summary,
+                        insights.key_quotes,
+                        insights.persona,
+                        insights.confidence_score,
+                        insights.analysis_version AS insight_analysis_version,
+                        insights.analyzed_at AS insight_analyzed_at
+                    FROM interviews
+                    LEFT JOIN structured_responses ON structured_responses.interview_id = interviews.id
+                    LEFT JOIN insights ON insights.interview_id = interviews.id
+                    WHERE interviews.id = ?
+                    """,
+                    (interview_id,),
+                ).fetchone()
         if row is None:
             raise KeyError(f"Interview {interview_id} was not found.")
         return self._dashboard_record_from_row(row)
@@ -908,16 +992,19 @@ class PaydayRepository:
 
     def _dashboard_record_from_row(self, row: sqlite3.Row) -> DashboardInterviewRecord:
         payload = dict(row)
+        normalization = self._normalize_dashboard_payload(payload)
         transcript_quality = self._infer_transcript_quality(
             status=payload["status"],
-            transcript=payload["transcript"],
+            transcript=normalization["transcript"],
             last_error=payload["last_error"],
         )
+        if normalization["data_malformed"] and transcript_quality == "good":
+            transcript_quality = "malformed"
         return DashboardInterviewRecord(
             id=payload["id"],
             audio_url=payload["audio_url"],
             filename=self._filename_from_audio_url(payload["audio_url"]),
-            transcript=payload["transcript"],
+            transcript=normalization["transcript"],
             status=payload["status"],
             latest_stage=payload["latest_stage"],
             last_error=payload["last_error"],
@@ -932,14 +1019,190 @@ class PaydayRepository:
             repayment_preference=payload["repayment_preference"],
             loan_interest=payload["loan_interest"],
             segmented_dialogue=json.loads(payload["segmented_dialogue"]) if payload["segmented_dialogue"] else [],
-            summary=payload["summary"],
+            summary=normalization["summary"],
             key_quotes=json.loads(payload["key_quotes"]) if payload["key_quotes"] else [],
             persona=payload["persona"],
             confidence_score=payload["confidence_score"],
             transcript_quality=transcript_quality,
             analysis_version=payload.get("interview_analysis_version") or payload.get("insight_analysis_version") or payload.get("structured_analysis_version"),
             analyzed_at=payload.get("insight_analyzed_at") or payload.get("structured_analyzed_at"),
+            data_malformed=normalization["data_malformed"],
+            data_malformed_details=normalization["data_malformed_details"],
         )
+
+    def _normalize_dashboard_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        summary = payload.get("summary")
+        transcript = payload.get("transcript")
+        details: list[str] = []
+        parsed_summary = self._parse_legacy_html_fragment(summary)
+        parsed_transcript = self._parse_legacy_html_fragment(transcript)
+
+        normalized_summary = self._safe_text_value(summary)
+        normalized_transcript = self._safe_text_value(transcript)
+
+        if parsed_summary is not None and not normalized_summary:
+            normalized_summary = parsed_summary.get("summary") or parsed_summary.get("text")
+        if parsed_transcript is not None and not normalized_transcript:
+            normalized_transcript = parsed_transcript.get("transcript") or parsed_transcript.get("text")
+        if parsed_summary is not None and parsed_summary.get("summary"):
+            normalized_summary = parsed_summary["summary"]
+        if parsed_transcript is not None and parsed_transcript.get("transcript"):
+            normalized_transcript = parsed_transcript["transcript"]
+
+        if self._looks_like_html_blob(summary):
+            details.append("insights.summary contained HTML-like content")
+        if self._looks_like_html_blob(transcript):
+            details.append("interviews.transcript contained HTML-like content")
+        if parsed_summary is not None or parsed_transcript is not None:
+            details.append("legacy dashboard HTML fragment detected (meta-label/interview-summary)")
+
+        if not normalized_summary:
+            normalized_summary = "Analysis pending."
+            if summary not in (None, ""):
+                details.append("summary could not be normalized; using safe fallback text")
+        if not normalized_transcript:
+            normalized_transcript = "Transcript unavailable due to malformed stored data."
+            if transcript not in (None, ""):
+                details.append("transcript could not be normalized; using safe fallback text")
+
+        return {
+            "summary": normalized_summary,
+            "transcript": normalized_transcript,
+            "data_malformed": bool(details),
+            "data_malformed_details": details,
+        }
+
+    def _migrate_legacy_html_fragments(self, connection: sqlite3.Connection, row: sqlite3.Row) -> bool:
+        payload = dict(row)
+        summary_fragment = self._parse_legacy_html_fragment(payload.get("summary"))
+        transcript_fragment = self._parse_legacy_html_fragment(payload.get("transcript"))
+        merged_fragment = self._merge_legacy_fragments(summary_fragment, transcript_fragment)
+        if merged_fragment is None:
+            return False
+
+        updated = False
+        interview_id = str(payload["id"])
+        normalized_summary = merged_fragment.get("summary")
+        normalized_transcript = merged_fragment.get("transcript")
+        if normalized_summary and (self._looks_like_html_blob(payload.get("summary")) or not self._safe_text_value(payload.get("summary"))):
+            connection.execute(
+                "UPDATE insights SET summary = ? WHERE interview_id = ?",
+                (normalized_summary, interview_id),
+            )
+            updated = True
+        if normalized_transcript and (self._looks_like_html_blob(payload.get("transcript")) or not self._safe_text_value(payload.get("transcript"))):
+            connection.execute(
+                "UPDATE interviews SET transcript = ? WHERE id = ?",
+                (normalized_transcript, interview_id),
+            )
+            updated = True
+
+        if merged_fragment.get("borrowing_history") and not payload.get("borrowing_history"):
+            connection.execute(
+                "UPDATE structured_responses SET borrowing_history = ? WHERE interview_id = ?",
+                (merged_fragment["borrowing_history"], interview_id),
+            )
+            updated = True
+        if merged_fragment.get("income_range") and not payload.get("income_range"):
+            connection.execute(
+                "UPDATE structured_responses SET income_range = ? WHERE interview_id = ?",
+                (merged_fragment["income_range"], interview_id),
+            )
+            updated = True
+        return updated
+
+    @staticmethod
+    def _looks_like_html_blob(value: Any) -> bool:
+        if not isinstance(value, str):
+            return False
+        normalized = value.strip().lower()
+        if not normalized:
+            return False
+        return bool(re.search(r"<[^>]+>", normalized))
+
+    @staticmethod
+    def _safe_text_value(value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if "\x00" in normalized:
+            return None
+        if re.search(r"<[^>]+>", normalized):
+            return None
+        return normalized
+
+    def _parse_legacy_html_fragment(self, value: Any) -> dict[str, str] | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip()
+        if not normalized or not self._looks_like_html_blob(normalized):
+            return None
+        if "meta-label" not in normalized and "interview-summary" not in normalized:
+            return None
+
+        summary_match = re.search(r"interview-summary[^>]*>\s*(.*?)\s*</", normalized, flags=re.IGNORECASE | re.DOTALL)
+        transcript_match = re.search(
+            r"Transcript preview:\s*</strong>\s*(.*?)\s*</",
+            normalized,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        labels = re.findall(
+            r"meta-label[^>]*>\s*([^<]+?)\s*</span>\s*<span[^>]*meta-value[^>]*>\s*([^<]+?)\s*</span>",
+            normalized,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        cleaned_labels = {self._strip_html(label).lower(): self._strip_html(raw_value) for label, raw_value in labels}
+        parsed: dict[str, str] = {}
+        if summary_match is not None:
+            summary_text = self._strip_html(summary_match.group(1))
+            if summary_text and "transcript preview" not in summary_text.lower():
+                parsed["summary"] = summary_text
+        if transcript_match is not None:
+            transcript_text = self._strip_html(transcript_match.group(1))
+            if transcript_text:
+                parsed["transcript"] = transcript_text
+        if "borrowing" in cleaned_labels:
+            parsed["borrowing_history"] = self._legacy_borrowing_value(cleaned_labels["borrowing"])
+        if "income" in cleaned_labels and cleaned_labels["income"]:
+            parsed["income_range"] = cleaned_labels["income"]
+        text_only = self._strip_html(normalized)
+        if text_only:
+            parsed["text"] = text_only
+        return parsed or None
+
+    @staticmethod
+    def _merge_legacy_fragments(
+        first: dict[str, str] | None,
+        second: dict[str, str] | None,
+    ) -> dict[str, str] | None:
+        if first is None and second is None:
+            return None
+        merged: dict[str, str] = {}
+        for fragment in (first, second):
+            if fragment is None:
+                continue
+            for key, value in fragment.items():
+                if value and key not in merged:
+                    merged[key] = value
+        return merged
+
+    @staticmethod
+    def _strip_html(value: str) -> str:
+        no_tags = re.sub(r"<[^>]+>", " ", value)
+        normalized = re.sub(r"\s+", " ", no_tags).strip()
+        return normalized
+
+    @staticmethod
+    def _legacy_borrowing_value(value: str) -> str:
+        lowered = value.strip().lower()
+        if "non-borrow" in lowered or "no borrowing" in lowered:
+            return "has_not_borrowed_recently"
+        if "borrow" in lowered:
+            return "has_borrowed"
+        return "unknown"
 
 
     def _preferred_income_value(self, structured: dict[str, object]) -> str | None:

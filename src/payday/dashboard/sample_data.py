@@ -220,6 +220,8 @@ def build_sample_interviews(
                 has_bank_account=sample["has_bank_account"],
                 digital_access=digital_access,
                 transcript_quality="good",
+                data_malformed=False,
+                data_malformed_details=(),
                 extracted_json=extracted_json,
                 evidence_quotes=(transcript.split(". ")[0],),
                 segmented_dialogue=tuple(extracted_json["segmented_dialogue"]),
