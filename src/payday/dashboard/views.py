@@ -106,6 +106,7 @@ class DashboardInterview:
     analyzed_at: str | None = None
     audio_bytes: bytes | None = None
     audio_format: str = "audio/wav"
+    persisted_in_repository: bool = True
 
 
 class DashboardRenderer:
@@ -302,12 +303,14 @@ class DashboardRenderer:
             "Overview",
             "Use this page to quickly understand interview volume, digital access, borrowing behavior, and key supporting quotes for the current filters.",
         )
-        comparable, excluded_count = self._cohort_base(filtered)
-        self._render_status_strip(all_interviews, status_overview)
+        metrics_base, unsynced_count = self._persistent_metrics_base(filtered)
+        comparable, excluded_count = self._cohort_base(metrics_base)
+        self._render_status_strip(metrics_base, status_overview)
+        self._render_cache_reconciliation_warning(unsynced_count)
         self._render_transcription_failure_alert(filtered)
-        self._render_analysis_version_notice(filtered)
-        self._render_kpis(comparable, status_overview)
-        self._render_quality_denominator_note(excluded_count=excluded_count, total_count=len(filtered))
+        self._render_analysis_version_notice(metrics_base)
+        self._render_kpis(comparable)
+        self._render_quality_denominator_note(excluded_count=excluded_count, total_count=len(metrics_base))
 
         if not comparable:
             if all_interviews:
@@ -369,10 +372,12 @@ class DashboardRenderer:
             "Cohorts",
             "Compare user insight groups from the selected interviews: digital access, borrowing behavior, and persona mix.",
         )
-        comparable, excluded_count = self._cohort_base(filtered)
-        self._render_analysis_version_notice(filtered)
-        self._render_filter_snapshot(filtered, all_interviews, status_overview)
-        self._render_quality_denominator_note(excluded_count=excluded_count, total_count=len(filtered))
+        metrics_base, unsynced_count = self._persistent_metrics_base(filtered)
+        comparable, excluded_count = self._cohort_base(metrics_base)
+        self._render_analysis_version_notice(metrics_base)
+        self._render_filter_snapshot(metrics_base, all_interviews, status_overview)
+        self._render_cache_reconciliation_warning(unsynced_count)
+        self._render_quality_denominator_note(excluded_count=excluded_count, total_count=len(metrics_base))
 
         if not comparable:
             st.info("No cohorts to summarize for the current filter set.")
@@ -412,8 +417,10 @@ class DashboardRenderer:
             "Personas",
             "Card-based persona summaries with size, description, and supporting quote coverage.",
         )
-        comparable, excluded_count = self._cohort_base(filtered)
-        self._render_quality_denominator_note(excluded_count=excluded_count, total_count=len(filtered))
+        metrics_base, unsynced_count = self._persistent_metrics_base(filtered)
+        comparable, excluded_count = self._cohort_base(metrics_base)
+        self._render_cache_reconciliation_warning(unsynced_count)
+        self._render_quality_denominator_note(excluded_count=excluded_count, total_count=len(metrics_base))
         if not comparable:
             self._render_empty_state(
                 "No personas to review yet",
@@ -721,7 +728,7 @@ class DashboardRenderer:
         status_overview: DashboardStatusOverview,
     ) -> None:
         values = [
-            ("Filtered interviews", str(len(filtered))),
+            ("Filtered interviews (persisted)", str(len(filtered))),
             ("Portfolio interviews", str(len(all_interviews))),
             ("Durable interviews", str(status_overview.total_interviews)),
             ("Search term", str(st.session_state.get(FILTER_SESSION_KEYS["search"], "")).strip() or "All"),
@@ -746,11 +753,11 @@ class DashboardRenderer:
         )
         st.caption("Versions in view: " + ", ".join(versions))
 
-    def _render_kpis(self, interviews: list[DashboardInterview], status_overview: DashboardStatusOverview) -> None:
-        completed_count = status_overview.status_counts.get(ProcessingStatus.COMPLETED.value, 0)
+    def _render_kpis(self, interviews: list[DashboardInterview]) -> None:
+        completed_count = sum(1 for item in interviews if item.status == ProcessingStatus.COMPLETED.value)
         metrics = [
             ("Filtered interviews", str(len(interviews))),
-            ("Completed (durable)", str(completed_count)),
+            ("Completed", str(completed_count)),
             ("Smartphone %", self._percent(sum(1 for item in interviews if item.smartphone_user is True), len(interviews))),
             ("Borrowers %", self._percent(sum(1 for item in interviews if item.is_borrower), len(interviews))),
             ("Loan-interest %", self._percent(sum(1 for item in interviews if item.interested_in_loan), len(interviews))),
@@ -765,6 +772,10 @@ class DashboardRenderer:
             return interviews, 0
         comparable = [item for item in interviews if self._is_transcript_quality_comparable(item)]
         return comparable, len(interviews) - len(comparable)
+
+    def _persistent_metrics_base(self, interviews: list[DashboardInterview]) -> tuple[list[DashboardInterview], int]:
+        persisted = [item for item in interviews if item.persisted_in_repository]
+        return persisted, len(interviews) - len(persisted)
 
     def _is_transcript_quality_comparable(self, interview: DashboardInterview) -> bool:
         return interview.transcript_quality == "good"
@@ -2040,6 +2051,7 @@ class DashboardRenderer:
             analyzed_at=result.analysis.metrics.get("analyzed_at") if result.analysis else None,
             audio_bytes=result.asset.raw_bytes if result.asset is not None else None,
             audio_format=result.asset.content_type if result.asset is not None else "audio/wav",
+            persisted_in_repository=False,
         )
 
     def _from_repository_record(self, record: DashboardInterviewRecord) -> DashboardInterview:
@@ -2110,6 +2122,7 @@ class DashboardRenderer:
             segmented_dialogue=tuple(record.segmented_dialogue),
             analysis_version=record.analysis_version,
             analyzed_at=record.analyzed_at,
+            persisted_in_repository=True,
         )
 
     def _overlay_cached_result(
@@ -2162,6 +2175,7 @@ class DashboardRenderer:
             analyzed_at=repository_interview.analyzed_at or cached_result.analyzed_at,
             audio_bytes=cached_result.audio_bytes,
             audio_format=cached_result.audio_format,
+            persisted_in_repository=True,
         )
 
     def _merge_detail_record(
@@ -2354,7 +2368,7 @@ class DashboardRenderer:
         status_overview: DashboardStatusOverview,
     ) -> dict[str, int]:
         counts = {status: 0 for status in STATUS_DISPLAY_ORDER}
-        if status_overview.total_interviews > 0:
+        if not interviews and status_overview.total_interviews > 0:
             for status in STATUS_DISPLAY_ORDER:
                 counts[status] = status_overview.status_counts.get(status, 0)
             return counts
@@ -2758,4 +2772,12 @@ class DashboardRenderer:
             </style>
             """,
             unsafe_allow_html=True,
+        )
+    def _render_cache_reconciliation_warning(self, unsynced_count: int) -> None:
+        if unsynced_count <= 0:
+            return
+        st.warning(
+            f"{unsynced_count} cached interview(s) are not synced to SQLite yet. "
+            "They remain visible in Interviews, but overview/cohort/persona metrics exclude them until synced.",
+            icon="⚠️",
         )

@@ -28,6 +28,7 @@ def _dashboard_interview(
     interview_id: str,
     participant_income_value: str = "Unknown",
     borrowing_source: str = "Unknown",
+    persisted_in_repository: bool = True,
 ) -> object:
     return type(
         "DashboardInterviewStub",
@@ -60,6 +61,7 @@ def _dashboard_interview(
             "segmented_dialogue": (),
             "audio_bytes": None,
             "audio_format": "audio/wav",
+            "persisted_in_repository": persisted_in_repository,
         },
     )()
 
@@ -181,6 +183,110 @@ def test_dashboard_renderer_status_counts_use_durable_overview_when_available() 
         ProcessingStatus.COMPLETED.value: 1,
         ProcessingStatus.FAILED.value: 1,
     }
+
+
+def test_dashboard_renderer_status_counts_use_filtered_interviews_when_present() -> None:
+    renderer = DashboardRenderer()
+    overview = DashboardStatusOverview(
+        total_interviews=10,
+        status_counts={
+            ProcessingStatus.PENDING.value: 5,
+            ProcessingStatus.PROCESSING.value: 2,
+            ProcessingStatus.COMPLETED.value: 2,
+            ProcessingStatus.FAILED.value: 1,
+        },
+    )
+    interviews = [
+        _dashboard_interview(interview_id="one"),
+        _dashboard_interview(interview_id="two"),
+    ]
+
+    counts = renderer._status_counts(interviews, overview)
+
+    assert counts == {
+        ProcessingStatus.PENDING.value: 0,
+        ProcessingStatus.PROCESSING.value: 0,
+        ProcessingStatus.COMPLETED.value: 2,
+        ProcessingStatus.FAILED.value: 0,
+    }
+
+
+def test_dashboard_renderer_persistent_metrics_base_excludes_cache_only_items() -> None:
+    renderer = DashboardRenderer()
+    filtered = [
+        _dashboard_interview(interview_id="repo-1", persisted_in_repository=True),
+        _dashboard_interview(interview_id="cache-1", persisted_in_repository=False),
+    ]
+
+    persisted, unsynced_count = renderer._persistent_metrics_base(filtered)
+
+    assert [item.id for item in persisted] == ["repo-1"]
+    assert unsynced_count == 1
+
+
+def test_dashboard_renderer_build_interviews_keeps_db_records_authoritative_and_marks_cache_only() -> None:
+    renderer = DashboardRenderer()
+    cached_result = PipelineResult(
+        file_id="cache-only",
+        filename="cache-only.wav",
+        status=ProcessingStatus.PROCESSING,
+        transcript=Transcript(text="Cached transcript", provider="test", model="test"),
+        analysis=AnalysisResult(
+            summary="Cached summary",
+            structured_output={
+                "participant_profile": {
+                    "smartphone_user": {"value": True},
+                    "has_bank_account": {"value": True},
+                },
+                "participant_personal_monthly_income": {"value": "Unknown"},
+                "borrowing_history": {"value": "unknown"},
+                "loan_interest": {"value": "unknown"},
+            },
+            evidence_quotes=["Cached quote"],
+        ),
+        persona=PersonaClassification(
+            persona_id="persona_4",
+            persona_name="Self-Reliant Non-Borrower",
+            rationale="cache only",
+        ),
+        asset=UploadedAsset(
+            filename="cache-only.wav",
+            content_type="audio/wav",
+            size_bytes=4,
+            raw_bytes=b"1234",
+            file_id="cache-only",
+        ),
+    )
+    repository_record = DashboardInterviewRecord(
+        id="repo-1",
+        audio_url="audio/repo-1/repo.wav",
+        filename="repo.wav",
+        transcript="Repository transcript",
+        status=ProcessingStatus.COMPLETED.value,
+        latest_stage="storage",
+        last_error=None,
+        created_at="2026-03-18T10:00:00+00:00",
+        smartphone_user=True,
+        has_bank_account=True,
+        per_household_earnings=None,
+        participant_personal_monthly_income="₹10k–15k",
+        total_household_monthly_income=None,
+        income_range="₹10k–15k",
+        borrowing_history="has_borrowed",
+        repayment_preference="monthly",
+        loan_interest="interested",
+        summary="Repository summary",
+        key_quotes=["Repository quote"],
+        persona="Digitally Ready but Fearful",
+        confidence_score=0.91,
+        segmented_dialogue=[],
+    )
+
+    interviews = renderer._build_dashboard_interviews([cached_result], [repository_record])
+
+    assert [item.id for item in interviews] == ["repo-1", "cache-only"]
+    assert interviews[0].persisted_in_repository is True
+    assert interviews[1].persisted_in_repository is False
 
 
 def test_dashboard_renderer_normalizes_income_buckets_from_comparable_participant_income_values() -> None:
