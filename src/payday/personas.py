@@ -6,6 +6,7 @@ from typing import Any
 from payday.analysis import (
     DEFAULT_UNKNOWN_VALUE,
     bank_account_user_from_analysis,
+    clean_evidence_quotes,
     get_analysis_evidence_quotes,
     get_persona_signal_evidence_quotes,
     get_persona_signal_value,
@@ -152,7 +153,12 @@ class PersonaService:
                     "borrowing_history",
                     "smartphone_usage",
                 ),
-                evidence_quotes=tuple((borrowing_quotes + [quote.strip() for quote in employer_quotes if quote.strip()])[:2]),
+                evidence_quotes=tuple(
+                    clean_evidence_quotes(
+                        borrowing_quotes + [quote.strip() for quote in employer_quotes if quote.strip()],
+                        limit=2,
+                    )
+                ),
             )
         return None
 
@@ -196,11 +202,9 @@ class PersonaService:
         borrowing_field = get_analysis_field(structured_output, "borrowing_history")
         self_reliance_non_borrowing = get_persona_signal_value(structured_output, "self_reliance_non_borrowing")
         borrowing_quotes = list(get_analysis_evidence_quotes(structured_output, "borrowing_history"))
-        non_borrowing_evidence = [
-            quote
-            for quote in borrowing_quotes + list(get_persona_signal_evidence_quotes(structured_output, "self_reliance_non_borrowing"))
-            if isinstance(quote, str) and quote.strip()
-        ]
+        non_borrowing_evidence = clean_evidence_quotes(
+            borrowing_quotes + list(get_persona_signal_evidence_quotes(structured_output, "self_reliance_non_borrowing"))
+        )
         has_structured_non_borrowing_observation = (
             borrowing_history == "has_not_borrowed_recently"
             and borrowing_field.get("status") == "observed"

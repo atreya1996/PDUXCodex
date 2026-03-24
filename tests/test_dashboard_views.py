@@ -244,6 +244,14 @@ def test_dashboard_renderer_chart_rows_validation_rejects_nested_or_missing_shap
     assert renderer._chart_rows_are_flat([{"count": 1, "share": 20.0}]) is False
 
 
+def test_dashboard_renderer_uses_neutral_placeholder_when_quotes_are_malformed() -> None:
+    renderer = DashboardRenderer()
+
+    placeholder = renderer._clean_quote_snippet(("0101010101", "///////"))
+
+    assert placeholder == "No reliable quote extracted"
+
+
 def test_dashboard_renderer_prefers_income_table_for_sparse_or_non_numeric_inputs() -> None:
     renderer = DashboardRenderer()
 
@@ -291,9 +299,9 @@ renderer.render(
     markdown_values = [element.value for element in app.markdown]
 
     assert any("Upload interview audio from the sidebar to populate the dashboard overview." in value for value in info_values)
-    assert any("Upload audio files or intentionally load sample fixtures to create interview cards." in value for value in info_values)
+    assert any("Upload audio in the sidebar, then process at least one interview to review it here." in value for value in info_values)
     assert any(
-        "Upload and process at least one interview, or intentionally load sample fixtures, to inspect transcript details here." in value
+        "To test with sample interviews, turn on sample mode in app settings." in value
         for value in info_values
     )
     assert not any("Employer-Dependent Digital Borrower" in value for value in markdown_values)
@@ -480,4 +488,4 @@ renderer.render(
 
     assert "Confirm delete" in button_labels
     assert "Cancel delete" in button_labels
-    assert any("stored audio asset" in value for value in warning_values)
+    assert any("related audio file" in value for value in warning_values)
