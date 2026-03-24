@@ -47,6 +47,7 @@ FILTER_SESSION_KEYS = {
     "borrowing": "dashboard_filter_borrowing",
     "persona": "dashboard_filter_persona",
     "digital_access": "dashboard_filter_digital_access",
+    "include_low_quality": "dashboard_filter_include_low_quality",
     "search": "dashboard_search_query",
     "selected": "dashboard_selected_interview_id",
     "detail_open": "dashboard_detail_overlay_open",
@@ -160,6 +161,7 @@ class DashboardRenderer:
         st.session_state.setdefault(FILTER_SESSION_KEYS["borrowing"], [])
         st.session_state.setdefault(FILTER_SESSION_KEYS["persona"], [])
         st.session_state.setdefault(FILTER_SESSION_KEYS["digital_access"], [])
+        st.session_state.setdefault(FILTER_SESSION_KEYS["include_low_quality"], False)
         st.session_state.setdefault(FILTER_SESSION_KEYS["search"], "")
         st.session_state.setdefault(FILTER_SESSION_KEYS["detail_open"], False)
         st.session_state.setdefault(FILTER_SESSION_KEYS["transcripts"], {})
@@ -195,11 +197,11 @@ class DashboardRenderer:
         st.toast(message, icon=icon)
 
     def _apply_filters(self, interviews: list[DashboardInterview]) -> list[DashboardInterview]:
-        search_query = st.session_state[FILTER_SESSION_KEYS["search"]].strip().lower()
-        income_filters = set(st.session_state[FILTER_SESSION_KEYS["income"]])
-        borrowing_filters = set(st.session_state[FILTER_SESSION_KEYS["borrowing"]])
-        persona_filters = set(st.session_state[FILTER_SESSION_KEYS["persona"]])
-        digital_filters = set(st.session_state[FILTER_SESSION_KEYS["digital_access"]])
+        search_query = str(st.session_state.get(FILTER_SESSION_KEYS["search"], "")).strip().lower()
+        income_filters = set(st.session_state.get(FILTER_SESSION_KEYS["income"], []))
+        borrowing_filters = set(st.session_state.get(FILTER_SESSION_KEYS["borrowing"], []))
+        persona_filters = set(st.session_state.get(FILTER_SESSION_KEYS["persona"], []))
+        digital_filters = set(st.session_state.get(FILTER_SESSION_KEYS["digital_access"], []))
 
         filtered: list[DashboardInterview] = []
         for interview in interviews:
@@ -696,7 +698,7 @@ class DashboardRenderer:
             ("Filtered interviews", str(len(filtered))),
             ("Portfolio interviews", str(len(all_interviews))),
             ("Durable interviews", str(status_overview.total_interviews)),
-            ("Search term", st.session_state[FILTER_SESSION_KEYS["search"]].strip() or "All"),
+            ("Search term", str(st.session_state.get(FILTER_SESSION_KEYS["search"], "")).strip() or "All"),
         ]
         columns = st.columns(len(values), gap="medium")
         for column, (label, value) in zip(columns, values, strict=False):

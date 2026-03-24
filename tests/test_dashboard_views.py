@@ -314,6 +314,27 @@ renderer.render(
     assert not any("Open" == element.label for element in app.button)
 
 
+def test_dashboard_renderer_boots_with_empty_cached_results_and_recent_interviews() -> None:
+    script = '''
+from payday.dashboard.views import DashboardRenderer
+from payday.repository import DashboardStatusOverview
+
+renderer = DashboardRenderer()
+renderer.render(
+    cached_results=[],
+    recent_interviews=[],
+    status_overview=DashboardStatusOverview(total_interviews=0, status_counts={}),
+    interview_detail_loader=lambda interview_id: (_ for _ in ()).throw(KeyError(interview_id)),
+    sample_mode=False,
+)
+'''
+
+    app = AppTest.from_string(script)
+    app.run(timeout=10)
+
+    assert not app.exception
+
+
 def test_dashboard_interview_detail_exposes_explicit_save_actions() -> None:
     script = '''
 from payday.dashboard.views import DashboardRenderer
