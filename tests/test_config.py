@@ -6,6 +6,7 @@ from payday.analysis import AnthropicAnalysisAdapter, HeuristicAnalysisAdapter, 
 from payday.config import (
     DatabaseSettings,
     FeatureFlags,
+    get_settings,
     LLMSettings,
     resolve_runtime_commit_sha,
     Settings,
@@ -86,6 +87,14 @@ def test_non_sample_mode_reports_missing_transcription_key_without_llm_key_error
     message = str(exc_info.value)
     assert "TRANSCRIPTION_API_KEY is required" in message
     assert "LLM_API_KEY is required" not in message
+
+
+def test_get_settings_defaults_to_non_sample_mode_when_env_not_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PAYDAY_USE_SAMPLE_MODE", raising=False)
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    assert settings.features.use_sample_mode is False
 
 
 def test_validate_runtime_settings_reports_invalid_provider_names_clearly() -> None:

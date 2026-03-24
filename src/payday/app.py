@@ -6,7 +6,7 @@ import subprocess
 import streamlit as st
 from dotenv import load_dotenv
 
-from payday.config import Settings, get_settings
+from payday.config import Settings, SettingsConfigurationError, get_settings
 from payday.dashboard.views import DashboardRenderer
 from payday.models import BatchUploadItem, ProcessingStatus
 from payday.service import PaydayAppService
@@ -127,7 +127,20 @@ def get_runtime_git_banner() -> str:
 def main() -> None:
     st.set_page_config(page_title="PayDay Interview Review", layout="wide")
 
-    app_service, settings = build_app_service()
+    try:
+        app_service, settings = build_app_service()
+    except SettingsConfigurationError as exc:
+        st.title("PayDay interview review")
+        st.error("Runtime configuration is incomplete, so the app cannot start in live mode.")
+        st.markdown(
+            """
+            To continue, choose one setup path:
+            1. Set `LLM_API_KEY` and `TRANSCRIPTION_API_KEY` for live processing with `PAYDAY_USE_SAMPLE_MODE=false`, or
+            2. Set `PAYDAY_USE_SAMPLE_MODE=true` for sample/demo mode.
+            """
+        )
+        st.code(str(exc))
+        st.stop()
     dashboard = DashboardRenderer()
     supported_formats_label = ", ".join(extension.upper() for extension in SUPPORTED_UPLOAD_EXTENSIONS)
     upload_limit_guidance = describe_transcription_file_size_limit(settings.transcription)

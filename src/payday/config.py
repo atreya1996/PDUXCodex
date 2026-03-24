@@ -76,7 +76,7 @@ class DatabaseSettings:
 
 @dataclass(frozen=True)
 class FeatureFlags:
-    use_sample_mode: bool = True
+    use_sample_mode: bool = False
     enable_uploads: bool = True
     enable_dashboard: bool = True
     enable_analysis: bool = True
@@ -116,7 +116,7 @@ def get_settings() -> Settings:
             timeout_seconds=float(os.getenv("TRANSCRIPTION_TIMEOUT_SECONDS", "60")),
         ),
         features=FeatureFlags(
-            use_sample_mode=_as_bool(os.getenv("PAYDAY_USE_SAMPLE_MODE"), True),
+            use_sample_mode=_as_bool(os.getenv("PAYDAY_USE_SAMPLE_MODE"), False),
             enable_uploads=_as_bool(os.getenv("PAYDAY_ENABLE_UPLOADS"), True),
             enable_dashboard=_as_bool(os.getenv("PAYDAY_ENABLE_DASHBOARD"), True),
             enable_analysis=_as_bool(os.getenv("PAYDAY_ENABLE_ANALYSIS"), True),

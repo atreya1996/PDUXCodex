@@ -7,6 +7,7 @@ from payday.config import (
     FeatureFlags,
     LLMSettings,
     Settings,
+    SettingsConfigurationError,
     SupabaseSettings,
     TranscriptionSettings,
 )
@@ -61,6 +62,9 @@ class _FakeStreamlit:
     def __init__(self) -> None:
         self.sidebar = _FakeSidebar()
         self.session_state: dict[str, object] = {}
+        self.error_messages: list[str] = []
+        self.markdown_messages: list[str] = []
+        self.code_messages: list[str] = []
 
     def set_page_config(self, **_kwargs: object) -> None:
         return None
@@ -74,11 +78,26 @@ class _FakeStreamlit:
     def warning(self, _text: str) -> None:
         return None
 
+    def error(self, text: str) -> None:
+        self.error_messages.append(text)
+        return None
+
+    def markdown(self, text: str) -> None:
+        self.markdown_messages.append(text)
+        return None
+
+    def code(self, text: str) -> None:
+        self.code_messages.append(text)
+        return None
+
     def spinner(self, _text: str):
         return nullcontext()
 
     def rerun(self) -> None:
         return None
+
+    def stop(self) -> None:
+        raise RuntimeError("streamlit-stop")
 
 
 class _FakeAppService:
@@ -211,3 +230,26 @@ def test_app_blocks_batch_when_environment_size_limit_is_exceeded(monkeypatch) -
 
     assert service.batch_calls == []
     assert any("Per-batch limit exceeded:" in text for text in fake_st.sidebar.error_messages)
+
+
+def test_app_surfaces_configuration_error_without_traceback(monkeypatch) -> None:
+    from payday import app as payday_app
+
+    fake_st = _FakeStreamlit()
+
+    def _raise_configuration_error() -> tuple[object, object]:
+        raise SettingsConfigurationError("LLM_API_KEY is required.")
+
+    monkeypatch.setattr(payday_app, "st", fake_st)
+    monkeypatch.setattr(payday_app, "build_app_service", _raise_configuration_error)
+
+    try:
+        payday_app.main()
+    except RuntimeError as exc:
+        assert str(exc) == "streamlit-stop"
+    else:  # pragma: no cover - defensive
+        raise AssertionError("Expected app.main() to stop after surfacing configuration guidance.")
+
+    assert any("Runtime configuration is incomplete" in message for message in fake_st.error_messages)
+    assert any("PAYDAY_USE_SAMPLE_MODE=true" in message for message in fake_st.markdown_messages)
+    assert any("LLM_API_KEY is required." in message for message in fake_st.code_messages)
