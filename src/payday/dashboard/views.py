@@ -260,6 +260,7 @@ class DashboardRenderer:
             "Overview",
             "Prominent KPIs, normalized portfolio views, and evidence-first summaries for the current filter set.",
         )
+        st.caption("Admin / ops snapshot: interview pipeline status for monitoring batch processing health.")
         self._render_status_strip(all_interviews, status_overview)
         self._render_analysis_version_notice(filtered)
         self._render_kpis(filtered, status_overview)
@@ -322,7 +323,7 @@ class DashboardRenderer:
     ) -> None:
         self._render_page_intro(
             "Cohorts",
-            "Filters stay in the sidebar; this tab groups the current cohort into clean comparison tables.",
+            "Filters stay in the sidebar; this tab answers core research questions about digital access, borrowing behavior, and persona mix.",
         )
         self._render_analysis_version_notice(filtered)
         self._render_filter_snapshot(filtered, all_interviews, status_overview)
@@ -334,29 +335,23 @@ class DashboardRenderer:
         top_col, bottom_col = st.columns(2, gap="large")
         with top_col:
             self._render_table_card(
-                title="Digital access cohorts",
-                subtitle="Grouped by eligibility and access signals.",
+                title="Digital access",
+                subtitle="Research question: Which interviews show in-scope digital readiness vs offline/excluded access barriers?",
                 rows=self._build_cohort_rows(filtered, "digital_access"),
                 headers=("Cohort", "Count", "% of filtered"),
             )
             self._render_table_card(
-                title="Borrowing cohorts",
-                subtitle="Grouped by borrowing behavior label.",
+                title="Borrowing behavior",
+                subtitle="Research question: How many participants report borrowing compared with non-borrowing behavior?",
                 rows=self._build_cohort_rows(filtered, "borrowing_label"),
                 headers=("Cohort", "Count", "% of filtered"),
             )
         with bottom_col:
             self._render_table_card(
-                title="Persona cohorts",
-                subtitle="Grouped by persona output shown in the dashboard.",
+                title="Persona mix",
+                subtitle="Research question: Which user personas are most represented in the currently filtered interviews?",
                 rows=self._build_cohort_rows(filtered, "persona_name"),
                 headers=("Persona", "Count", "% of filtered"),
-            )
-            self._render_table_card(
-                title="Processing cohorts",
-                subtitle="Grouped by durable pipeline status.",
-                rows=self._build_cohort_rows(filtered, "status"),
-                headers=("Status", "Count", "% of filtered"),
             )
 
     def _render_personas(self, filtered: list[DashboardInterview], *, sample_mode: bool) -> None:
