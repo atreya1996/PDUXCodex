@@ -111,6 +111,7 @@ class DashboardRenderer:
             sample_mode=sample_mode,
         )
         self._initialize_session_state(interviews)
+        self._render_pending_toast()
         filtered = self._apply_filters(interviews)
         self._render_sidebar_filters(filtered, interviews, status_overview)
 
@@ -463,7 +464,7 @@ class DashboardRenderer:
         if reanalyze_interviews is None or reanalyze_stale_interviews is None:
             st.caption("Reanalysis actions are unavailable because one or more backend handlers were not provided.")
 
-        self._render_overlay_if_needed(
+        overlay_rendered = self._render_overlay_if_needed(
             filtered=filtered,
             all_interviews=all_interviews,
             interview_detail_loader=interview_detail_loader,
@@ -471,6 +472,11 @@ class DashboardRenderer:
             reprocess_interview=reprocess_interview,
             delete_interview=delete_interview,
         )
+        if not overlay_rendered and st.session_state.get(FILTER_SESSION_KEYS["overlay_open"]):
+            self._render_inline_detail_fallback(all_interviews=all_interviews)
+
+        self._render_interview_row_actions(filtered)
+        self._render_overlay_debug_indicator()
 
         st.markdown("<div class='pd-grid-section'>", unsafe_allow_html=True)
         card_columns = st.columns(2, gap="large")
@@ -909,10 +915,7 @@ class DashboardRenderer:
             unsafe_allow_html=True,
         )
         if st.button("Open", key=f"open_interview_{interview.id}", use_container_width=True, type="primary"):
-            st.session_state[FILTER_SESSION_KEYS["selected"]] = interview.id
-            st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = True
-            st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
-            st.rerun()
+            self._open_interview_overlay(interview.id)
 
         with st.expander("Delete interview", expanded=False):
             delete_disabled = delete_interview is None
@@ -958,19 +961,19 @@ class DashboardRenderer:
         save_interview_edits: Callable[..., DashboardInterviewRecord] | None,
         reprocess_interview: Callable[[str], DashboardInterviewRecord] | None,
         delete_interview: Callable[[str], bool] | None,
-    ) -> None:
+    ) -> bool:
         if not st.session_state.get(FILTER_SESSION_KEYS["overlay_open"]):
-            return
+            return False
 
         selected_id = st.session_state.get(FILTER_SESSION_KEYS["selected"])
         if not selected_id:
             st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = False
-            return
+            return False
 
         selected = next((item for item in all_interviews if item.id == selected_id), None)
         if selected is None:
             st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = False
-            return
+            return False
 
         selected = self._merge_detail_record(selected, interview_detail_loader)
         transcript_edits: dict[str, str] = st.session_state[FILTER_SESSION_KEYS["transcripts"]]
@@ -1162,6 +1165,82 @@ class DashboardRenderer:
                     st.rerun()
 
         st.markdown("</div>", unsafe_allow_html=True)
+        return True
+
+    def _render_inline_detail_fallback(self, *, all_interviews: list[DashboardInterview]) -> None:
+        selected_id = st.session_state.get(FILTER_SESSION_KEYS["selected"])
+        selected = next((item for item in all_interviews if item.id == selected_id), None)
+        if selected is None:
+            st.warning("Detail overlay could not be rendered. Select an interview again.")
+            return
+        st.warning("Overlay was requested but could not render in this session. Showing inline detail fallback.")
+        with st.expander(f"Inline detail fallback · {selected.filename}", expanded=True):
+            st.caption(f"Interview ID: {selected.id} · Status: {selected.status} · Stage: {selected.current_stage}")
+            st.markdown("**Summary**")
+            st.write(selected.summary or "No summary captured yet.")
+            st.markdown("**Transcript (read-only)**")
+            st.text_area(
+                "Fallback transcript",
+                value=selected.transcript,
+                height=220,
+                key=f"fallback_transcript_{selected.id}",
+                disabled=True,
+                label_visibility="collapsed",
+            )
+            self._render_formatted_insights(selected)
+            if st.button("Close fallback detail", key=f"close_fallback_{selected.id}", use_container_width=False):
+                st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = False
+                st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+                st.rerun()
+
+    def _render_interview_row_actions(self, interviews: list[DashboardInterview]) -> None:
+        with st.expander("Quick row actions", expanded=False):
+            for interview in interviews:
+                row_cols = st.columns([2.8, 1.4, 1.2, 1], gap="small")
+                row_cols[0].markdown(f"**{html.escape(interview.filename)}**")
+                row_cols[1].caption(f"ID: {interview.id}")
+                row_cols[2].caption(interview.persona_name)
+                if row_cols[3].button("Open", key=f"open_row_{interview.id}", use_container_width=True):
+                    self._open_interview_overlay(interview.id)
+
+    def _render_overlay_debug_indicator(self) -> None:
+        if not self._is_dev_mode():
+            return
+        selected_id = st.session_state.get(FILTER_SESSION_KEYS["selected"])
+        overlay_open = bool(st.session_state.get(FILTER_SESSION_KEYS["overlay_open"]))
+        st.caption(f"[dev] overlay_debug selected_id={selected_id} overlay_open={overlay_open}")
+
+    def _render_pending_toast(self) -> None:
+        toast_state = st.session_state.get(FILTER_SESSION_KEYS["toast_message"])
+        if not isinstance(toast_state, dict):
+            return
+        message = str(toast_state.get("message", "")).strip()
+        if not message:
+            st.session_state[FILTER_SESSION_KEYS["toast_message"]] = None
+            return
+        icon = "✅" if toast_state.get("kind") == "success" else "ℹ️"
+        st.toast(message, icon=icon)
+        st.session_state[FILTER_SESSION_KEYS["toast_message"]] = None
+
+    def _open_interview_overlay(self, interview_id: str) -> None:
+        st.session_state[FILTER_SESSION_KEYS["selected"]] = interview_id
+        st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = True
+        st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+        toast_payload = {
+            "kind": "success",
+            "message": f"Opened interview {interview_id}.",
+        }
+        st.session_state[FILTER_SESSION_KEYS["toast_message"]] = toast_payload
+        st.toast(toast_payload["message"], icon="✅")
+        st.rerun()
+
+    def _is_dev_mode(self) -> bool:
+        dev_flags = (
+            os.getenv("PAYDAY_DEV_MODE", ""),
+            os.getenv("STREAMLIT_ENV", ""),
+            os.getenv("ENV", ""),
+        )
+        return any(flag.strip().lower() in {"1", "true", "yes", "dev", "development"} for flag in dev_flags)
 
     def _render_formatted_insights(self, interview: DashboardInterview) -> None:
         sections = [
@@ -2022,11 +2101,20 @@ class DashboardRenderer:
                 border-radius: 20px;
                 min-height: 8px;
                 margin-bottom: -8px;
+                position: relative !important;
+                z-index: 2147483000 !important;
+                visibility: visible !important;
+                opacity: 1 !important;
             }}
             .overlay-card {{
                 border: 1px solid rgba(79, 70, 229, 0.38);
                 box-shadow: 0 28px 72px rgba(0, 0, 0, 0.42);
                 margin-bottom: 24px;
+                position: relative !important;
+                z-index: 2147483001 !important;
+                visibility: visible !important;
+                opacity: 1 !important;
+                isolation: isolate;
             }}
             .stTabs [data-baseweb="tab-list"] {{
                 gap: 8px;
