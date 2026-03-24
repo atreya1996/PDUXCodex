@@ -341,7 +341,7 @@ def build_transcription_service(
 ) -> TranscriptionService:
     """Select the transcription service from environment-controlled provider settings."""
 
-    if sample_mode and _is_sample_mode_enabled():
+    if sample_mode:
         return TranscriptionService(settings)
     if settings.provider == "openai":
         return OpenAITranscriptionService(settings)
@@ -351,4 +351,4 @@ def build_transcription_service(
 
 
 def _is_sample_mode_enabled() -> bool:
-    return os.getenv("PAYDAY_USE_SAMPLE_MODE", "").strip().lower() == "true"
+    return os.getenv("PAYDAY_USE_SAMPLE_MODE", "").strip().lower() in {"1", "true", "yes", "on"}

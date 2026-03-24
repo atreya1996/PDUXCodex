@@ -556,6 +556,100 @@ if st.session_state.get(FILTER_SESSION_KEYS["overlay_open"]):
     assert "Close overlay" in button_labels
 
 
+def test_dashboard_personas_tab_renders_without_sample_summary_name_error() -> None:
+    script = '''
+from payday.dashboard.views import DashboardRenderer
+from payday.models import ProcessingStatus
+from payday.repository import DashboardInterviewRecord, DashboardStatusOverview
+
+renderer = DashboardRenderer()
+record = DashboardInterviewRecord(
+    id="interview-1",
+    audio_url="audio/interview-1/repo-name.wav",
+    filename="repo-name.wav",
+    transcript="Repository transcript",
+    status=ProcessingStatus.COMPLETED.value,
+    latest_stage="persona",
+    last_error=None,
+    created_at="2026-03-18T10:00:00+00:00",
+    smartphone_user=True,
+    has_bank_account=True,
+    per_household_earnings=None,
+    participant_personal_monthly_income="₹10k–15k",
+    total_household_monthly_income=None,
+    income_range="₹10k–15k",
+    borrowing_history="has_borrowed",
+    repayment_preference="monthly",
+    loan_interest="interested",
+    summary="Repository summary",
+    key_quotes=["Repository quote"],
+    persona="Digitally Ready but Fearful",
+    confidence_score=0.91,
+)
+
+renderer.render(
+    cached_results=[],
+    recent_interviews=[record],
+    status_overview=DashboardStatusOverview(total_interviews=1, status_counts={ProcessingStatus.COMPLETED.value: 1}),
+    interview_detail_loader=lambda interview_id: record,
+    sample_mode=False,
+)
+'''
+    app = AppTest.from_string(script)
+    app.run(timeout=10)
+
+    assert not app.exception
+
+
+def test_dashboard_interview_card_hides_failed_transcript_preview_content() -> None:
+    script = '''
+from payday.dashboard.views import DashboardRenderer
+from payday.models import ProcessingStatus
+from payday.repository import DashboardInterviewRecord, DashboardStatusOverview
+
+renderer = DashboardRenderer()
+record = DashboardInterviewRecord(
+    id="interview-1",
+    audio_url="audio/interview-1/repo-name.wav",
+    filename="repo-name.wav",
+    transcript="<span class='meta-label'>garbled</span>",
+    status=ProcessingStatus.FAILED.value,
+    latest_stage="transcription",
+    last_error="transcription failed",
+    created_at="2026-03-18T10:00:00+00:00",
+    smartphone_user=True,
+    has_bank_account=True,
+    per_household_earnings=None,
+    participant_personal_monthly_income="₹10k–15k",
+    total_household_monthly_income=None,
+    income_range="₹10k–15k",
+    borrowing_history="unknown",
+    repayment_preference="unknown",
+    loan_interest="unknown",
+    summary="Analysis pending.",
+    key_quotes=[],
+    persona="Digitally Ready but Fearful",
+    confidence_score=0.0,
+    transcript_quality="failed",
+)
+
+renderer.render(
+    cached_results=[],
+    recent_interviews=[record],
+    status_overview=DashboardStatusOverview(total_interviews=1, status_counts={ProcessingStatus.FAILED.value: 1}),
+    interview_detail_loader=lambda interview_id: record,
+    sample_mode=False,
+)
+'''
+    app = AppTest.from_string(script)
+    app.run(timeout=10)
+
+    assert any(
+        "Transcript unavailable due to failed/malformed transcription." in markdown.value
+        for markdown in app.markdown
+    )
+
+
 def test_dashboard_interview_detail_requires_confirmation_before_delete() -> None:
     script = '''
 from payday.dashboard.views import DashboardRenderer
