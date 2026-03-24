@@ -183,9 +183,7 @@ def main() -> None:
         save_interview_edits=getattr(app_service, "save_interview_edits", None),
         reprocess_interview=getattr(app_service, "reprocess_interview", None),
         reanalyze_interviews=getattr(app_service, "reanalyze_interviews", None),
-        reanalyze_stale_interviews=getattr(app_service, "reanalyze_stale_interviews", None),
-        list_stale_interview_ids=getattr(app_service, "list_stale_interview_ids", None),
-        delete_interview=getattr(app_service, "delete_interview", None),
+        delete_interview=getattr(app_service, "delete_interview", lambda _interview_id: False),
         sample_mode=settings.features.use_sample_mode,
     )
 
