@@ -25,7 +25,18 @@ Use this checklist for each release:
 - [ ] **Deployed commit SHA**: confirm commit SHA used by deployment runtime.
 - [ ] **Runtime sidebar SHA**: open app sidebar and verify `Runtime commit SHA` matches deployed SHA.
 - [ ] Trigger sidebar **Refresh status + release metadata** once post-deploy.
+- [ ] **Upload guardrails configured**: set preview runtime env vars `PAYDAY_ENV_MAX_UPLOAD_FILE_MB`, `PAYDAY_ENV_MAX_UPLOAD_BATCH_MB`, and `PAYDAY_UPLOAD_BATCH_CHUNK_SIZE`.
 - [ ] Add/update release notes in `docs/release_notes.md` mapping shipped UX/features to commit IDs.
+
+## Preview upload guardrails
+
+For the deployed preview target, use:
+
+- `PAYDAY_ENV_MAX_UPLOAD_FILE_MB=20`
+- `PAYDAY_ENV_MAX_UPLOAD_BATCH_MB=45`
+- `PAYDAY_UPLOAD_BATCH_CHUNK_SIZE=3` (app clamps 1–3)
+
+These values keep uploads below common proxy/browser request-size ceilings and reduce 413 risk for multipart audio batches.
 
 ## Runtime metadata refresh
 
