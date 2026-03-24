@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -472,14 +473,7 @@ class DashboardRenderer:
         values: dict[str, int],
         color: str,
     ) -> None:
-        chart_data = [
-            {
-                "category": key,
-                "count": value,
-                "share": round((value / sum(values.values())) * 100, 1) if values else 0,
-            }
-            for key, value in values.items()
-        ]
+        chart_data = self._normalized_chart_rows(values)
         with st.container():
             st.markdown(
                 (
@@ -490,55 +484,178 @@ class DashboardRenderer:
                 ),
                 unsafe_allow_html=True,
             )
-        if not chart_data:
-            st.info("No chart data available.")
+        if not chart_data or not self._chart_rows_are_flat(chart_data):
+            self._render_chart_fallback_table(
+                title=title,
+                subtitle=subtitle,
+                chart_rows=chart_data,
+                reason="No valid chart rows were available, so a normalized table is shown instead.",
+            )
             return
-        st.vega_lite_chart(
-            chart_data,
+
+        if self._is_dev_mode():
+            st.caption(
+                "Debug normalized chart rows (first 3): "
+                + json.dumps(chart_data[:3], ensure_ascii=False, sort_keys=True)
+            )
+
+        try:
+            st.vega_lite_chart(
+                chart_data,
+                {
+                    "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+                    "background": "transparent",
+                    "data": {"values": chart_data},
+                    "mark": {"type": "bar", "cornerRadiusTopLeft": 10, "cornerRadiusTopRight": 10, "color": color},
+                    "encoding": {
+                        "x": {
+                            "field": "category",
+                            "type": "nominal",
+                            "sort": "-y",
+                            "axis": {
+                                "title": None,
+                                "labelAngle": 0,
+                                "labelColor": DESIGN_SYSTEM["text_secondary"],
+                                "domainColor": DESIGN_SYSTEM["border"],
+                                "tickColor": DESIGN_SYSTEM["border"],
+                            },
+                        },
+                        "y": {
+                            "field": "count",
+                            "type": "quantitative",
+                            "axis": {
+                                "title": None,
+                                "labelColor": DESIGN_SYSTEM["text_secondary"],
+                                "gridColor": "rgba(156, 163, 175, 0.14)",
+                                "domainColor": DESIGN_SYSTEM["border"],
+                                "tickColor": DESIGN_SYSTEM["border"],
+                            },
+                        },
+                        "tooltip": [
+                            {"field": "category", "type": "nominal", "title": "Category"},
+                            {"field": "count", "type": "quantitative", "title": "Interviews"},
+                            {"field": "share", "type": "quantitative", "title": "% of filtered"},
+                        ],
+                    },
+                    "view": {"stroke": None},
+                    "height": 280,
+                    "config": {
+                        "style": {"cell": {"stroke": "transparent"}},
+                        "legend": {"labelColor": DESIGN_SYSTEM["text_secondary"], "titleColor": DESIGN_SYSTEM["text_primary"]},
+                    },
+                },
+                use_container_width=True,
+            )
+        except Exception:
+            self._render_chart_fallback_table(
+                title=title,
+                subtitle=subtitle,
+                chart_rows=chart_data,
+                reason="Chart rendering failed at runtime, so a normalized table is shown instead.",
+            )
+
+    def _normalized_chart_rows(self, values: dict[str, int]) -> list[dict[str, int | float | str]]:
+        normalized_counts: dict[str, int] = {}
+        for raw_category, raw_count in values.items():
+            count = self._safe_chart_count(raw_count)
+            if count is None or count <= 0:
+                continue
+            category = self._normalize_chart_category(raw_category)
+            normalized_counts[category] = normalized_counts.get(category, 0) + count
+        total = sum(normalized_counts.values())
+        if total <= 0:
+            return []
+        return [
             {
-                "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-                "background": "transparent",
-                "data": {"values": chart_data},
-                "mark": {"type": "bar", "cornerRadiusTopLeft": 10, "cornerRadiusTopRight": 10, "color": color},
-                "encoding": {
-                    "x": {
-                        "field": "category",
-                        "type": "nominal",
-                        "sort": "-y",
-                        "axis": {
-                            "title": None,
-                            "labelAngle": 0,
-                            "labelColor": DESIGN_SYSTEM["text_secondary"],
-                            "domainColor": DESIGN_SYSTEM["border"],
-                            "tickColor": DESIGN_SYSTEM["border"],
-                        },
-                    },
-                    "y": {
-                        "field": "count",
-                        "type": "quantitative",
-                        "axis": {
-                            "title": None,
-                            "labelColor": DESIGN_SYSTEM["text_secondary"],
-                            "gridColor": "rgba(156, 163, 175, 0.14)",
-                            "domainColor": DESIGN_SYSTEM["border"],
-                            "tickColor": DESIGN_SYSTEM["border"],
-                        },
-                    },
-                    "tooltip": [
-                        {"field": "category", "type": "nominal", "title": "Category"},
-                        {"field": "count", "type": "quantitative", "title": "Interviews"},
-                        {"field": "share", "type": "quantitative", "title": "% of filtered"},
-                    ],
-                },
-                "view": {"stroke": None},
-                "height": 280,
-                "config": {
-                    "style": {"cell": {"stroke": "transparent"}},
-                    "legend": {"labelColor": DESIGN_SYSTEM["text_secondary"], "titleColor": DESIGN_SYSTEM["text_primary"]},
-                },
-            },
-            use_container_width=True,
+                "category": category,
+                "count": count,
+                "share": round((count / total) * 100, 1),
+            }
+            for category, count in normalized_counts.items()
+        ]
+
+    def _normalize_chart_category(self, raw_category: Any) -> str:
+        unknown_label = "Unknown"
+        if raw_category is None:
+            return unknown_label
+        label = str(raw_category).strip()
+        if not label:
+            return unknown_label
+        if label.casefold() in {"unknown", "unk", "n/a", "na", "none", "null", "unspecified"}:
+            return unknown_label
+        return label
+
+    def _safe_chart_count(self, raw_count: Any) -> int | None:
+        if isinstance(raw_count, bool):
+            return None
+        if isinstance(raw_count, (int, float)):
+            return int(raw_count)
+        if isinstance(raw_count, str):
+            parsed = raw_count.strip().replace(",", "")
+            if not parsed:
+                return None
+            try:
+                return int(float(parsed))
+            except ValueError:
+                return None
+        return None
+
+    def _chart_rows_are_flat(self, rows: list[dict[str, Any]]) -> bool:
+        if not isinstance(rows, list):
+            return False
+        for row in rows:
+            if not isinstance(row, dict):
+                return False
+            if "category" not in row or "count" not in row:
+                return False
+            if not isinstance(row["category"], str) or not row["category"].strip():
+                return False
+            if not isinstance(row["count"], (int, float)):
+                return False
+            if "share" in row and not isinstance(row["share"], (int, float)):
+                return False
+            if any(isinstance(value, (list, dict, tuple, set)) for value in row.values()):
+                return False
+        return True
+
+    def _render_chart_fallback_table(
+        self,
+        *,
+        title: str,
+        subtitle: str,
+        chart_rows: list[dict[str, Any]],
+        reason: str,
+    ) -> None:
+        st.caption(reason)
+        table_rows = [
+            (
+                str(row.get("category", "Unknown")),
+                int(row.get("count", 0)),
+                f"{float(row.get('share', 0.0)):.1f}%",
+            )
+            for row in chart_rows
+            if isinstance(row, dict)
+        ]
+        if not table_rows:
+            table_rows = [("Unknown", 0, "0.0%")]
+        self._render_table_card(
+            title=f"{title} (Table fallback)",
+            subtitle=subtitle,
+            rows=table_rows,
+            headers=("Category", "Count", "% of filtered"),
         )
+
+    def _is_dev_mode(self) -> bool:
+        raw_value = st.session_state.get("payday_dev_mode")
+        if raw_value is None:
+            raw_value = os.getenv("PAYDAY_DEV_MODE")
+        if raw_value is None:
+            return False
+        if isinstance(raw_value, bool):
+            return raw_value
+        if isinstance(raw_value, str):
+            return raw_value.strip().casefold() in {"1", "true", "yes", "on"}
+        return bool(raw_value)
 
     def _render_table_card(
         self,

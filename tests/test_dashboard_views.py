@@ -204,6 +204,36 @@ def test_dashboard_renderer_uses_normalized_borrowing_sources_only_for_overview_
     ]
 
 
+def test_dashboard_renderer_normalizes_chart_rows_to_flat_category_count_share_shape() -> None:
+    renderer = DashboardRenderer()
+
+    chart_rows = renderer._normalized_chart_rows(
+        {
+            "  Employer  ": 2,
+            "unknown": 1,
+            "": 3,
+            None: 4,
+            "Family / friends": "2",
+            "Ignore me": 0,
+        }
+    )
+
+    assert chart_rows == [
+        {"category": "Employer", "count": 2, "share": 16.7},
+        {"category": "Unknown", "count": 8, "share": 66.7},
+        {"category": "Family / friends", "count": 2, "share": 16.7},
+    ]
+    assert renderer._chart_rows_are_flat(chart_rows) is True
+
+
+def test_dashboard_renderer_chart_rows_validation_rejects_nested_or_missing_shape() -> None:
+    renderer = DashboardRenderer()
+
+    assert renderer._chart_rows_are_flat([{"category": "Borrower", "count": {"nested": 1}}]) is False
+    assert renderer._chart_rows_are_flat([{"category": "Borrower"}]) is False
+    assert renderer._chart_rows_are_flat([{"count": 1, "share": 20.0}]) is False
+
+
 def test_dashboard_empty_repository_shows_empty_states_without_fabricated_personas_or_quotes() -> None:
     script = '''
 from payday.dashboard.views import DashboardRenderer
