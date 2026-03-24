@@ -585,16 +585,16 @@ class PaydayPipeline:
         self._sync_result(result)
 
     def _log_stage(self, message: str, result: PipelineResult, *, attempts: int | None = None) -> None:
+        stage_key = result.current_stage.value
+        stage_attempts = attempts if attempts is not None else result.attempts.get(stage_key)
         payload = {
             "file_id": result.file_id,
-            "filename": result.filename,
-            "stage": result.current_stage.value,
+            "stage": stage_key,
             "status": result.status.value,
+            "error": result.last_error,
+            "attempts": stage_attempts,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        if attempts is not None:
-            payload["attempts"] = attempts
-        if result.last_error:
-            payload["last_error"] = result.last_error
         logger.info("%s: %s", message, payload)
 
     def _persist_analysis_outputs(self, result: PipelineResult) -> None:
@@ -727,40 +727,6 @@ class PaydayPipeline:
             return False
         return None
 
-
-    def _set_stage(
-        self,
-        result: PipelineResult,
-        *,
-        stage: PipelineStage,
-        status: ProcessingStatus | None = None,
-        message: str | None = None,
-    ) -> None:
-        result.current_stage = stage
-        if status is not None:
-            result.status = status
-        if message:
-            logger.info("%s: %s (%s)", result.file_id, message, stage.value)
-
-    def _record_failure(
-        self,
-        result: PipelineResult,
-        *,
-        stage: PipelineStage,
-        error: str,
-        message: str | None = None,
-    ) -> None:
-        result.current_stage = stage
-        result.status = ProcessingStatus.FAILED
-        result.last_error = error
-        if not result.errors or result.errors[-1] != error:
-            result.errors.append(error)
-        logger.error("%s: %s (%s)", result.file_id, message or error, stage.value)
-        self._sync_result(result)
-
-    def _log_stage(self, message: str, result: PipelineResult, *, attempts: int | None = None) -> None:
-        suffix = f" after {attempts} attempt(s)" if attempts is not None else ""
-        logger.info("%s: %s%s", result.file_id, message, suffix)
 
     def _run_with_retries(self, stage: PipelineStage, operation: Callable[[], T]) -> tuple[T, int]:
         last_error: Exception | None = None
