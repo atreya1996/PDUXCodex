@@ -53,7 +53,12 @@ FILTER_SESSION_KEYS = {
     "overlay_open": "dashboard_interview_overlay_open",
     "force_sqlite_reload": "dashboard_force_sqlite_reload",
     "toast_message": "dashboard_toast_message",
+    "interview_page": "dashboard_interview_page",
 }
+CARD_SUMMARY_SNIPPET_LIMIT = 120
+MAX_UI_TRANSCRIPT_CHARS = 12000
+MAX_MAIN_LIST_QUOTES = 3
+INTERVIEW_CARDS_PER_PAGE = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +153,7 @@ class DashboardRenderer:
         st.session_state.setdefault(FILTER_SESSION_KEYS["delete_confirm"], None)
         st.session_state.setdefault(FILTER_SESSION_KEYS["overlay_open"], False)
         st.session_state.setdefault(FILTER_SESSION_KEYS["toast_message"], None)
+        st.session_state.setdefault(FILTER_SESSION_KEYS["interview_page"], 1)
 
         selected_key = FILTER_SESSION_KEYS["selected"]
         if interviews and not st.session_state.get(selected_key):
@@ -157,6 +163,7 @@ class DashboardRenderer:
         if not interviews:
             st.session_state[selected_key] = None
             st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = False
+            st.session_state[FILTER_SESSION_KEYS["interview_page"]] = 1
 
     def _render_pending_toast(self) -> None:
         toast = st.session_state.pop(FILTER_SESSION_KEYS["toast_message"], None)
@@ -490,9 +497,16 @@ class DashboardRenderer:
         self._render_interview_row_actions(filtered)
         self._render_overlay_debug_indicator()
 
+        total_cards = len(filtered)
+        visible_cards = self._visible_interview_cards(filtered, cards_per_page=INTERVIEW_CARDS_PER_PAGE)
+        if not visible_cards:
+            st.info("No interview cards available for the current page.")
+            return
+        st.caption(f"Showing {len(visible_cards)} of {total_cards} interviews.")
+
         st.markdown("<div class='pd-grid-section'>", unsafe_allow_html=True)
         card_columns = st.columns(2, gap="large")
-        for index, interview in enumerate(filtered):
+        for index, interview in enumerate(visible_cards):
             with card_columns[index % len(card_columns)]:
                 self._render_interview_card(
                     interview,
@@ -500,6 +514,17 @@ class DashboardRenderer:
                     all_interviews=all_interviews,
                 )
         st.markdown("</div>", unsafe_allow_html=True)
+
+        if len(visible_cards) < total_cards:
+            if st.button(
+                "Load more interviews",
+                key="load_more_interviews_cards",
+                use_container_width=True,
+            ):
+                st.session_state[FILTER_SESSION_KEYS["interview_page"]] = (
+                    st.session_state.get(FILTER_SESSION_KEYS["interview_page"], 1) + 1
+                )
+                st.rerun()
 
     def _render_interviews_visual_regression_checklist(self) -> None:
         st.markdown(
@@ -943,7 +968,7 @@ class DashboardRenderer:
             )
 
     def _render_evidence_highlights(self, interviews: list[DashboardInterview]) -> None:
-        quotes = [quote for interview in interviews for quote in interview.evidence_quotes][:4]
+        quotes = [quote for interview in interviews for quote in interview.evidence_quotes][:MAX_MAIN_LIST_QUOTES]
         if not quotes:
             st.info("No direct quotes are available for the filtered interviews yet.")
             return
@@ -993,7 +1018,7 @@ class DashboardRenderer:
     ) -> None:
         badge_class = "badge-nontarget" if interview.is_non_target else "badge-target"
         persona_label = html.escape(interview.persona_name)
-        summary = html.escape(self._truncate_text(interview.summary, limit=160) or "No summary captured yet.")
+        summary = html.escape(self._truncate_text(interview.summary, limit=CARD_SUMMARY_SNIPPET_LIMIT) or "No summary captured yet.")
         st.markdown(
             f"""
             <div class='pd-card interview-card'>
@@ -1081,6 +1106,7 @@ class DashboardRenderer:
         selected = self._merge_detail_record(selected, interview_detail_loader)
         transcript_edits: dict[str, str] = st.session_state[FILTER_SESSION_KEYS["transcripts"]]
         transcript_edits.setdefault(selected.id, selected.transcript)
+        transcript_edits[selected.id] = self._cap_transcript_text(transcript_edits[selected.id])
         current_json = json.dumps(selected.extracted_json, indent=2, ensure_ascii=False)
 
         message = st.session_state.get(FILTER_SESSION_KEYS["detail_message"])
@@ -1125,22 +1151,25 @@ class DashboardRenderer:
                 if audio_url:
                     st.caption(f"Stored audio path: {audio_url}")
 
-            st.markdown("#### Editable transcript")
-            updated_transcript = st.text_area(
-                "Transcript",
-                key=f"overlay_transcript_{selected.id}",
-                value=transcript_edits[selected.id],
-                height=260,
-                label_visibility="collapsed",
-            )
+            st.markdown("#### Transcript detail")
+            with st.expander("Editable transcript", expanded=False):
+                updated_transcript = st.text_area(
+                    "Transcript",
+                    key=f"overlay_transcript_{selected.id}",
+                    value=transcript_edits[selected.id],
+                    height=260,
+                    label_visibility="collapsed",
+                )
             transcript_edits[selected.id] = updated_transcript
+            if len(updated_transcript) >= MAX_UI_TRANSCRIPT_CHARS:
+                st.caption(f"Transcript display capped at {MAX_UI_TRANSCRIPT_CHARS:,} characters for UI safety.")
         with side_col:
             self._render_formatted_insights(selected)
 
         dialogue_turns = self._segmented_dialogue_for(selected)
         if dialogue_turns:
-            st.markdown("#### Transcript turns")
-            self._render_segmented_dialogue(dialogue_turns)
+            with st.expander("Transcript turns", expanded=False):
+                self._render_segmented_dialogue(dialogue_turns)
 
         transcript_changed = updated_transcript != selected.transcript
         action_col, delete_col = st.columns([2, 1], gap="medium")
@@ -1282,14 +1311,15 @@ class DashboardRenderer:
             st.markdown("**Summary**")
             st.write(selected.summary or "No summary captured yet.")
             st.markdown("**Transcript (read-only)**")
-            st.text_area(
-                "Fallback transcript",
-                value=selected.transcript,
-                height=220,
-                key=f"fallback_transcript_{selected.id}",
-                disabled=True,
-                label_visibility="collapsed",
-            )
+            with st.expander("Fallback transcript (read-only)", expanded=False):
+                st.text_area(
+                    "Fallback transcript",
+                    value=self._cap_transcript_text(selected.transcript),
+                    height=220,
+                    key=f"fallback_transcript_{selected.id}",
+                    disabled=True,
+                    label_visibility="collapsed",
+                )
             self._render_formatted_insights(selected)
             if st.button("Close fallback detail", key=f"close_fallback_{selected.id}", use_container_width=False):
                 st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = False
@@ -1388,7 +1418,7 @@ class DashboardRenderer:
                 unsafe_allow_html=True,
             )
 
-        quotes = interview.evidence_quotes[:3]
+        quotes = interview.evidence_quotes[:MAX_MAIN_LIST_QUOTES]
         quote_markup = "".join(f"<li>{html.escape(quote)}</li>" for quote in quotes) or "<li>No direct quote captured yet.</li>"
         st.markdown(
             f"""
@@ -1964,6 +1994,26 @@ class DashboardRenderer:
         if len(normalized) <= limit:
             return normalized
         return f"{normalized[: limit - 1].rstrip()}…"
+
+    def _cap_transcript_text(self, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) <= MAX_UI_TRANSCRIPT_CHARS:
+            return normalized
+        return f"{normalized[:MAX_UI_TRANSCRIPT_CHARS].rstrip()}\n\n[Transcript capped for UI safety.]"
+
+    def _visible_interview_cards(
+        self,
+        interviews: list[DashboardInterview],
+        *,
+        cards_per_page: int,
+    ) -> list[DashboardInterview]:
+        total = len(interviews)
+        max_page = max(1, (total + cards_per_page - 1) // cards_per_page)
+        current_page = int(st.session_state.get(FILTER_SESSION_KEYS["interview_page"], 1))
+        current_page = min(max(current_page, 1), max_page)
+        st.session_state[FILTER_SESSION_KEYS["interview_page"]] = current_page
+        end_index = current_page * cards_per_page
+        return interviews[:end_index]
 
     def _evidence_quotes_for(
         self,
