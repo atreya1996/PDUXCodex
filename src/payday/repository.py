@@ -39,6 +39,8 @@ class StructuredResponseRecord:
     repayment_preference: str | None
     loan_interest: str | None
     segmented_dialogue: list[dict[str, Any]] = field(default_factory=list)
+    analysis_version: str | None = None
+    analyzed_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +50,8 @@ class InsightRecord:
     key_quotes: list[str]
     persona: str
     confidence_score: float
+    analysis_version: str | None = None
+    analyzed_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +95,8 @@ class DashboardInterviewRecord:
     key_quotes: list[str]
     persona: str | None
     confidence_score: float | None
+    analysis_version: str | None = None
+    analyzed_at: str | None = None
     segmented_dialogue: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -129,6 +135,7 @@ class PaydayRepository:
             connection.executescript(schema_sql)
             self._ensure_interview_columns(connection)
             self._ensure_structured_response_columns(connection)
+            self._ensure_insight_columns(connection)
 
     def _ensure_interview_columns(self, connection: sqlite3.Connection) -> None:
         interview_columns = {
@@ -149,6 +156,20 @@ class PaydayRepository:
         }
         if "segmented_dialogue" not in structured_columns:
             connection.execute("ALTER TABLE structured_responses ADD COLUMN segmented_dialogue TEXT")
+        if "analysis_version" not in structured_columns:
+            connection.execute("ALTER TABLE structured_responses ADD COLUMN analysis_version TEXT")
+        if "analyzed_at" not in structured_columns:
+            connection.execute("ALTER TABLE structured_responses ADD COLUMN analyzed_at TEXT")
+
+    def _ensure_insight_columns(self, connection: sqlite3.Connection) -> None:
+        insight_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(insights)").fetchall()
+        }
+        if "analysis_version" not in insight_columns:
+            connection.execute("ALTER TABLE insights ADD COLUMN analysis_version TEXT")
+        if "analyzed_at" not in insight_columns:
+            connection.execute("ALTER TABLE insights ADD COLUMN analyzed_at TEXT")
 
     def create_interview(
         self,
@@ -272,6 +293,8 @@ class PaydayRepository:
         repayment_preference: str | None,
         loan_interest: str | None,
         segmented_dialogue: list[dict[str, Any]] | None = None,
+        analysis_version: str | None = None,
+        analyzed_at: str | None = None,
     ) -> StructuredResponseRecord:
         record = StructuredResponseRecord(
             interview_id=interview_id,
@@ -285,6 +308,8 @@ class PaydayRepository:
             repayment_preference=repayment_preference,
             loan_interest=loan_interest,
             segmented_dialogue=segmented_dialogue or [],
+            analysis_version=analysis_version,
+            analyzed_at=analyzed_at or datetime.now(timezone.utc).isoformat(),
         )
         with self._connect() as connection:
             connection.execute(
@@ -300,9 +325,11 @@ class PaydayRepository:
                     borrowing_history,
                     repayment_preference,
                     loan_interest,
-                    segmented_dialogue
+                    segmented_dialogue,
+                    analysis_version,
+                    analyzed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(interview_id) DO UPDATE SET
                     smartphone_user = excluded.smartphone_user,
                     has_bank_account = excluded.has_bank_account,
@@ -313,7 +340,9 @@ class PaydayRepository:
                     borrowing_history = excluded.borrowing_history,
                     repayment_preference = excluded.repayment_preference,
                     loan_interest = excluded.loan_interest,
-                    segmented_dialogue = excluded.segmented_dialogue
+                    segmented_dialogue = excluded.segmented_dialogue,
+                    analysis_version = excluded.analysis_version,
+                    analyzed_at = excluded.analyzed_at
                 """,
                 (
                     record.interview_id,
@@ -327,6 +356,8 @@ class PaydayRepository:
                     record.repayment_preference,
                     record.loan_interest,
                     json.dumps(record.segmented_dialogue, ensure_ascii=False),
+                    record.analysis_version,
+                    record.analyzed_at,
                 ),
             )
         return record
@@ -339,6 +370,8 @@ class PaydayRepository:
         key_quotes: list[str],
         persona: str,
         confidence_score: float,
+        analysis_version: str | None = None,
+        analyzed_at: str | None = None,
     ) -> InsightRecord:
         record = InsightRecord(
             interview_id=interview_id,
@@ -346,17 +379,21 @@ class PaydayRepository:
             key_quotes=key_quotes,
             persona=persona,
             confidence_score=confidence_score,
+            analysis_version=analysis_version,
+            analyzed_at=analyzed_at or datetime.now(timezone.utc).isoformat(),
         )
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO insights (interview_id, summary, key_quotes, persona, confidence_score)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO insights (interview_id, summary, key_quotes, persona, confidence_score, analysis_version, analyzed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(interview_id) DO UPDATE SET
                     summary = excluded.summary,
                     key_quotes = excluded.key_quotes,
                     persona = excluded.persona,
-                    confidence_score = excluded.confidence_score
+                    confidence_score = excluded.confidence_score,
+                    analysis_version = excluded.analysis_version,
+                    analyzed_at = excluded.analyzed_at
                 """,
                 (
                     record.interview_id,
@@ -364,6 +401,8 @@ class PaydayRepository:
                     json.dumps(record.key_quotes),
                     record.persona,
                     record.confidence_score,
+                    record.analysis_version,
+                    record.analyzed_at,
                 ),
             )
         return record
@@ -378,6 +417,8 @@ class PaydayRepository:
         last_error: str | None,
         structured_response: dict[str, object],
         insight: dict[str, object],
+        analysis_version: str,
+        analyzed_at: str,
     ) -> DashboardInterviewRecord:
         with self._connect() as connection:
             connection.execute(
@@ -400,9 +441,11 @@ class PaydayRepository:
                     income_range,
                     borrowing_history,
                     repayment_preference,
-                    loan_interest
+                    loan_interest,
+                    analysis_version,
+                    analyzed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(interview_id) DO UPDATE SET
                     smartphone_user = excluded.smartphone_user,
                     has_bank_account = excluded.has_bank_account,
@@ -412,7 +455,9 @@ class PaydayRepository:
                     income_range = excluded.income_range,
                     borrowing_history = excluded.borrowing_history,
                     repayment_preference = excluded.repayment_preference,
-                    loan_interest = excluded.loan_interest
+                    loan_interest = excluded.loan_interest,
+                    analysis_version = excluded.analysis_version,
+                    analyzed_at = excluded.analyzed_at
                 """,
                 (
                     interview_id,
@@ -425,17 +470,21 @@ class PaydayRepository:
                     structured_response.get("borrowing_history"),
                     structured_response.get("repayment_preference"),
                     structured_response.get("loan_interest"),
+                    analysis_version,
+                    analyzed_at,
                 ),
             )
             connection.execute(
                 """
-                INSERT INTO insights (interview_id, summary, key_quotes, persona, confidence_score)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO insights (interview_id, summary, key_quotes, persona, confidence_score, analysis_version, analyzed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(interview_id) DO UPDATE SET
                     summary = excluded.summary,
                     key_quotes = excluded.key_quotes,
                     persona = excluded.persona,
-                    confidence_score = excluded.confidence_score
+                    confidence_score = excluded.confidence_score,
+                    analysis_version = excluded.analysis_version,
+                    analyzed_at = excluded.analyzed_at
                 """,
                 (
                     interview_id,
@@ -443,6 +492,8 @@ class PaydayRepository:
                     json.dumps(insight["key_quotes"]),
                     insight["persona"],
                     insight["confidence_score"],
+                    analysis_version,
+                    analyzed_at,
                 ),
             )
         return self.get_dashboard_interview_detail(interview_id)
@@ -492,10 +543,14 @@ class PaydayRepository:
                     structured_responses.repayment_preference,
                     structured_responses.loan_interest,
                     structured_responses.segmented_dialogue,
+                    structured_responses.analysis_version AS structured_analysis_version,
+                    structured_responses.analyzed_at AS structured_analyzed_at,
                     insights.summary,
                     insights.key_quotes,
                     insights.persona,
-                    insights.confidence_score
+                    insights.confidence_score,
+                    insights.analysis_version AS insight_analysis_version,
+                    insights.analyzed_at AS insight_analyzed_at
                 FROM interviews
                 LEFT JOIN structured_responses ON structured_responses.interview_id = interviews.id
                 LEFT JOIN insights ON insights.interview_id = interviews.id
@@ -522,7 +577,9 @@ class PaydayRepository:
                     borrowing_history,
                     repayment_preference,
                     loan_interest,
-                    segmented_dialogue
+                    segmented_dialogue,
+                    analysis_version,
+                    analyzed_at
                 FROM structured_responses
                 WHERE interview_id = ?
                 """,
@@ -530,7 +587,7 @@ class PaydayRepository:
             ).fetchone()
             insight_row = connection.execute(
                 """
-                SELECT interview_id, summary, key_quotes, persona, confidence_score
+                SELECT interview_id, summary, key_quotes, persona, confidence_score, analysis_version, analyzed_at
                 FROM insights
                 WHERE interview_id = ?
                 """,
@@ -549,6 +606,8 @@ class PaydayRepository:
                 repayment_preference=structured_row["repayment_preference"],
                 loan_interest=structured_row["loan_interest"],
                 segmented_dialogue=json.loads(structured_row["segmented_dialogue"]) if structured_row["segmented_dialogue"] else [],
+                analysis_version=structured_row["analysis_version"],
+                analyzed_at=structured_row["analyzed_at"],
             )
             if structured_row is not None
             else None
@@ -560,6 +619,8 @@ class PaydayRepository:
                 key_quotes=json.loads(insight_row["key_quotes"]),
                 persona=insight_row["persona"],
                 confidence_score=insight_row["confidence_score"],
+                analysis_version=insight_row["analysis_version"],
+                analyzed_at=insight_row["analyzed_at"],
             )
             if insight_row is not None
             else None
@@ -592,10 +653,14 @@ class PaydayRepository:
                     structured_responses.repayment_preference,
                     structured_responses.loan_interest,
                     structured_responses.segmented_dialogue,
+                    structured_responses.analysis_version AS structured_analysis_version,
+                    structured_responses.analyzed_at AS structured_analyzed_at,
                     insights.summary,
                     insights.key_quotes,
                     insights.persona,
-                    insights.confidence_score
+                    insights.confidence_score,
+                    insights.analysis_version AS insight_analysis_version,
+                    insights.analyzed_at AS insight_analyzed_at
                 FROM interviews
                 LEFT JOIN structured_responses ON structured_responses.interview_id = interviews.id
                 LEFT JOIN insights ON insights.interview_id = interviews.id
@@ -716,6 +781,8 @@ class PaydayRepository:
             key_quotes=list(analysis.evidence_quotes),
             persona=persona_name,
             confidence_score=normalized_confidence,
+            analysis_version=analysis.metrics.get("analysis_version") if isinstance(analysis.metrics.get("analysis_version"), str) else None,
+            analyzed_at=analysis.metrics.get("analyzed_at") if isinstance(analysis.metrics.get("analyzed_at"), str) else None,
         )
 
     def _dashboard_record_from_row(self, row: sqlite3.Row) -> DashboardInterviewRecord:
@@ -743,6 +810,8 @@ class PaydayRepository:
             key_quotes=json.loads(payload["key_quotes"]) if payload["key_quotes"] else [],
             persona=payload["persona"],
             confidence_score=payload["confidence_score"],
+            analysis_version=payload.get("insight_analysis_version") or payload.get("structured_analysis_version"),
+            analyzed_at=payload.get("insight_analyzed_at") or payload.get("structured_analyzed_at"),
         )
 
 

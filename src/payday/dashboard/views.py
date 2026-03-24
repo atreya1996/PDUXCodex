@@ -22,6 +22,12 @@ from payday.repository import DashboardInterviewRecord, DashboardStatusOverview
 
 PERSONA_LOOKUP = {persona.id: persona.name for persona in PERSONAS.values()}
 STATUS_DISPLAY_ORDER = tuple(status.value for status in ProcessingStatus)
+NORMALIZED_INCOME_BUCKETS = (
+    (0, 10000, "Below ₹10k"),
+    (10000, 15000, "₹10k–15k"),
+    (15000, 20000, "₹15k–20k"),
+    (20000, None, "₹20k+"),
+)
 DESIGN_SYSTEM = {
     "background": "#0B0F19",
     "card": "#111827",
@@ -73,6 +79,8 @@ class DashboardInterview:
     extracted_json: dict[str, Any]
     evidence_quotes: tuple[str, ...]
     segmented_dialogue: tuple[dict[str, Any], ...] = ()
+    analysis_version: str | None = None
+    analyzed_at: str | None = None
     audio_bytes: bytes | None = None
     audio_format: str = "audio/wav"
 
@@ -87,6 +95,7 @@ class DashboardRenderer:
         interview_detail_loader: Callable[[str], DashboardInterviewRecord],
         save_interview_edits: Callable[..., DashboardInterviewRecord] | None = None,
         reprocess_interview: Callable[[str], DashboardInterviewRecord] | None = None,
+        reanalyze_interviews: Callable[[list[str]], list[DashboardInterviewRecord]] | None = None,
         delete_interview: Callable[[str], bool] | None = None,
         sample_mode: bool = False,
     ) -> None:
@@ -114,6 +123,7 @@ class DashboardRenderer:
                 interview_detail_loader=interview_detail_loader,
                 save_interview_edits=save_interview_edits,
                 reprocess_interview=reprocess_interview,
+                reanalyze_interviews=reanalyze_interviews,
                 delete_interview=delete_interview,
                 sample_mode=sample_mode,
             )
@@ -135,8 +145,6 @@ class DashboardRenderer:
             st.session_state[selected_key] = interviews[0].id
         if interviews and st.session_state.get(selected_key) not in {item.id for item in interviews}:
             st.session_state[selected_key] = interviews[0].id
-        if len(interviews) == 1 and st.session_state.get(selected_key) == interviews[0].id:
-            st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = True
         if not interviews:
             st.session_state[selected_key] = None
             st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = False
@@ -232,6 +240,7 @@ class DashboardRenderer:
             "Prominent KPIs, normalized portfolio views, and evidence-first summaries for the current filter set.",
         )
         self._render_status_strip(all_interviews, status_overview)
+        self._render_analysis_version_notice(filtered)
         self._render_kpis(filtered, status_overview)
 
         if not filtered:
@@ -294,6 +303,7 @@ class DashboardRenderer:
             "Cohorts",
             "Filters stay in the sidebar; this tab groups the current cohort into clean comparison tables.",
         )
+        self._render_analysis_version_notice(filtered)
         self._render_filter_snapshot(filtered, all_interviews, status_overview)
 
         if not filtered:
@@ -369,6 +379,8 @@ class DashboardRenderer:
         all_interviews: list[DashboardInterview],
         interview_detail_loader: Callable[[str], DashboardInterviewRecord],
         save_interview_edits: Callable[..., DashboardInterviewRecord] | None,
+        reprocess_interview: Callable[[str], DashboardInterviewRecord] | None,
+        reanalyze_interviews: Callable[[list[str]], list[DashboardInterviewRecord]] | None,
         delete_interview: Callable[[str], bool] | None,
         sample_mode: bool,
     ) -> None:
@@ -385,11 +397,34 @@ class DashboardRenderer:
             )
             return
 
+        if st.button(
+            "Re-analyze all interviews",
+            key="reanalyze_all_interviews_dashboard",
+            use_container_width=False,
+            disabled=reanalyze_interviews is None,
+        ):
+            try:
+                reanalyze_interviews([item.id for item in all_interviews])
+            except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+                st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                    "kind": "error",
+                    "message": f"Re-analysis failed: {exc}",
+                }
+            else:
+                st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                    "kind": "success",
+                    "message": "Re-analysis complete for all interviews. Structured responses and insights were refreshed in SQLite.",
+                }
+            st.rerun()
+        if reanalyze_interviews is None:
+            st.caption("Re-analyze all interviews is unavailable because no backend handler was provided.")
+
         self._render_overlay_if_needed(
             filtered=filtered,
             all_interviews=all_interviews,
             interview_detail_loader=interview_detail_loader,
             save_interview_edits=save_interview_edits,
+            reprocess_interview=reprocess_interview,
             delete_interview=delete_interview,
         )
 
@@ -438,6 +473,21 @@ class DashboardRenderer:
         for column, (label, value) in zip(columns, values, strict=False):
             with column:
                 self._render_metric_card(label, value, card_class="compact-card")
+
+    def _render_analysis_version_notice(self, interviews: list[DashboardInterview]) -> None:
+        versions = sorted({item.analysis_version for item in interviews if item.analysis_version})
+        if not versions:
+            st.info("Analysis version metadata is not available yet for this filter set.")
+            return
+        if len(versions) == 1:
+            st.caption(f"Analysis version: {versions[0]}")
+            return
+        st.warning(
+            "Mixed analysis versions detected in this filter set. "
+            "Cohort and overview aggregates may combine rows from different prompt/model revisions. "
+            "Use Re-analyze actions to refresh records onto one version."
+        )
+        st.caption("Versions in view: " + ", ".join(versions))
 
     def _render_kpis(self, interviews: list[DashboardInterview], status_overview: DashboardStatusOverview) -> None:
         completed_count = status_overview.status_counts.get(ProcessingStatus.COMPLETED.value, 0)
@@ -672,7 +722,7 @@ class DashboardRenderer:
             """,
             unsafe_allow_html=True,
         )
-        if st.button(f"Open {interview.filename}", key=f"open_interview_{interview.id}", use_container_width=True, type="primary"):
+        if st.button("Open", key=f"open_interview_{interview.id}", use_container_width=True, type="primary"):
             st.session_state[FILTER_SESSION_KEYS["selected"]] = interview.id
             st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = True
             st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
@@ -768,6 +818,47 @@ class DashboardRenderer:
         transcript_changed = updated_transcript != selected.transcript
         action_col, delete_col = st.columns([2, 1], gap="medium")
         with action_col:
+            if st.button(
+                "Re-analyze selected interview",
+                key=f"reanalyze_selected_overlay_{selected.id}",
+                use_container_width=False,
+                disabled=reprocess_interview is None,
+            ):
+                try:
+                    reprocess_interview(selected.id)
+                except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+                    st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                        "kind": "error",
+                        "message": f"Re-analysis failed: {exc}",
+                    }
+                else:
+                    transcript_edits.pop(selected.id, None)
+                    st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                        "kind": "success",
+                        "message": "Selected interview re-analyzed. Structured responses and insights were overwritten in SQLite.",
+                    }
+                st.rerun()
+            if st.button(
+                "Reprocess interview",
+                key=f"reprocess_overlay_{selected.id}",
+                use_container_width=False,
+                disabled=reprocess_interview is None,
+            ):
+                try:
+                    reprocess_interview(selected.id)
+                except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+                    st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                        "kind": "error",
+                        "message": f"Re-analysis failed: {exc}",
+                    }
+                else:
+                    transcript_edits.pop(selected.id, None)
+                    st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                        "kind": "success",
+                        "message": "Interview reprocessed and refreshed in SQLite.",
+                    }
+                st.rerun()
+
             save_disabled = save_interview_edits is None or not transcript_changed
             transcript_col, json_col, save_all_col = st.columns(3, gap="small")
             with transcript_col:
@@ -804,6 +895,8 @@ class DashboardRenderer:
                 )
             if save_interview_edits is None:
                 st.caption("Transcript save is unavailable because no backend save handler was provided.")
+            if reprocess_interview is None:
+                st.caption("Re-analyze selected interview is unavailable because no backend handler was provided.")
             elif not transcript_changed:
                 st.caption("No transcript edits to save.")
             else:
@@ -890,6 +983,8 @@ class DashboardRenderer:
                     ("Income band", interview.income_band),
                     ("Smartphone user", self._bool_label(interview.smartphone_user)),
                     ("Bank account", self._bool_label(interview.has_bank_account)),
+                    ("Analysis version", interview.analysis_version or "Unknown"),
+                    ("Analyzed at", interview.analyzed_at or "Unknown"),
                 ],
             ),
         ]
@@ -1007,6 +1102,9 @@ class DashboardRenderer:
             if income_value is not None:
                 values.append(income_value)
         return values
+
+    def _numeric_income_values(self, interviews: list[DashboardInterview]) -> list[int]:
+        return self._normalized_participant_income_values(interviews)
 
     def _parse_income_value(self, income_value: str) -> int | None:
         normalized = income_value.strip()
@@ -1151,6 +1249,8 @@ class DashboardRenderer:
             extracted_json=structured or self._empty_extracted_json(summary="Analysis pending."),
             evidence_quotes=evidence_quotes,
             segmented_dialogue=segmented_dialogue,
+            analysis_version=result.analysis.metrics.get("analysis_version") if result.analysis else None,
+            analyzed_at=result.analysis.metrics.get("analyzed_at") if result.analysis else None,
             audio_bytes=result.asset.raw_bytes if result.asset is not None else None,
             audio_format=result.asset.content_type if result.asset is not None else "audio/wav",
         )
@@ -1185,6 +1285,8 @@ class DashboardRenderer:
                 "persona": record.persona,
                 "confidence_score": record.confidence_score,
                 "key_quotes": record.key_quotes,
+                "analysis_version": record.analysis_version,
+                "analyzed_at": record.analyzed_at,
             },
         }
         return DashboardInterview(
@@ -1212,6 +1314,8 @@ class DashboardRenderer:
             extracted_json=extracted_json,
             evidence_quotes=tuple(record.key_quotes),
             segmented_dialogue=tuple(record.segmented_dialogue),
+            analysis_version=record.analysis_version,
+            analyzed_at=record.analyzed_at,
         )
 
     def _overlay_cached_result(
@@ -1257,6 +1361,8 @@ class DashboardRenderer:
             },
             evidence_quotes=repository_interview.evidence_quotes or cached_result.evidence_quotes,
             segmented_dialogue=repository_interview.segmented_dialogue or cached_result.segmented_dialogue,
+            analysis_version=repository_interview.analysis_version or cached_result.analysis_version,
+            analyzed_at=repository_interview.analyzed_at or cached_result.analyzed_at,
             audio_bytes=cached_result.audio_bytes,
             audio_format=cached_result.audio_format,
         )

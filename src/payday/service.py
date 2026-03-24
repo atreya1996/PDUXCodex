@@ -92,6 +92,16 @@ class PaydayAppService:
         )
         return self.repository.get_dashboard_interview_detail(interview_id)
 
+    def reanalyze_interviews(self, interview_ids: list[str]) -> list[DashboardInterviewRecord]:
+        refreshed: list[DashboardInterviewRecord] = []
+        for interview_id in interview_ids:
+            refreshed.append(self.reprocess_interview(interview_id))
+        return refreshed
+
+    def reanalyze_all_interviews(self) -> list[DashboardInterviewRecord]:
+        interview_ids = [record.id for record in self.repository.list_recent_interviews(limit=10_000)]
+        return self.reanalyze_interviews(interview_ids)
+
     def delete_interview(self, interview_id: str) -> bool:
         try:
             interview = self.repository.get_interview(interview_id)

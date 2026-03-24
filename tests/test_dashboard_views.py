@@ -283,6 +283,8 @@ renderer.render(
 
     app = AppTest.from_string(script)
     app.run(timeout=10)
+    next(button for button in app.button if button.label == "Open").click()
+    app.run(timeout=10)
 
     button_labels = [element.label for element in app.button]
 
@@ -290,6 +292,7 @@ renderer.render(
     assert "Save structured JSON" in button_labels
     assert "Save all edits" in button_labels
     assert "Reprocess interview" in button_labels
+    assert "Re-analyze selected interview" in button_labels
 
 
 def test_dashboard_interviews_open_button_reveals_overlay_in_same_view() -> None:
@@ -349,8 +352,8 @@ renderer.render(
     text_area_values = [element.value for element in app.text_area]
 
     assert "Close overlay" in button_labels
-    assert any("opened in the Interviews overlay" in value for value in success_values)
-    assert any("Formatted insights" in value for value in markdown_values)
+    assert not success_values
+    assert any("Structured evidence" in value for value in markdown_values)
     assert "Repository transcript" in text_area_values
 
 
@@ -396,6 +399,8 @@ renderer.render(
 '''
 
     app = AppTest.from_string(script)
+    app.run(timeout=10)
+    next(button for button in app.button if button.label == "Open").click()
     app.run(timeout=10)
 
     assert any(button.label == "Delete interview" for button in app.button)
