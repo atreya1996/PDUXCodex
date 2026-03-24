@@ -99,6 +99,8 @@ class DashboardRenderer:
         save_interview_edits: Callable[..., DashboardInterviewRecord] | None = None,
         reprocess_interview: Callable[[str], DashboardInterviewRecord] | None = None,
         reanalyze_interviews: Callable[[list[str]], list[DashboardInterviewRecord]] | None = None,
+        reanalyze_stale_interviews: Callable[[], list[DashboardInterviewRecord]] | None = None,
+        list_stale_interview_ids: Callable[[], list[str]] | None = None,
         delete_interview: Callable[[str], bool] | None = None,
         sample_mode: bool = False,
     ) -> None:
@@ -109,6 +111,7 @@ class DashboardRenderer:
             sample_mode=sample_mode,
         )
         self._initialize_session_state(interviews)
+        self._render_pending_toast()
         filtered = self._apply_filters(interviews)
         self._render_sidebar_filters(filtered, interviews, status_overview)
 
@@ -127,6 +130,8 @@ class DashboardRenderer:
                 save_interview_edits=save_interview_edits,
                 reprocess_interview=reprocess_interview,
                 reanalyze_interviews=reanalyze_interviews,
+                reanalyze_stale_interviews=reanalyze_stale_interviews,
+                list_stale_interview_ids=list_stale_interview_ids,
                 delete_interview=delete_interview,
                 sample_mode=sample_mode,
             )
@@ -152,6 +157,18 @@ class DashboardRenderer:
         if not interviews:
             st.session_state[selected_key] = None
             st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = False
+
+    def _render_pending_toast(self) -> None:
+        toast = st.session_state.pop(FILTER_SESSION_KEYS["toast_message"], None)
+        if not isinstance(toast, dict):
+            return
+
+        message = str(toast.get("message", "")).strip()
+        if not message:
+            return
+        kind = str(toast.get("kind", "success")).lower()
+        icon = "✅" if kind == "success" else "⚠️"
+        st.toast(message, icon=icon)
 
     def _apply_filters(self, interviews: list[DashboardInterview]) -> list[DashboardInterview]:
         search_query = st.session_state[FILTER_SESSION_KEYS["search"]].strip().lower()
@@ -385,6 +402,8 @@ class DashboardRenderer:
         save_interview_edits: Callable[..., DashboardInterviewRecord] | None,
         reprocess_interview: Callable[[str], DashboardInterviewRecord] | None,
         reanalyze_interviews: Callable[[list[str]], list[DashboardInterviewRecord]] | None,
+        reanalyze_stale_interviews: Callable[[], list[DashboardInterviewRecord]] | None,
+        list_stale_interview_ids: Callable[[], list[str]] | None,
         delete_interview: Callable[[str], bool] | None,
         sample_mode: bool,
     ) -> None:
@@ -402,29 +421,62 @@ class DashboardRenderer:
             )
             return
 
-        if st.button(
-            "Re-analyze all interviews",
-            key="reanalyze_all_interviews_dashboard",
-            use_container_width=False,
-            disabled=reanalyze_interviews is None,
-        ):
+        action_col1, action_col2 = st.columns(2, gap="small")
+        stale_count = len(list_stale_interview_ids()) if list_stale_interview_ids is not None else None
+
+        with action_col1:
+            filtered_label = f"Reanalyze filtered ({len(filtered)})"
+            reanalyze_filtered_clicked = st.button(
+                filtered_label,
+                key="reanalyze_filtered_dashboard",
+                use_container_width=True,
+                disabled=reanalyze_interviews is None or not filtered,
+            )
+        with action_col2:
+            stale_label = "Reanalyze all stale"
+            if stale_count is not None:
+                stale_label += f" ({stale_count})"
+            reanalyze_stale_clicked = st.button(
+                stale_label,
+                key="reanalyze_stale_dashboard",
+                use_container_width=True,
+                disabled=reanalyze_stale_interviews is None or stale_count == 0,
+            )
+
+        if reanalyze_filtered_clicked:
             try:
-                reanalyze_interviews([item.id for item in all_interviews])
+                reanalyze_interviews([item.id for item in filtered])
             except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
                 st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
                     "kind": "error",
-                    "message": f"Re-analysis failed: {exc}",
+                    "message": f"Filtered reanalysis failed: {exc}",
                 }
             else:
                 st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
                     "kind": "success",
-                    "message": "Re-analysis complete for all interviews. Structured responses and insights were refreshed in SQLite.",
+                    "message": "Reanalysis complete for filtered interviews. Structured responses, insights, and personas were refreshed in SQLite.",
                 }
             st.rerun()
-        if reanalyze_interviews is None:
-            st.caption("Re-analyze all interviews is unavailable because no backend handler was provided.")
 
-        self._render_overlay_if_needed(
+        if reanalyze_stale_clicked:
+            try:
+                refreshed_rows = reanalyze_stale_interviews()
+            except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+                st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                    "kind": "error",
+                    "message": f"Stale reanalysis failed: {exc}",
+                }
+            else:
+                st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                    "kind": "success",
+                    "message": f"Reanalysis complete for {len(refreshed_rows)} stale interviews. Structured responses, insights, and personas were refreshed in SQLite.",
+                }
+            st.rerun()
+
+        if reanalyze_interviews is None or reanalyze_stale_interviews is None:
+            st.caption("Reanalysis actions are unavailable because one or more backend handlers were not provided.")
+
+        overlay_rendered = self._render_overlay_if_needed(
             filtered=filtered,
             all_interviews=all_interviews,
             interview_detail_loader=interview_detail_loader,
@@ -432,6 +484,11 @@ class DashboardRenderer:
             reprocess_interview=reprocess_interview,
             delete_interview=delete_interview,
         )
+        if not overlay_rendered and st.session_state.get(FILTER_SESSION_KEYS["overlay_open"]):
+            self._render_inline_detail_fallback(all_interviews=all_interviews)
+
+        self._render_interview_row_actions(filtered)
+        self._render_overlay_debug_indicator()
 
         st.markdown("<div class='pd-grid-section'>", unsafe_allow_html=True)
         card_columns = st.columns(2, gap="large")
@@ -544,7 +601,7 @@ class DashboardRenderer:
         *,
         title: str,
         subtitle: str,
-        values: dict[str, int],
+        values: dict[str, Any],
         color: str,
     ) -> None:
         chart_data = self._normalized_chart_rows(values)
@@ -559,6 +616,11 @@ class DashboardRenderer:
                 unsafe_allow_html=True,
             )
         if not chart_data or not self._chart_rows_are_flat(chart_data):
+            self._emit_chart_diagnostics(
+                title=title,
+                chart_rows=chart_data,
+                note="Fallback triggered because normalized chart rows were empty or invalid.",
+            )
             self._render_chart_fallback_table(
                 title=title,
                 subtitle=subtitle,
@@ -567,11 +629,25 @@ class DashboardRenderer:
             )
             return
 
-        if self._is_dev_mode():
-            st.caption(
-                "Debug normalized chart rows (first 3): "
-                + json.dumps(chart_data[:3], ensure_ascii=False, sort_keys=True)
+        if self._prefer_income_table_fallback(title=title, values=values, chart_rows=chart_data):
+            self._emit_chart_diagnostics(
+                title=title,
+                chart_rows=chart_data,
+                note="Income distribution shown as table due to sparse/non-numeric chart inputs.",
             )
+            self._render_chart_fallback_table(
+                title=title,
+                subtitle=subtitle,
+                chart_rows=chart_data,
+                reason="Income values were sparse or non-numeric, so a tabular distribution is shown for clarity.",
+            )
+            return
+
+        self._emit_chart_diagnostics(
+            title=title,
+            chart_rows=chart_data,
+            note="Rendering Vega chart with normalized rows.",
+        )
 
         try:
             st.vega_lite_chart(
@@ -620,7 +696,12 @@ class DashboardRenderer:
                 },
                 use_container_width=True,
             )
-        except Exception:
+        except Exception as exc:
+            self._emit_chart_diagnostics(
+                title=title,
+                chart_rows=chart_data,
+                note=f"Vega rendering failed ({type(exc).__name__}); using fallback table.",
+            )
             self._render_chart_fallback_table(
                 title=title,
                 subtitle=subtitle,
@@ -628,7 +709,7 @@ class DashboardRenderer:
                 reason="Chart rendering failed at runtime, so a normalized table is shown instead.",
             )
 
-    def _normalized_chart_rows(self, values: dict[str, int]) -> list[dict[str, int | float | str]]:
+    def _normalized_chart_rows(self, values: dict[str, Any]) -> list[dict[str, int | float | str]]:
         normalized_counts: dict[str, int] = {}
         for raw_category, raw_count in values.items():
             count = self._safe_chart_count(raw_count)
@@ -652,11 +733,42 @@ class DashboardRenderer:
         unknown_label = "Unknown"
         if raw_category is None:
             return unknown_label
-        label = str(raw_category).strip()
+        if isinstance(raw_category, bytes):
+            label = raw_category.decode("utf-8", errors="ignore").strip()
+        else:
+            label = str(raw_category).strip()
+        label = re.sub(r"\s+", " ", label)
+        label = label.strip(" -_:/\\|.,;")
         if not label:
             return unknown_label
-        if label.casefold() in {"unknown", "unk", "n/a", "na", "none", "null", "unspecified"}:
+        lowered = label.casefold()
+        if lowered in {
+            "unknown",
+            "unk",
+            "n/a",
+            "na",
+            "none",
+            "null",
+            "nil",
+            "nan",
+            "nill",
+            "unspecified",
+            "not specified",
+            "not available",
+            "missing",
+            "undefined",
+            "?",
+            "-",
+            "--",
+            "{}",
+            "[]",
+            "()",
+        }:
             return unknown_label
+        if re.fullmatch(r"[?_\-./\s]+", label):
+            return unknown_label
+        label = re.sub(r"\s*/\s*", " / ", label)
+        label = re.sub(r"\s+", " ", label).strip()
         return label
 
     def _safe_chart_count(self, raw_count: Any) -> int | None:
@@ -701,15 +813,22 @@ class DashboardRenderer:
         reason: str,
     ) -> None:
         st.caption(reason)
-        table_rows = [
-            (
-                str(row.get("category", "Unknown")),
-                int(row.get("count", 0)),
-                f"{float(row.get('share', 0.0)):.1f}%",
-            )
-            for row in chart_rows
-            if isinstance(row, dict)
-        ]
+        table_rows: list[tuple[str, int, str]] = []
+        for row in chart_rows:
+            if not isinstance(row, dict):
+                continue
+            category = self._normalize_chart_category(row.get("category"))
+            count = self._safe_chart_count(row.get("count")) or 0
+            raw_share = row.get("share", 0.0)
+            share_value = 0.0
+            if isinstance(raw_share, (int, float)):
+                share_value = float(raw_share)
+            elif isinstance(raw_share, str):
+                try:
+                    share_value = float(raw_share.strip().replace("%", ""))
+                except ValueError:
+                    share_value = 0.0
+            table_rows.append((category, count, f"{share_value:.1f}%"))
         if not table_rows:
             table_rows = [("Unknown", 0, "0.0%")]
         self._render_table_card(
@@ -717,6 +836,30 @@ class DashboardRenderer:
             subtitle=subtitle,
             rows=table_rows,
             headers=("Category", "Count", "% of filtered"),
+        )
+
+    def _prefer_income_table_fallback(
+        self,
+        *,
+        title: str,
+        values: dict[str, Any],
+        chart_rows: list[dict[str, Any]],
+    ) -> bool:
+        if "income" not in title.casefold():
+            return False
+        has_non_numeric = any(self._safe_chart_count(raw_count) is None for raw_count in values.values())
+        non_zero_rows = [row for row in chart_rows if self._safe_chart_count(row.get("count"))]
+        total_count = sum(self._safe_chart_count(row.get("count")) or 0 for row in chart_rows)
+        is_sparse = len(non_zero_rows) <= 1 or total_count < 4
+        return has_non_numeric or is_sparse
+
+    def _emit_chart_diagnostics(self, *, title: str, chart_rows: list[dict[str, Any]], note: str) -> None:
+        if not self._is_dev_mode():
+            return
+        compact_rows = chart_rows[:3]
+        st.caption(
+            f"[dev] {title}: {note} First normalized rows: "
+            + json.dumps(compact_rows, ensure_ascii=False, sort_keys=True)
         )
 
     def _is_dev_mode(self) -> bool:
@@ -869,46 +1012,48 @@ class DashboardRenderer:
             """,
             unsafe_allow_html=True,
         )
-        if st.button("Open", key=f"open_interview_{interview.id}", use_container_width=True, type="primary"):
-            st.session_state[FILTER_SESSION_KEYS["selected"]] = interview.id
-            st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = True
-            st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
-            st.rerun()
-
-        with st.expander("Delete interview", expanded=False):
+        open_col, delete_col = st.columns(2, gap="small")
+        with open_col:
+            if st.button("Open", key=f"open_interview_{interview.id}", use_container_width=True, type="primary"):
+                st.session_state[FILTER_SESSION_KEYS["selected"]] = interview.id
+                st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = True
+                st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+                st.rerun()
+        with delete_col:
             delete_disabled = delete_interview is None
             if st.button(
-                f"Delete {interview.filename}",
+                "Delete",
                 key=f"delete_interview_card_{interview.id}",
                 use_container_width=True,
                 disabled=delete_disabled,
             ):
                 st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = interview.id
                 st.rerun()
-            if delete_disabled:
-                st.caption("Delete is unavailable because no backend delete handler was provided.")
-            elif st.session_state.get(FILTER_SESSION_KEYS["delete_confirm"]) == interview.id:
-                st.warning("Confirm permanent delete for this interview and linked records.")
-                confirm_col, cancel_col = st.columns(2, gap="small")
-                with confirm_col:
-                    if st.button(
-                        "Confirm",
-                        key=f"confirm_delete_card_{interview.id}",
-                        use_container_width=True,
-                    ):
-                        self._delete_interview_and_refresh(
-                            interview=interview,
-                            all_interviews=all_interviews,
-                            delete_interview=delete_interview,
-                        )
-                with cancel_col:
-                    if st.button(
-                        "Cancel",
-                        key=f"cancel_delete_card_{interview.id}",
-                        use_container_width=True,
-                    ):
-                        st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
-                        st.rerun()
+
+        if delete_disabled:
+            st.caption("Delete is unavailable because no backend delete handler was provided.")
+        elif st.session_state.get(FILTER_SESSION_KEYS["delete_confirm"]) == interview.id:
+            st.warning("Confirm permanent delete for this interview and linked records.")
+            confirm_col, cancel_col = st.columns(2, gap="small")
+            with confirm_col:
+                if st.button(
+                    "Confirm",
+                    key=f"confirm_delete_card_{interview.id}",
+                    use_container_width=True,
+                ):
+                    self._delete_interview_and_refresh(
+                        interview=interview,
+                        all_interviews=all_interviews,
+                        delete_interview=delete_interview,
+                    )
+            with cancel_col:
+                if st.button(
+                    "Cancel",
+                    key=f"cancel_delete_card_{interview.id}",
+                    use_container_width=True,
+                ):
+                    st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+                    st.rerun()
 
     def _render_overlay_if_needed(
         self,
@@ -919,19 +1064,19 @@ class DashboardRenderer:
         save_interview_edits: Callable[..., DashboardInterviewRecord] | None,
         reprocess_interview: Callable[[str], DashboardInterviewRecord] | None,
         delete_interview: Callable[[str], bool] | None,
-    ) -> None:
+    ) -> bool:
         if not st.session_state.get(FILTER_SESSION_KEYS["overlay_open"]):
-            return
+            return False
 
         selected_id = st.session_state.get(FILTER_SESSION_KEYS["selected"])
         if not selected_id:
             st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = False
-            return
+            return False
 
         selected = next((item for item in all_interviews if item.id == selected_id), None)
         if selected is None:
             st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = False
-            return
+            return False
 
         selected = self._merge_detail_record(selected, interview_detail_loader)
         transcript_edits: dict[str, str] = st.session_state[FILTER_SESSION_KEYS["transcripts"]]
@@ -1123,6 +1268,82 @@ class DashboardRenderer:
                     st.rerun()
 
         st.markdown("</div>", unsafe_allow_html=True)
+        return True
+
+    def _render_inline_detail_fallback(self, *, all_interviews: list[DashboardInterview]) -> None:
+        selected_id = st.session_state.get(FILTER_SESSION_KEYS["selected"])
+        selected = next((item for item in all_interviews if item.id == selected_id), None)
+        if selected is None:
+            st.warning("Detail overlay could not be rendered. Select an interview again.")
+            return
+        st.warning("Overlay was requested but could not render in this session. Showing inline detail fallback.")
+        with st.expander(f"Inline detail fallback · {selected.filename}", expanded=True):
+            st.caption(f"Interview ID: {selected.id} · Status: {selected.status} · Stage: {selected.current_stage}")
+            st.markdown("**Summary**")
+            st.write(selected.summary or "No summary captured yet.")
+            st.markdown("**Transcript (read-only)**")
+            st.text_area(
+                "Fallback transcript",
+                value=selected.transcript,
+                height=220,
+                key=f"fallback_transcript_{selected.id}",
+                disabled=True,
+                label_visibility="collapsed",
+            )
+            self._render_formatted_insights(selected)
+            if st.button("Close fallback detail", key=f"close_fallback_{selected.id}", use_container_width=False):
+                st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = False
+                st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+                st.rerun()
+
+    def _render_interview_row_actions(self, interviews: list[DashboardInterview]) -> None:
+        with st.expander("Quick row actions", expanded=False):
+            for interview in interviews:
+                row_cols = st.columns([2.8, 1.4, 1.2, 1], gap="small")
+                row_cols[0].markdown(f"**{html.escape(interview.filename)}**")
+                row_cols[1].caption(f"ID: {interview.id}")
+                row_cols[2].caption(interview.persona_name)
+                if row_cols[3].button("Open", key=f"open_row_{interview.id}", use_container_width=True):
+                    self._open_interview_overlay(interview.id)
+
+    def _render_overlay_debug_indicator(self) -> None:
+        if not self._is_dev_mode():
+            return
+        selected_id = st.session_state.get(FILTER_SESSION_KEYS["selected"])
+        overlay_open = bool(st.session_state.get(FILTER_SESSION_KEYS["overlay_open"]))
+        st.caption(f"[dev] overlay_debug selected_id={selected_id} overlay_open={overlay_open}")
+
+    def _render_pending_toast(self) -> None:
+        toast_state = st.session_state.get(FILTER_SESSION_KEYS["toast_message"])
+        if not isinstance(toast_state, dict):
+            return
+        message = str(toast_state.get("message", "")).strip()
+        if not message:
+            st.session_state[FILTER_SESSION_KEYS["toast_message"]] = None
+            return
+        icon = "✅" if toast_state.get("kind") == "success" else "ℹ️"
+        st.toast(message, icon=icon)
+        st.session_state[FILTER_SESSION_KEYS["toast_message"]] = None
+
+    def _open_interview_overlay(self, interview_id: str) -> None:
+        st.session_state[FILTER_SESSION_KEYS["selected"]] = interview_id
+        st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = True
+        st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
+        toast_payload = {
+            "kind": "success",
+            "message": f"Opened interview {interview_id}.",
+        }
+        st.session_state[FILTER_SESSION_KEYS["toast_message"]] = toast_payload
+        st.toast(toast_payload["message"], icon="✅")
+        st.rerun()
+
+    def _is_dev_mode(self) -> bool:
+        dev_flags = (
+            os.getenv("PAYDAY_DEV_MODE", ""),
+            os.getenv("STREAMLIT_ENV", ""),
+            os.getenv("ENV", ""),
+        )
+        return any(flag.strip().lower() in {"1", "true", "yes", "dev", "development"} for flag in dev_flags)
 
     def _render_formatted_insights(self, interview: DashboardInterview) -> None:
         sections = [
@@ -1263,7 +1484,7 @@ class DashboardRenderer:
             }
             st.session_state[FILTER_SESSION_KEYS["toast_message"]] = {
                 "kind": "error",
-                "message": "Delete unavailable.",
+                "message": f"Delete unavailable for {interview.filename} ({interview.id}).",
             }
             st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
             st.rerun()
@@ -1274,11 +1495,11 @@ class DashboardRenderer:
         except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
             st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
                 "kind": "error",
-                "message": f"Delete failed: {exc}",
+                "message": f"Delete failed for {interview.filename} ({interview.id}): {exc}",
             }
             st.session_state[FILTER_SESSION_KEYS["toast_message"]] = {
                 "kind": "error",
-                "message": f"Delete failed: {exc}",
+                "message": f"Delete failed for {interview.filename} ({interview.id}): {exc}",
             }
         else:
             if deleted:
@@ -1293,11 +1514,11 @@ class DashboardRenderer:
                 st.session_state[FILTER_SESSION_KEYS["force_sqlite_reload"]] = True
                 st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
                     "kind": "success",
-                    "message": "Interview deleted. Interview lists, overview KPIs, and cohort/persona tables were reloaded from SQLite.",
+                    "message": f"Deleted {interview.filename} ({interview.id}). Interview lists, overview KPIs, and cohort/persona tables were reloaded from SQLite.",
                 }
                 st.session_state[FILTER_SESSION_KEYS["toast_message"]] = {
                     "kind": "success",
-                    "message": "Interview deleted and dashboard refreshed.",
+                    "message": f"Deleted {interview.filename} ({interview.id}) and refreshed dashboard data.",
                 }
             else:
                 st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
@@ -1306,7 +1527,7 @@ class DashboardRenderer:
                 }
                 st.session_state[FILTER_SESSION_KEYS["toast_message"]] = {
                     "kind": "error",
-                    "message": f"Interview {interview.id} was already removed.",
+                    "message": f"Could not delete {interview.filename} ({interview.id}) because it was already removed.",
                 }
 
         st.session_state[FILTER_SESSION_KEYS["delete_confirm"]] = None
@@ -1983,11 +2204,20 @@ class DashboardRenderer:
                 border-radius: 20px;
                 min-height: 8px;
                 margin-bottom: -8px;
+                position: relative !important;
+                z-index: 2147483000 !important;
+                visibility: visible !important;
+                opacity: 1 !important;
             }}
             .overlay-card {{
                 border: 1px solid rgba(79, 70, 229, 0.38);
                 box-shadow: 0 28px 72px rgba(0, 0, 0, 0.42);
                 margin-bottom: 24px;
+                position: relative !important;
+                z-index: 2147483001 !important;
+                visibility: visible !important;
+                opacity: 1 !important;
+                isolation: isolate;
             }}
             .stTabs [data-baseweb="tab-list"] {{
                 gap: 8px;
