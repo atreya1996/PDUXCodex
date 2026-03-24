@@ -5,7 +5,8 @@ CREATE TABLE IF NOT EXISTS interviews (
     status TEXT NOT NULL,
     latest_stage TEXT NOT NULL DEFAULT 'upload',
     last_error TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    analysis_version TEXT
 );
 
 CREATE TABLE IF NOT EXISTS structured_responses (

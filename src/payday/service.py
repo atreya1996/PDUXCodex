@@ -102,6 +102,37 @@ class PaydayAppService:
             refreshed.append(self.reprocess_interview(interview_id))
         return refreshed
 
+    def list_stale_interview_ids(self, *, limit: int = 5_000) -> list[str]:
+        return self.repository.list_stale_interview_ids(
+            latest_analysis_version=self.current_analysis_version(),
+            limit=limit,
+        )
+
+    def current_analysis_version(self) -> str:
+        return self.pipeline._analysis_metadata()["analysis_version"]
+
+    def reanalyze_stale_interviews(self, *, limit: int = 5_000) -> list[DashboardInterviewRecord]:
+        stale_interview_ids = self.list_stale_interview_ids(limit=limit)
+        if not stale_interview_ids:
+            return []
+        return self.reanalyze_interviews(stale_interview_ids)
+
+    def reprocess_stale_interviews(self, *, limit: int = 5_000) -> dict[str, object]:
+        stale_interview_ids = self.list_stale_interview_ids(limit=limit)
+        failed: dict[str, str] = {}
+        reprocessed_ids: list[str] = []
+        for interview_id in stale_interview_ids:
+            try:
+                self.reprocess_interview(interview_id)
+                reprocessed_ids.append(interview_id)
+            except Exception as exc:  # pragma: no cover - covered through integration behavior
+                failed[interview_id] = str(exc)
+        return {
+            "stale_count": len(stale_interview_ids),
+            "reprocessed_ids": reprocessed_ids,
+            "failed": failed,
+        }
+
     def reanalyze_all_interviews(self) -> list[DashboardInterviewRecord]:
         interview_ids = [record.id for record in self.repository.list_recent_interviews(limit=10_000)]
         return self.reanalyze_interviews(interview_ids)

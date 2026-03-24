@@ -99,6 +99,8 @@ class DashboardRenderer:
         save_interview_edits: Callable[..., DashboardInterviewRecord] | None = None,
         reprocess_interview: Callable[[str], DashboardInterviewRecord] | None = None,
         reanalyze_interviews: Callable[[list[str]], list[DashboardInterviewRecord]] | None = None,
+        reanalyze_stale_interviews: Callable[[], list[DashboardInterviewRecord]] | None = None,
+        list_stale_interview_ids: Callable[[], list[str]] | None = None,
         delete_interview: Callable[[str], bool] | None = None,
         sample_mode: bool = False,
     ) -> None:
@@ -127,6 +129,8 @@ class DashboardRenderer:
                 save_interview_edits=save_interview_edits,
                 reprocess_interview=reprocess_interview,
                 reanalyze_interviews=reanalyze_interviews,
+                reanalyze_stale_interviews=reanalyze_stale_interviews,
+                list_stale_interview_ids=list_stale_interview_ids,
                 delete_interview=delete_interview,
                 sample_mode=sample_mode,
             )
@@ -385,6 +389,8 @@ class DashboardRenderer:
         save_interview_edits: Callable[..., DashboardInterviewRecord] | None,
         reprocess_interview: Callable[[str], DashboardInterviewRecord] | None,
         reanalyze_interviews: Callable[[list[str]], list[DashboardInterviewRecord]] | None,
+        reanalyze_stale_interviews: Callable[[], list[DashboardInterviewRecord]] | None,
+        list_stale_interview_ids: Callable[[], list[str]] | None,
         delete_interview: Callable[[str], bool] | None,
         sample_mode: bool,
     ) -> None:
@@ -402,27 +408,60 @@ class DashboardRenderer:
             )
             return
 
-        if st.button(
-            "Re-analyze all interviews",
-            key="reanalyze_all_interviews_dashboard",
-            use_container_width=False,
-            disabled=reanalyze_interviews is None,
-        ):
+        action_col1, action_col2 = st.columns(2, gap="small")
+        stale_count = len(list_stale_interview_ids()) if list_stale_interview_ids is not None else None
+
+        with action_col1:
+            filtered_label = f"Reanalyze filtered ({len(filtered)})"
+            reanalyze_filtered_clicked = st.button(
+                filtered_label,
+                key="reanalyze_filtered_dashboard",
+                use_container_width=True,
+                disabled=reanalyze_interviews is None or not filtered,
+            )
+        with action_col2:
+            stale_label = "Reanalyze all stale"
+            if stale_count is not None:
+                stale_label += f" ({stale_count})"
+            reanalyze_stale_clicked = st.button(
+                stale_label,
+                key="reanalyze_stale_dashboard",
+                use_container_width=True,
+                disabled=reanalyze_stale_interviews is None or stale_count == 0,
+            )
+
+        if reanalyze_filtered_clicked:
             try:
-                reanalyze_interviews([item.id for item in all_interviews])
+                reanalyze_interviews([item.id for item in filtered])
             except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
                 st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
                     "kind": "error",
-                    "message": f"Re-analysis failed: {exc}",
+                    "message": f"Filtered reanalysis failed: {exc}",
                 }
             else:
                 st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
                     "kind": "success",
-                    "message": "Re-analysis complete for all interviews. Structured responses and insights were refreshed in SQLite.",
+                    "message": "Reanalysis complete for filtered interviews. Structured responses, insights, and personas were refreshed in SQLite.",
                 }
             st.rerun()
-        if reanalyze_interviews is None:
-            st.caption("Re-analyze all interviews is unavailable because no backend handler was provided.")
+
+        if reanalyze_stale_clicked:
+            try:
+                refreshed_rows = reanalyze_stale_interviews()
+            except Exception as exc:  # pragma: no cover - exercised through Streamlit interaction
+                st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                    "kind": "error",
+                    "message": f"Stale reanalysis failed: {exc}",
+                }
+            else:
+                st.session_state[FILTER_SESSION_KEYS["detail_message"]] = {
+                    "kind": "success",
+                    "message": f"Reanalysis complete for {len(refreshed_rows)} stale interviews. Structured responses, insights, and personas were refreshed in SQLite.",
+                }
+            st.rerun()
+
+        if reanalyze_interviews is None or reanalyze_stale_interviews is None:
+            st.caption("Reanalysis actions are unavailable because one or more backend handlers were not provided.")
 
         self._render_overlay_if_needed(
             filtered=filtered,
