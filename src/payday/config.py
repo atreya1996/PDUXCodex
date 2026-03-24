@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -9,10 +10,27 @@ from pathlib import Path
 DEFAULT_DATABASE_PATH = Path("data/payday.db")
 SUPPORTED_LLM_PROVIDERS = frozenset({"openai", "anthropic"})
 SUPPORTED_TRANSCRIPTION_PROVIDERS = frozenset({"openai"})
+COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
 
 class SettingsConfigurationError(ValueError):
     """Raised when the runtime provider configuration is invalid."""
+
+
+def resolve_runtime_commit_sha(default: str = "unknown") -> str:
+    """Resolve the release/runtime commit SHA exposed in the dashboard."""
+
+    raw_value = (
+        os.getenv("PAYDAY_RELEASE_SHA")
+        or os.getenv("GIT_COMMIT_SHA")
+        or os.getenv("COMMIT_SHA")
+        or ""
+    ).strip()
+    if not raw_value:
+        return default
+    if not COMMIT_SHA_PATTERN.match(raw_value):
+        return default
+    return raw_value[:12].lower()
 
 
 

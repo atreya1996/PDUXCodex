@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 from payday.analysis import AnalysisService, build_analysis_adapter
-from payday.config import Settings, validate_runtime_settings
+from payday.config import Settings, resolve_runtime_commit_sha, validate_runtime_settings
 from payday.models import BatchPipelineResult, BatchUploadItem, PipelineResult
 from payday.personas import PersonaService
 from payday.pipeline import PaydayPipeline
@@ -102,6 +102,23 @@ class PaydayAppService:
         interview_ids = [record.id for record in self.repository.list_recent_interviews(limit=10_000)]
         return self.reanalyze_interviews(interview_ids)
 
+    def reprocess_stale_interviews(self, *, limit: int = 500) -> dict[str, object]:
+        stale_ids = self.repository.list_stale_interview_ids(limit=limit)
+        failed: dict[str, str] = {}
+        reprocessed_ids: list[str] = []
+        for interview_id in stale_ids:
+            try:
+                self.reprocess_interview(interview_id)
+            except Exception as exc:  # noqa: BLE001
+                failed[interview_id] = str(exc)
+                continue
+            reprocessed_ids.append(interview_id)
+        return {
+            "stale_count": len(stale_ids),
+            "reprocessed_ids": reprocessed_ids,
+            "failed": failed,
+        }
+
     def delete_interview(self, interview_id: str) -> bool:
         try:
             interview = self.repository.get_interview(interview_id)
@@ -123,6 +140,7 @@ class PaydayAppService:
             "transcription_provider": self.pipeline.transcription_service.settings.provider,
             "transcription_model": self.pipeline.transcription_service.settings.model,
             "database_path": self.repository.database_path,
+            "runtime_commit_sha": resolve_runtime_commit_sha(),
         }
 
     def _delete_stored_audio_if_needed(self, *, interview_id: str, audio_url: str) -> None:

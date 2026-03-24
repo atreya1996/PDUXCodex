@@ -17,11 +17,14 @@ class _FakeSidebar:
     def __init__(self) -> None:
         self.info_messages: list[str] = []
         self.file_uploader_help: str | None = None
+        self.captions: list[str] = []
 
     def header(self, _text: str) -> None:
         return None
 
     def caption(self, _text: str) -> None:
+        if isinstance(_text, str):
+            self.captions.append(_text)
         return None
 
     def info(self, text: str) -> None:
@@ -89,6 +92,7 @@ class _FakeAppService:
             "sample_mode": True,
             "transcription": {"provider": "openai", "model": "gpt-4o-mini-transcribe", "required_key_present": False},
             "analysis": {"provider": "openai", "model": "gpt-4.1-mini", "required_key_present": False},
+            "runtime_commit_sha": "abc123def456",
         }
 
 
@@ -128,4 +132,5 @@ def test_app_main_import_and_sidebar_guidance_stay_consistent(monkeypatch) -> No
     assert fake_st.sidebar.info_messages == [expected_guidance]
     assert fake_st.sidebar.file_uploader_help is not None
     assert expected_guidance in fake_st.sidebar.file_uploader_help
+    assert "Runtime commit SHA: `abc123def456`" in fake_st.sidebar.captions
     assert len(fake_dashboard.render_calls) == 1

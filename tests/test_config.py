@@ -7,6 +7,7 @@ from payday.config import (
     DatabaseSettings,
     FeatureFlags,
     LLMSettings,
+    resolve_runtime_commit_sha,
     Settings,
     SettingsConfigurationError,
     SupabaseSettings,
@@ -164,3 +165,21 @@ def test_app_service_fails_fast_when_live_transcription_key_is_missing() -> None
 
     with pytest.raises(SettingsConfigurationError, match="TRANSCRIPTION_API_KEY is required"):
         PaydayAppService(settings)
+
+
+def test_resolve_runtime_commit_sha_prefers_release_sha_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAYDAY_RELEASE_SHA", "ABCDEF1234567890")
+    monkeypatch.delenv("GIT_COMMIT_SHA", raising=False)
+    monkeypatch.delenv("COMMIT_SHA", raising=False)
+
+    assert resolve_runtime_commit_sha() == "abcdef123456"
+
+
+def test_resolve_runtime_commit_sha_returns_unknown_for_invalid_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAYDAY_RELEASE_SHA", "release-2026-03-24")
+    monkeypatch.delenv("GIT_COMMIT_SHA", raising=False)
+    monkeypatch.delenv("COMMIT_SHA", raising=False)
+
+    assert resolve_runtime_commit_sha() == "unknown"
