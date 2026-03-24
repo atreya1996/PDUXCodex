@@ -2,6 +2,10 @@
 
 PayDay is an MVP for analyzing interview recordings from domestic workers in India. The product is designed to support a workflow of batch upload, transcription, structured LLM analysis, persona assignment, and dashboard review in Streamlit. The product and research rules are strict: participants without a smartphone or without a bank account are non-target and must be assigned Persona 3. The analysis flow should prefer direct quotes, avoid unsupported inference, and keep outputs machine-readable JSON.
 
+## UI skill usage
+
+Before changing dashboard UI, read and follow `skills/streamlit_ui_system.md`.
+
 ## Project purpose
 
 PayDay helps a product or research team:

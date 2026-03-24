@@ -93,10 +93,14 @@ Apply repo-local skills in this order:
 2. `skills/system_reliability.md`
 3. `skills/product_research.md`
 4. `skills/streamlit_dashboard.md`
-5. `skills/code_quality.md`
-6. `skills/testing.md`
+5. `skills/streamlit_ui_system.md`
+6. `skills/code_quality.md`
+7. `skills/testing.md`
 
 Treat these skill files as build-quality constraints for architecture, UX, reliability, validation, and testing.
+
+All UI changes must comply with `skills/streamlit_ui_system.md`.
+
 Keep them aligned with:
 
 * `context/product.md`
