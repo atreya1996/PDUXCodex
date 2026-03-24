@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from payday.analysis import (
+    AnalysisSchemaError,
     AnalysisService,
     AnthropicAnalysisAdapter,
     ExternalProviderError,
@@ -332,6 +333,35 @@ def test_analysis_service_filters_malformed_quotes_and_marks_transcript_quality(
     assert result.structured_output["key_quotes"] == ["I use WhatsApp every day"]
     assert result.structured_output["transcript_quality"]["status"] == "degraded"
     assert result.structured_output["transcript_quality"]["dropped_malformed_quote_count"] >= 1
+
+
+def test_analysis_service_rejects_non_transcript_income_quote_in_strict_mode() -> None:
+    service = AnalysisService(adapter=SequenceAdapter([json.dumps(VALID_ANALYSIS_PAYLOAD)]), settings=LLMSettings())
+    payload = json.loads(json.dumps(VALID_ANALYSIS_PAYLOAD))
+    payload["participant_personal_monthly_income"]["evidence_quotes"] = ["Monthly salary around 12k"]
+
+    with pytest.raises(AnalysisSchemaError, match="must include at least one direct quote"):
+        service._parse_and_validate(  # noqa: SLF001
+            json.dumps(payload, ensure_ascii=False),
+            build_transcript().text,
+            metadata={"evidence_mode": "strict"},
+        )
+
+
+def test_analysis_service_manual_edit_mode_preserves_valid_income_quotes_not_in_transcript() -> None:
+    service = AnalysisService(adapter=SequenceAdapter([json.dumps(VALID_ANALYSIS_PAYLOAD)]), settings=LLMSettings())
+    payload = json.loads(json.dumps(VALID_ANALYSIS_PAYLOAD))
+    payload["participant_personal_monthly_income"]["evidence_quotes"] = ["Monthly salary around 12k"]
+    payload["key_quotes"] = ["Monthly salary around 12k"]
+
+    normalized = service._parse_and_validate(  # noqa: SLF001
+        json.dumps(payload, ensure_ascii=False),
+        build_transcript().text,
+        metadata={"evidence_mode": "manual_edit"},
+    )
+
+    assert normalized["participant_personal_monthly_income"]["evidence_quotes"] == ["Monthly salary around 12k"]
+    assert normalized["key_quotes"] == ["Monthly salary around 12k"]
 
 
 def test_analysis_prompt_includes_weak_metadata_hints_and_separates_dialogue_when_evident() -> None:
