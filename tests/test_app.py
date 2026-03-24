@@ -95,6 +95,9 @@ class _FakeAppService:
             "runtime_commit_sha": "abc123def456",
         }
 
+    def runtime_diagnostics(self) -> dict[str, object]:
+        return {"sample_mode": True, "git_branch": "main", "git_commit": "abc123d"}
+
 
 class _FakeDashboardRenderer:
     def __init__(self) -> None:

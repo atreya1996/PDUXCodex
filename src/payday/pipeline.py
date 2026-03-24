@@ -41,6 +41,9 @@ from payday.upload import UploadService
 
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
+BINARY_TRANSCRIPT_DETECTED_ERROR = (
+    "Transcription failed: binary payload detected, please retry or verify API key/provider."
+)
 
 
 class PaydayPipeline:
@@ -246,6 +249,14 @@ class PaydayPipeline:
             )
             result.transcript, transcription_attempts = self.transcribe_audio(result.asset)
             result.attempts[PipelineStage.TRANSCRIPTION.value] = transcription_attempts
+            if self._transcript_contains_binary_payload(result.transcript.text):
+                self._record_failure(
+                    result,
+                    stage=PipelineStage.TRANSCRIPTION,
+                    error=BINARY_TRANSCRIPT_DETECTED_ERROR,
+                    message="transcription rejected due to binary payload signature",
+                )
+                return result
             self._log_stage("transcription succeeded", result, attempts=transcription_attempts)
             self._sync_result(result)
 
@@ -734,3 +745,11 @@ class PaydayPipeline:
         raise RuntimeError(
             f"{stage.value} failed after {self.max_retries + 1} attempts: {last_error}"
         ) from last_error
+
+    def _transcript_contains_binary_payload(self, transcript_text: str) -> bool:
+        normalized = transcript_text.lower()
+        if "ftyp" in normalized or "lame" in normalized:
+            return True
+        if "\x00" * 8 in transcript_text or "\\x00" * 8 in transcript_text:
+            return True
+        return False
