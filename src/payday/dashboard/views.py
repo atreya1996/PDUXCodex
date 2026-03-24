@@ -20,6 +20,7 @@ from payday.analysis import (
     smartphone_user_from_analysis,
 )
 from payday.models import PipelineResult, ProcessingStatus
+from payday.pipeline import BINARY_TRANSCRIPT_DETECTED_ERROR
 from payday.personas import PERSONAS
 from payday.repository import DashboardInterviewRecord, DashboardStatusOverview
 
@@ -268,6 +269,7 @@ class DashboardRenderer:
         )
         st.caption("Admin / ops snapshot: interview pipeline status for monitoring batch processing health.")
         self._render_status_strip(all_interviews, status_overview)
+        self._render_transcription_failure_alert(filtered)
         self._render_analysis_version_notice(filtered)
         self._render_kpis(filtered, status_overview)
 
@@ -414,8 +416,8 @@ class DashboardRenderer:
             "Interviews",
             "Browse interview cards, then open a modal-style overlay for audio, transcript editing, formatted insights, and persona review.",
         )
-        if self._show_dev_regression_checklist():
-            self._render_interviews_visual_regression_checklist()
+        self._render_interviews_visual_regression_checklist()
+        self._render_transcription_failure_alert(filtered)
 
         if not filtered:
             self._render_empty_state(
@@ -539,6 +541,20 @@ class DashboardRenderer:
         for column, status in zip(columns, STATUS_DISPLAY_ORDER, strict=False):
             with column:
                 self._render_metric_card(status.title(), str(counts.get(status, 0)), card_class="status-card")
+
+    def _render_transcription_failure_alert(self, interviews: list[DashboardInterview]) -> None:
+        failed_count = sum(
+            1
+            for interview in interviews
+            if interview.last_error
+            and BINARY_TRANSCRIPT_DETECTED_ERROR.lower() in interview.last_error.lower()
+        )
+        if failed_count <= 0:
+            return
+        if failed_count == 1:
+            st.error(BINARY_TRANSCRIPT_DETECTED_ERROR)
+            return
+        st.error(f"{BINARY_TRANSCRIPT_DETECTED_ERROR} ({failed_count} interviews affected)")
 
     def _render_filter_snapshot(
         self,

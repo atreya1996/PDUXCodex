@@ -18,6 +18,7 @@ from payday.storage import StorageService
 from payday.transcription import (
     OPENAI_TRANSCRIPTION_SAFE_FILE_LIMIT_BYTES,
     OpenAITranscriptionAdapter,
+    SampleModeDisabledError,
     TranscriptionService,
     describe_transcription_file_size_limit,
 )
@@ -179,6 +180,21 @@ def test_transcription_service_sample_mode_preserves_demo_behavior() -> None:
     }
 
 
+def test_transcription_service_sample_mode_requires_explicit_env_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAYDAY_USE_SAMPLE_MODE", "false")
+    service = TranscriptionService(TranscriptionSettings())
+    asset = UploadedAsset(
+        filename="demo.txt",
+        content_type="text/plain",
+        size_bytes=11,
+        raw_bytes=b"hello world",
+        file_id="file-123",
+    )
+
+    with pytest.raises(SampleModeDisabledError, match="PAYDAY_USE_SAMPLE_MODE=true"):
+        service.transcribe(asset, sample_mode=True)
+
+
 def test_transcription_service_non_sample_mode_uses_openai_client_and_returns_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     install_fake_openai_module(monkeypatch)
     transcriptions = StubOpenAITranscriptions(response=StubTranscriptionResponse("Real transcript", language="hi", duration=8.25))
@@ -212,6 +228,39 @@ def test_transcription_service_non_sample_mode_uses_openai_client_and_returns_me
         "language": "hi",
         "duration_seconds": 8.25,
     }
+
+
+@pytest.mark.parametrize(
+    ("filename", "content_type", "payload"),
+    [
+        ("sample_lame.mp3", "audio/mpeg", b"ID3\x04\x00\x00\x00\x00\x00\x15LAME3.100\x00\x00\x00\x00\x00\x00\x00audio"),
+        ("sample_ftyp.mp4", "video/mp4", b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2\x00\x00\x00\x00\x00\x00\x00\x00payload"),
+    ],
+)
+def test_transcription_service_non_sample_mode_uses_provider_output_not_raw_decode(
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    content_type: str,
+    payload: bytes,
+) -> None:
+    install_fake_openai_module(monkeypatch)
+    transcriptions = StubOpenAITranscriptions(response=StubTranscriptionResponse("Provider transcript only"))
+    client = StubOpenAIClient(transcriptions)
+    service = TranscriptionService(TranscriptionSettings(api_key="test-key"), client=client)
+    asset = UploadedAsset(
+        filename=filename,
+        content_type=content_type,
+        size_bytes=len(payload),
+        raw_bytes=payload,
+        file_id=f"file-{filename}",
+    )
+
+    transcript = service.transcribe(asset, sample_mode=False)
+
+    assert transcript.text == "Provider transcript only"
+    assert "ftyp" not in transcript.text.lower()
+    assert "lame" not in transcript.text.lower()
+    assert len(transcriptions.calls) == 1
 
 
 def test_transcription_service_non_sample_mode_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -294,6 +343,22 @@ def test_pipeline_process_upload_returns_completed_result() -> None:
     assert result.status is ProcessingStatus.COMPLETED
     assert result.current_stage is PipelineStage.STORAGE
     assert service.list_results()
+
+
+def test_pipeline_rejects_binary_signature_transcript_before_analysis() -> None:
+    service = PaydayAppService(build_settings())
+
+    result = service.process_upload(
+        "bad.mp4",
+        "video/mp4",
+        b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00\x00\x00\x00\x00",
+    )
+
+    assert result.status is ProcessingStatus.FAILED
+    assert result.current_stage is PipelineStage.TRANSCRIPTION
+    assert result.analysis is None
+    assert result.persona is None
+    assert result.last_error == "Transcription failed: binary payload detected, please retry or verify API key/provider."
 
 
 def test_pipeline_process_upload_persists_interview_structured_response_and_insight_rows(tmp_path) -> None:
