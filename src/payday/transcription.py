@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 import uuid
 from typing import Any, Protocol
 from urllib import error, request
 
 from payday.config import TranscriptionSettings
 from payday.models import Transcript, UploadedAsset
+from payday.services.openai_client import OpenAIClientService
 
 OPENAI_TRANSCRIPTION_DOCUMENTED_LIMIT_BYTES = 25_000_000
 OPENAI_TRANSCRIPTION_SAFE_FILE_LIMIT_BYTES = 24_000_000
@@ -269,16 +271,22 @@ class TranscriptionService:
                 timeout=self.settings.timeout_seconds,
             )
 
-        try:
-            response = client.audio.transcriptions.create(
-                model=self.settings.model,
-                file=(asset.filename, asset.raw_bytes, asset.content_type),
-            )
-        except Exception as exc:  # pragma: no cover - exact types depend on provider/runtime
-            message = str(exc) or exc.__class__.__name__
-            if "timed out" in message.lower() or "timeout" in exc.__class__.__name__.lower():
-                raise TimeoutError(message) from exc
-            raise ExternalTranscriptionProviderError(message) from exc
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            suffix=f"-{asset.filename}",
+            prefix=f"{asset.file_id}-",
+            delete=True,
+        ) as temp_audio_file:
+            temp_audio_file.write(asset.raw_bytes)
+            temp_audio_file.flush()
+            openai_client = OpenAIClientService(client)
+            try:
+                response = openai_client.transcribe_file(temp_audio_file.name, self.settings.model)
+            except Exception as exc:  # pragma: no cover - exact types depend on provider/runtime
+                message = str(exc) or exc.__class__.__name__
+                if "timed out" in message.lower() or "timeout" in exc.__class__.__name__.lower():
+                    raise TimeoutError(message) from exc
+                raise ExternalTranscriptionProviderError(message) from exc
 
         text = getattr(response, "text", "")
         if not isinstance(text, str) or not text.strip():

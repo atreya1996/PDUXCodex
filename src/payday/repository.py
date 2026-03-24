@@ -151,6 +151,10 @@ class PaydayRepository:
             )
         if "last_error" not in interview_columns:
             connection.execute("ALTER TABLE interviews ADD COLUMN last_error TEXT")
+        if "transcript_text" not in interview_columns:
+            connection.execute("ALTER TABLE interviews ADD COLUMN transcript_text TEXT")
+        if "error_message" not in interview_columns:
+            connection.execute("ALTER TABLE interviews ADD COLUMN error_message TEXT")
         if "analysis_schema_version" not in interview_columns:
             connection.execute("ALTER TABLE interviews ADD COLUMN analysis_schema_version INTEGER")
         if "persona_ruleset_version" not in interview_columns:
@@ -203,15 +207,19 @@ class PaydayRepository:
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO interviews (id, audio_url, transcript, status, latest_stage, last_error, created_at, analysis_version)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO interviews (
+                    id, audio_url, transcript, transcript_text, status, latest_stage, last_error, error_message, created_at, analysis_version
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
                     record.audio_url,
                     record.transcript,
+                    record.transcript,
                     record.status,
                     record.latest_stage,
+                    record.last_error,
                     record.last_error,
                     record.created_at,
                     record.analysis_version,
@@ -244,14 +252,23 @@ class PaydayRepository:
             connection.execute(
                 """
                 UPDATE interviews
-                SET audio_url = ?, transcript = ?, status = ?, latest_stage = ?, last_error = ?, analysis_version = ?
+                SET audio_url = ?,
+                    transcript = ?,
+                    transcript_text = ?,
+                    status = ?,
+                    latest_stage = ?,
+                    last_error = ?,
+                    error_message = ?,
+                    analysis_version = ?
                 WHERE id = ?
                 """,
                 (
                     updated.audio_url,
                     updated.transcript,
+                    updated.transcript,
                     updated.status,
                     updated.latest_stage,
+                    updated.last_error,
                     updated.last_error,
                     updated.analysis_version,
                     interview_id,
@@ -263,7 +280,7 @@ class PaydayRepository:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, audio_url, transcript, status, latest_stage, last_error, created_at, analysis_version
+                SELECT id, audio_url, COALESCE(transcript_text, transcript) AS transcript, status, latest_stage, COALESCE(error_message, last_error) AS last_error, created_at, analysis_version
                 FROM interviews
                 WHERE id = ?
                 """,
@@ -456,10 +473,10 @@ class PaydayRepository:
             connection.execute(
                 """
                 UPDATE interviews
-                SET transcript = ?, status = ?, latest_stage = ?, last_error = ?
+                SET transcript = ?, transcript_text = ?, status = ?, latest_stage = ?, last_error = ?, error_message = ?
                 WHERE id = ?
                 """,
-                (transcript, status, latest_stage, last_error, interview_id),
+                (transcript, transcript, status, latest_stage, last_error, last_error, interview_id),
             )
             connection.execute(
                 """
@@ -549,8 +566,8 @@ class PaydayRepository:
                 FROM interviews
                 LEFT JOIN insights ON insights.interview_id = interviews.id
                 LEFT JOIN structured_responses ON structured_responses.interview_id = interviews.id
-                WHERE interviews.transcript IS NOT NULL
-                  AND TRIM(interviews.transcript) <> ''
+                WHERE COALESCE(interviews.transcript_text, interviews.transcript) IS NOT NULL
+                  AND TRIM(COALESCE(interviews.transcript_text, interviews.transcript)) <> ''
                   AND (
                     interviews.analysis_schema_version IS NULL
                     OR interviews.analysis_schema_version < ?
@@ -600,10 +617,10 @@ class PaydayRepository:
                 SELECT
                     interviews.id,
                     interviews.audio_url,
-                    interviews.transcript,
+                    COALESCE(interviews.transcript_text, interviews.transcript) AS transcript,
                     interviews.status,
                     interviews.latest_stage,
-                    interviews.last_error,
+                    COALESCE(interviews.error_message, interviews.last_error) AS last_error,
                     interviews.created_at,
                     interviews.analysis_version AS interview_analysis_version,
                     structured_responses.smartphone_user,
@@ -638,7 +655,7 @@ class PaydayRepository:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, status, last_error, transcript
+                SELECT id, status, COALESCE(error_message, last_error) AS last_error, COALESCE(transcript_text, transcript) AS transcript
                 FROM interviews
                 ORDER BY created_at DESC, id DESC
                 LIMIT ?
@@ -663,7 +680,7 @@ class PaydayRepository:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, status, last_error, transcript
+                SELECT id, status, COALESCE(error_message, last_error) AS last_error, COALESCE(transcript_text, transcript) AS transcript
                 FROM interviews
                 WHERE id IN ({placeholders})
                 ORDER BY created_at DESC, id DESC
@@ -758,10 +775,10 @@ class PaydayRepository:
                 SELECT
                     interviews.id,
                     interviews.audio_url,
-                    interviews.transcript,
+                    COALESCE(interviews.transcript_text, interviews.transcript) AS transcript,
                     interviews.status,
                     interviews.latest_stage,
-                    interviews.last_error,
+                    COALESCE(interviews.error_message, interviews.last_error) AS last_error,
                     interviews.created_at,
                     interviews.analysis_version AS interview_analysis_version,
                     structured_responses.smartphone_user,

@@ -2,7 +2,9 @@ CREATE TABLE IF NOT EXISTS interviews (
     id TEXT PRIMARY KEY,
     audio_url TEXT NOT NULL,
     transcript TEXT,
+    transcript_text TEXT,
     status TEXT NOT NULL,
+    error_message TEXT,
     created_at TEXT NOT NULL
 );
 

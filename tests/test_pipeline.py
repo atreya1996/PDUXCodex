@@ -233,7 +233,9 @@ def test_transcription_service_non_sample_mode_uses_openai_client_and_returns_me
     assert len(transcriptions.calls) == 1
     call = transcriptions.calls[0]
     assert call["model"] == "gpt-4o-mini-transcribe"
-    assert call["file"] == ("call.wav", b"RIFF", "audio/wav")
+    assert isinstance(call["file"], dict)
+    assert call["file"]["name"].endswith("-call.wav")
+    assert call["file"]["payload"] == b"RIFF"
     assert transcript.text == "Real transcript"
     assert transcript.provider == "openai"
     assert transcript.model == "gpt-4o-mini-transcribe"
@@ -536,7 +538,7 @@ def test_pipeline_process_upload_persists_failed_interview_status_to_file_backed
 
     with sqlite3.connect(database_path) as connection:
         interview_row = connection.execute(
-            "SELECT id, transcript, status, latest_stage, last_error FROM interviews WHERE id = ?",
+            "SELECT id, transcript, transcript_text, status, latest_stage, last_error, error_message FROM interviews WHERE id = ?",
             (result.file_id,),
         ).fetchone()
         structured_count = connection.execute(
@@ -551,9 +553,11 @@ def test_pipeline_process_upload_persists_failed_interview_status_to_file_backed
     assert interview_row is not None
     assert interview_row[0] == result.file_id
     assert interview_row[1] is None
-    assert interview_row[2] == ProcessingStatus.FAILED.value
-    assert interview_row[3] == PipelineStage.TRANSCRIPTION.value
-    assert interview_row[4] == "transcription failed after 3 attempts: hard transcription failure"
+    assert interview_row[2] is None
+    assert interview_row[3] == ProcessingStatus.FAILED.value
+    assert interview_row[4] == PipelineStage.TRANSCRIPTION.value
+    assert interview_row[5] == "transcription failed after 3 attempts: hard transcription failure"
+    assert interview_row[6] == "transcription failed after 3 attempts: hard transcription failure"
     assert structured_count == (0,)
     assert insight_count == (0,)
 
