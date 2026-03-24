@@ -36,7 +36,7 @@ from payday.models import (
 from payday.personas import PersonaService
 from payday.repository import DashboardInterviewRecord, PaydayRepository
 from payday.storage import StorageService
-from payday.transcription import TranscriptionService
+from payday.transcription import TranscriptionService, detect_malformed_transcript_reason
 from payday.upload import UploadService
 
 T = TypeVar("T")
@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 BINARY_TRANSCRIPT_DETECTED_ERROR = (
     "Transcription failed: binary payload detected, please retry or verify API key/provider."
 )
+MALFORMED_TRANSCRIPT_DETECTED_ERROR_PREFIX = "Transcription failed: malformed transcript detected"
 
 
 class PaydayPipeline:
@@ -249,12 +250,21 @@ class PaydayPipeline:
             )
             result.transcript, transcription_attempts = self.transcribe_audio(result.asset)
             result.attempts[PipelineStage.TRANSCRIPTION.value] = transcription_attempts
-            if self._transcript_contains_binary_payload(result.transcript.text):
+            malformed_reason = detect_malformed_transcript_reason(result.transcript.text)
+            if malformed_reason is not None:
+                error_message = (
+                    BINARY_TRANSCRIPT_DETECTED_ERROR
+                    if "binary" in malformed_reason
+                    else (
+                        f"{MALFORMED_TRANSCRIPT_DETECTED_ERROR_PREFIX} "
+                        f"({malformed_reason}); please retry or verify API key/provider."
+                    )
+                )
                 self._record_failure(
                     result,
                     stage=PipelineStage.TRANSCRIPTION,
-                    error=BINARY_TRANSCRIPT_DETECTED_ERROR,
-                    message="transcription rejected due to binary payload signature",
+                    error=error_message,
+                    message=f"transcription rejected as malformed: {malformed_reason}",
                 )
                 return result
             self._log_stage("transcription succeeded", result, attempts=transcription_attempts)
@@ -753,11 +763,3 @@ class PaydayPipeline:
         raise RuntimeError(
             f"{stage.value} failed after {self.max_retries + 1} attempts: {last_error}"
         ) from last_error
-
-    def _transcript_contains_binary_payload(self, transcript_text: str) -> bool:
-        normalized = transcript_text.lower()
-        if "ftyp" in normalized or "lame" in normalized:
-            return True
-        if "\x00" * 8 in transcript_text or "\\x00" * 8 in transcript_text:
-            return True
-        return False

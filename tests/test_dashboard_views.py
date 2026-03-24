@@ -267,6 +267,34 @@ def test_dashboard_renderer_uses_neutral_placeholder_when_quotes_are_malformed()
     assert placeholder == "No reliable quote extracted"
 
 
+def test_dashboard_renderer_shows_malformed_transcript_badge_for_malformed_errors() -> None:
+    renderer = DashboardRenderer()
+    interview = renderer._from_pipeline_result(
+        PipelineResult(
+            file_id="bad-1",
+            filename="bad-1.mp4",
+            status=ProcessingStatus.FAILED,
+            last_error="Transcription failed: malformed transcript detected (excessive non-text ratio)",
+            transcript=Transcript(text="broken", provider="test", model="test"),
+        )
+    )
+
+    assert renderer._malformed_transcript_badge(interview) == "Malformed transcript"
+
+
+def test_dashboard_renderer_excludes_malformed_from_cohort_base_by_default() -> None:
+    renderer = DashboardRenderer()
+    good = _dashboard_interview(interview_id="good-1")
+    malformed = _dashboard_interview(interview_id="bad-1")
+    setattr(malformed, "transcript_quality", "malformed")
+
+    comparable, excluded_count = renderer._cohort_base([good, malformed])
+
+    assert len(comparable) == 1
+    assert comparable[0].id == "good-1"
+    assert excluded_count == 1
+
+
 def test_dashboard_renderer_prefers_income_table_for_sparse_or_non_numeric_inputs() -> None:
     renderer = DashboardRenderer()
 
