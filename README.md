@@ -178,6 +178,14 @@ Deployment source-of-truth branch is **`main`**. Use `docs/release_workflow.md` 
 
 After deployment, use the sidebar action **Refresh status + release metadata** once to reload durable status and runtime release metadata. Track shipped UX/features and commit mappings in `docs/release_notes.md`.
 
+## Contribution guidance for UI pull requests
+
+For any PR that changes Streamlit UI behavior, complete the required UI checklist in `docs/ui_pr_checklist.md` before requesting review.
+
+- The PR template at `.github/pull_request_template.md` includes this requirement.
+- Copy the checklist into your PR description and mark each item.
+- Include all required screenshots (Overview, Cohorts, Personas, Interviews, and Interview modal open state).
+
 ## How to use sample/mock mode without live APIs
 
 Sample mode is the fastest way to demo the product before live integrations are ready.
