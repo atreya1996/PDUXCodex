@@ -166,6 +166,16 @@ class JobRecord:
     completed_at: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class ProcessingEventRecord:
+    id: int
+    file_id: str
+    stage: str
+    status: str
+    message: str | None
+    created_at: str
+
+
 class PaydayRepository:
     """Persistence facade for analysis artifacts and dashboard reads."""
 
@@ -342,6 +352,27 @@ class PaydayRepository:
             now = datetime.now(timezone.utc).isoformat()
             connection.execute("ALTER TABLE jobs ADD COLUMN updated_at TEXT")
             connection.execute("UPDATE jobs SET updated_at = ? WHERE updated_at IS NULL", (now,))
+
+    def _ensure_processing_events_table(self, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS processing_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                status TEXT NOT NULL,
+                message TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (file_id) REFERENCES interviews (id) ON DELETE CASCADE
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_processing_events_file_created
+                ON processing_events (file_id, created_at DESC, id DESC)
+            """
+        )
 
     def create_interview(
         self,
@@ -1366,6 +1397,59 @@ class PaydayRepository:
     def list_results(self) -> list[PipelineResult]:
         """Return stored pipeline results in stable insertion order for the dashboard."""
         return list(self._items.values())
+
+    def add_processing_event(
+        self,
+        *,
+        file_id: str,
+        stage: str,
+        status: str,
+        message: str | None = None,
+    ) -> ProcessingEventRecord:
+        created_at = datetime.now(timezone.utc).isoformat()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO processing_events (file_id, stage, status, message, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    file_id,
+                    str(stage),
+                    self._normalize_status(status),
+                    message,
+                    created_at,
+                ),
+            )
+        return ProcessingEventRecord(
+            id=int(cursor.lastrowid),
+            file_id=file_id,
+            stage=str(stage),
+            status=self._normalize_status(status),
+            message=message,
+            created_at=created_at,
+        )
+
+    def list_processing_events(
+        self,
+        *,
+        file_ids: list[str] | None = None,
+        limit: int = 200,
+    ) -> list[ProcessingEventRecord]:
+        query = """
+            SELECT id, file_id, stage, status, message, created_at
+            FROM processing_events
+        """
+        params: list[object] = []
+        if file_ids:
+            placeholders = ",".join("?" for _ in file_ids)
+            query += f" WHERE file_id IN ({placeholders})"
+            params.extend(file_ids)
+        query += " ORDER BY created_at DESC, id DESC LIMIT ?"
+        params.append(max(1, limit))
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [ProcessingEventRecord(**dict(row)) for row in rows]
 
     @staticmethod
     def _bool_to_int(value: bool | None) -> int | None:
