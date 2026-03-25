@@ -651,6 +651,11 @@ def test_pipeline_stage_helpers_sync_result_and_interview_state(tmp_path) -> Non
     assert interview_after_processing.status == ProcessingStatus.PROCESSING.value
     assert interview_after_processing.latest_stage == PipelineStage.TRANSCRIPTION.value
     assert interview_after_processing.last_error is None
+    events_after_processing = repository.list_processing_events(file_ids=[result.file_id], limit=10)
+    assert events_after_processing
+    assert events_after_processing[0].stage == PipelineStage.TRANSCRIPTION.value
+    assert events_after_processing[0].status == ProcessingStatus.PROCESSING.value
+    assert events_after_processing[0].message == "transcription started"
 
     pipeline._record_failure(  # noqa: SLF001
         result,
@@ -667,6 +672,11 @@ def test_pipeline_stage_helpers_sync_result_and_interview_state(tmp_path) -> Non
     assert interview_after_failure.status == ProcessingStatus.FAILED.value
     assert interview_after_failure.latest_stage == PipelineStage.ANALYSIS.value
     assert interview_after_failure.last_error == "analysis crashed"
+    events_after_failure = repository.list_processing_events(file_ids=[result.file_id], limit=10)
+    assert len(events_after_failure) >= 2
+    assert events_after_failure[0].stage == PipelineStage.ANALYSIS.value
+    assert events_after_failure[0].status == ProcessingStatus.FAILED.value
+    assert events_after_failure[0].message == "analysis failed"
 
 
 def test_store_results_failure_syncs_failed_storage_state_and_logs_structured_payload(

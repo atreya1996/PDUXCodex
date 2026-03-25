@@ -147,6 +147,15 @@ class DashboardStatusOverview:
     status_counts: dict[str, int]
 
 
+@dataclass(frozen=True, slots=True)
+class ProcessingEventRecord:
+    file_id: str
+    stage: str
+    status: str
+    message: str | None
+    created_at: str
+
+
 class PaydayRepository:
     """Persistence facade for analysis artifacts and dashboard reads."""
 
@@ -178,6 +187,7 @@ class PaydayRepository:
             self._migrate_legacy_interview_data(connection)
             self._ensure_structured_response_columns(connection)
             self._ensure_insight_columns(connection)
+            self._ensure_processing_events_table(connection)
 
     def _ensure_interview_columns(self, connection: sqlite3.Connection) -> None:
         interview_columns = {
@@ -275,6 +285,27 @@ class PaydayRepository:
             connection.execute("ALTER TABLE insights ADD COLUMN analysis_version TEXT")
         if "analyzed_at" not in insight_columns:
             connection.execute("ALTER TABLE insights ADD COLUMN analyzed_at TEXT")
+
+    def _ensure_processing_events_table(self, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS processing_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                status TEXT NOT NULL,
+                message TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (file_id) REFERENCES interviews (id) ON DELETE CASCADE
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_processing_events_file_created
+                ON processing_events (file_id, created_at DESC, id DESC)
+            """
+        )
 
     def create_interview(
         self,
@@ -1058,6 +1089,57 @@ class PaydayRepository:
             total_interviews=sum(status_counts.values()),
             status_counts=status_counts,
         )
+
+    def add_processing_event(
+        self,
+        *,
+        file_id: str,
+        stage: str,
+        status: str,
+        message: str | None = None,
+    ) -> ProcessingEventRecord:
+        created_at = datetime.now(timezone.utc).isoformat()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO processing_events (file_id, stage, status, message, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (file_id, stage, status, message, created_at),
+            )
+        return ProcessingEventRecord(
+            file_id=file_id,
+            stage=stage,
+            status=self._normalize_status(status),
+            message=message,
+            created_at=created_at,
+        )
+
+    def list_processing_events(
+        self,
+        *,
+        file_ids: list[str] | None = None,
+        limit: int = 200,
+    ) -> list[ProcessingEventRecord]:
+        params: list[object] = []
+        where_clause = ""
+        if file_ids:
+            placeholders = ",".join("?" for _ in file_ids)
+            where_clause = f"WHERE file_id IN ({placeholders})"
+            params.extend(file_ids)
+        params.append(limit)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT file_id, stage, status, message, created_at
+                FROM processing_events
+                {where_clause}
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [ProcessingEventRecord(**dict(row)) for row in rows]
 
     def save_result(self, result: PipelineResult) -> PipelineResult:
         self._items[result.file_id] = result

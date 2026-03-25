@@ -30,3 +30,16 @@ CREATE TABLE IF NOT EXISTS insights (
 
 CREATE INDEX IF NOT EXISTS idx_interviews_status_created_at
     ON interviews (status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS processing_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    status TEXT NOT NULL,
+    message TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (file_id) REFERENCES interviews (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_processing_events_file_created
+    ON processing_events (file_id, created_at DESC, id DESC);
