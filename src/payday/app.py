@@ -7,7 +7,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from payday.config import Settings, SettingsConfigurationError, get_settings
-from payday.dashboard.views import DashboardRenderer
+from payday.dashboard.views import FILTER_SESSION_KEYS, DashboardRenderer
 from payday.models import BatchUploadItem, ProcessingStatus
 from payday.service import PaydayAppService
 from payday.transcription import describe_transcription_file_size_limit
@@ -63,6 +63,37 @@ def _is_payload_too_large_error(message: str) -> bool:
 
 def _chunk_upload_items(items: list[BatchUploadItem], chunk_size: int) -> list[list[BatchUploadItem]]:
     return [items[index : index + chunk_size] for index in range(0, len(items), chunk_size)]
+
+
+def _open_interview_detail(interview_id: str) -> None:
+    st.session_state[FILTER_SESSION_KEYS["selected"]] = interview_id
+    st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = True
+
+
+def _render_live_failures_panel(
+    *,
+    failed_rows: list[dict[str, str]],
+    panel_title: str = "### Live failures",
+    max_rows: int = 8,
+    container: st.delta_generator.DeltaGenerator | None = None,
+) -> None:
+    target = container or st.sidebar
+    target.markdown("---")
+    target.markdown(panel_title)
+    if not failed_rows:
+        target.caption("No failures detected yet.")
+        return
+    for index, failure in enumerate(failed_rows[:max_rows], start=1):
+        filename = failure.get("filename", "unknown-file")
+        stage = failure.get("stage", "unknown-stage")
+        error_message = failure.get("error_message", "No error message captured.")
+        interview_id = failure.get("interview_id", "")
+        target.markdown(f"**{index}. {filename}**")
+        target.caption(f"stage: `{stage}`")
+        target.caption(f"error_message: {error_message}")
+        if interview_id and target.button("Open detail", key=f"live_failure_open_{interview_id}_{index}"):
+            _open_interview_detail(interview_id)
+            st.rerun()
 
 
 def _upload_limit_violations(
@@ -284,24 +315,40 @@ def main() -> None:
             ]
             chunks = _chunk_upload_items(items, upload_chunk_size)
             chunk_results = []
+            live_failure_placeholder = st.sidebar.empty()
+            live_failures: list[dict[str, str]] = []
             with st.spinner("Processing uploaded interviews in smaller chunks..."):
                 for chunk_index, chunk in enumerate(chunks, start=1):
                     st.sidebar.caption(f"Processing chunk {chunk_index}/{len(chunks)} ({len(chunk)} files).")
-                    chunk_results.append(app_service.process_batch_uploads(chunk))
+                    chunk_result = app_service.process_batch_uploads(chunk)
+                    chunk_results.append(chunk_result)
+                    for result in chunk_result.results:
+                        if result.status is not ProcessingStatus.FAILED:
+                            continue
+                        error_message = (
+                            result.errors[0]
+                            if result.errors
+                            else "Processing failed before transcription began."
+                        )
+                        live_failures.insert(
+                            0,
+                            {
+                                "interview_id": result.file_id,
+                                "filename": result.filename,
+                                "stage": result.current_stage.value,
+                                "error_message": error_message,
+                            },
+                        )
+                    with live_failure_placeholder.container() as live_failure_container:
+                        _render_live_failures_panel(
+                            failed_rows=live_failures,
+                            panel_title="### Live failures (during processing)",
+                            container=live_failure_container,
+                        )
 
             completed_count = sum(result.completed_count for result in chunk_results)
             failed_count = sum(result.failed_count for result in chunk_results)
             batch_ids = ", ".join(result.batch_id[:8] for result in chunk_results)
-            summary_message = (
-                f"Processed {len(items)} files across {len(chunks)} chunk(s) [{batch_ids}] with "
-                f"{completed_count} completed and {failed_count} failed."
-            )
-            if failed_count == 0:
-                st.sidebar.success(summary_message)
-            elif completed_count == 0:
-                st.sidebar.error(summary_message)
-            else:
-                st.sidebar.warning(summary_message)
 
             failed_results = [
                 result
@@ -309,18 +356,45 @@ def main() -> None:
                 for result in chunk_result.results
                 if result.status is ProcessingStatus.FAILED
             ]
+            if failed_results:
+                _render_live_failures_panel(
+                    failed_rows=[
+                        {
+                            "interview_id": result.file_id,
+                            "filename": result.filename,
+                            "stage": result.current_stage.value,
+                            "error_message": (
+                                result.errors[0]
+                                if result.errors
+                                else "Processing failed before transcription began."
+                            ),
+                        }
+                        for result in failed_results
+                    ],
+                    panel_title="### Live failures",
+                )
             for failed_result in failed_results:
                 error_message = (
                     failed_result.errors[0]
                     if failed_result.errors
                     else "Processing failed before transcription began."
                 )
-                st.sidebar.error(f"{failed_result.filename}: {error_message}")
                 if _is_payload_too_large_error(error_message):
                     st.sidebar.warning(
                         "HTTP 413 Payload Too Large: request body exceeded an upstream transport limit. "
                         "Guidance: reduce batch size / split uploads, compress audio, or lower duration/bitrate."
                     )
+            summary_message = (
+                f"Processed {len(items)} files across {len(chunks)} chunk(s) [{batch_ids}] with "
+                f"{completed_count} completed and {failed_count} failed."
+            )
+            st.sidebar.caption("Batch summary")
+            if failed_count == 0:
+                st.sidebar.success(summary_message)
+            elif completed_count == 0:
+                st.sidebar.error(summary_message)
+            else:
+                st.sidebar.warning(summary_message)
 
     if not settings.features.enable_analysis:
         st.warning(
@@ -329,6 +403,17 @@ def main() -> None:
 
     force_sqlite_reload = bool(st.session_state.pop(FORCE_SQLITE_RELOAD_FLAG, False))
     dashboard_state = load_dashboard_state(app_service, force_sqlite_reload=force_sqlite_reload)
+    persisted_live_failures = [
+        {
+            "interview_id": record.id,
+            "filename": record.filename,
+            "stage": record.latest_stage,
+            "error_message": record.last_error or "No error message captured.",
+        }
+        for record in dashboard_state["recent_interviews"]
+        if record.status == ProcessingStatus.FAILED.value
+    ]
+    _render_live_failures_panel(failed_rows=persisted_live_failures, panel_title="### Live failures")
     dashboard.render(
         cached_results=dashboard_state["cached_results"],
         recent_interviews=dashboard_state["recent_interviews"],

@@ -28,6 +28,9 @@ class _FakeSidebar:
     def header(self, _text: str) -> None:
         return None
 
+    def markdown(self, _text: str) -> None:
+        return None
+
     def caption(self, _text: str) -> None:
         if isinstance(_text, str):
             self.captions.append(_text)
@@ -56,6 +59,25 @@ class _FakeSidebar:
     def error(self, _text: str) -> None:
         self.error_messages.append(_text)
         return None
+
+    def empty(self):  # noqa: ANN201 - Streamlit placeholder compatibility
+        return _FakePlaceholder()
+
+
+class _FakePlaceholder:
+    def container(self):  # noqa: ANN201 - Streamlit placeholder compatibility
+        return nullcontext(_FakeContainer())
+
+
+class _FakeContainer:
+    def markdown(self, _text: str) -> None:
+        return None
+
+    def caption(self, _text: str) -> None:
+        return None
+
+    def button(self, _label: str, **_kwargs: object) -> bool:
+        return False
 
 
 class _FakeStreamlit:
