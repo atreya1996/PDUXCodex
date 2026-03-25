@@ -43,3 +43,28 @@ CREATE TABLE IF NOT EXISTS insights (
 
 CREATE INDEX IF NOT EXISTS idx_interviews_status_created_at
     ON interviews (status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id TEXT PRIMARY KEY,
+    batch_id TEXT NOT NULL,
+    interview_id TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    payload BLOB NOT NULL,
+    status TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    error_message TEXT,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    FOREIGN KEY (interview_id) REFERENCES interviews (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_status_created_at
+    ON jobs (status, created_at ASC);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_batch_id
+    ON jobs (batch_id);

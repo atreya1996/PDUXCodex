@@ -11,7 +11,6 @@ from payday.config import (
     SupabaseSettings,
     TranscriptionSettings,
 )
-from payday.models import BatchPipelineResult
 from payday.transcription import describe_transcription_file_size_limit
 
 
@@ -45,6 +44,9 @@ class _FakeSidebar:
 
     def button(self, _label: str, **_kwargs: object) -> bool:
         return self.button_clicks.get(_label, False)
+
+    def expander(self, _label: str, **_kwargs: object):
+        return nullcontext()
 
     def success(self, _text: str) -> None:
         return None
@@ -93,6 +95,19 @@ class _FakeStreamlit:
     def spinner(self, _text: str):
         return nullcontext()
 
+    def autorefresh(self, **_kwargs: object) -> int:
+        return 0
+
+    def selectbox(self, _label: str, options: list[str], **_kwargs: object) -> str:
+        return options[0] if options else ""
+
+    def columns(self, spec: int | tuple[int, ...], **_kwargs: object) -> list[object]:
+        count = spec if isinstance(spec, int) else len(spec)
+        return [nullcontext() for _ in range(count)]
+
+    def button(self, _label: str, **_kwargs: object) -> bool:
+        return False
+
     def rerun(self) -> None:
         return None
 
@@ -107,7 +122,7 @@ class _FakeAppService:
 
     def __init__(self) -> None:
         self.repository = self._FakeRepository()
-        self.batch_calls: list[list[object]] = []
+        self.enqueue_calls: list[list[object]] = []
 
     def list_results(self) -> list[object]:
         return []
@@ -147,9 +162,24 @@ class _FakeAppService:
     def list_stale_corrupted_interview_ids(self) -> list[str]:
         return []
 
-    def process_batch_uploads(self, items: list[object]) -> BatchPipelineResult:
-        self.batch_calls.append(items)
-        return BatchPipelineResult(batch_id="batch-1", completed_count=len(items), failed_count=0, results=[])
+    def list_jobs(self, *, limit: int = 200) -> list[object]:
+        return []
+
+    def enqueue_batch_uploads(self, items: list[object]) -> dict[str, object]:
+        self.enqueue_calls.append(items)
+        return {"batch_id": "batch-1", "job_ids": ["job-1"], "count": len(items)}
+
+    def cancel_job(self, job_id: str) -> object:
+        return type("Job", (), {"id": job_id, "status": "cancelled"})()
+
+    def retry_job(self, job_id: str) -> object:
+        return type("Job", (), {"id": job_id, "status": "pending"})()
+
+    def cancel_batch_jobs(self, batch_id: str) -> int:
+        return 0
+
+    def retry_batch_jobs(self, batch_id: str) -> int:
+        return 0
 
 
 class _FakeDashboardRenderer:
@@ -228,7 +258,7 @@ def test_app_blocks_batch_when_environment_size_limit_is_exceeded(monkeypatch) -
 
     payday_app.main()
 
-    assert service.batch_calls == []
+    assert service.enqueue_calls == []
     assert any("Per-batch limit exceeded:" in text for text in fake_st.sidebar.error_messages)
 
 

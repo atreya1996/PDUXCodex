@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 from payday.config import Settings, SettingsConfigurationError, get_settings
 from payday.dashboard.views import DashboardRenderer
-from payday.models import BatchUploadItem, ProcessingStatus
+from payday.models import BatchUploadItem
 from payday.service import PaydayAppService
 from payday.transcription import describe_transcription_file_size_limit
 from payday.upload import SUPPORTED_UPLOAD_EXTENSIONS
@@ -16,6 +16,8 @@ from payday.upload import SUPPORTED_UPLOAD_EXTENSIONS
 REFRESH_STATUS_FLAG = "dashboard_status_reloaded"
 FORCE_SQLITE_RELOAD_FLAG = "dashboard_force_sqlite_reload"
 REPROCESS_STALE_FLAG = "dashboard_reprocess_stale_result"
+ENQUEUE_RESULT_FLAG = "dashboard_enqueue_result"
+JOB_ACTION_RESULT_FLAG = "dashboard_job_action_result"
 DEFAULT_ENV_MAX_BATCH_BYTES = 45_000_000
 DEFAULT_ENV_MAX_FILE_BYTES = 20_000_000
 DEFAULT_CHUNK_SIZE = 3
@@ -54,11 +56,6 @@ def _format_megabytes(value_bytes: int) -> str:
 
 def _format_exact_bytes(value_bytes: int) -> str:
     return f"{value_bytes:,} bytes ({_format_megabytes(value_bytes)})"
-
-
-def _is_payload_too_large_error(message: str) -> bool:
-    normalized = message.lower()
-    return "413" in normalized or "payload too large" in normalized or "request entity too large" in normalized
 
 
 def _chunk_upload_items(items: list[BatchUploadItem], chunk_size: int) -> list[list[BatchUploadItem]]:
@@ -103,6 +100,7 @@ def load_dashboard_state(app_service: PaydayAppService, *, force_sqlite_reload: 
         "cached_results": [] if force_sqlite_reload else app_service.list_results(),
         "recent_interviews": app_service.list_recent_interviews(),
         "status_overview": app_service.get_status_overview(),
+        "jobs": app_service.list_jobs(limit=500),
     }
 
 
@@ -264,6 +262,24 @@ def main() -> None:
         else:
             st.sidebar.success(f"Reprocessed all {stale_count} stale interviews.")
 
+    st.sidebar.caption("Background queue monitor")
+    if hasattr(st, "autorefresh"):
+        st.autorefresh(interval=3_000, key="payday_background_poll")
+    st.sidebar.caption("Queue status refreshes every 3 seconds while this page is open.")
+
+    all_jobs = app_service.list_jobs(limit=200)
+    pending_jobs = [job for job in all_jobs if job.status == "pending"]
+    processing_jobs = [job for job in all_jobs if job.status == "processing"]
+    failed_jobs = [job for job in all_jobs if job.status == "failed"]
+    st.sidebar.write(
+        {
+            "jobs_total": len(all_jobs),
+            "jobs_pending": len(pending_jobs),
+            "jobs_processing": len(processing_jobs),
+            "jobs_failed": len(failed_jobs),
+        }
+    )
+
     process_disabled = not settings.features.enable_analysis or upload_count == 0
     if st.sidebar.button("Process batch", type="primary", use_container_width=True, disabled=process_disabled):
         if upload_count < 1 or upload_count > 10:
@@ -283,44 +299,56 @@ def main() -> None:
                 for file in uploaded_files
             ]
             chunks = _chunk_upload_items(items, upload_chunk_size)
-            chunk_results = []
-            with st.spinner("Processing uploaded interviews in smaller chunks..."):
-                for chunk_index, chunk in enumerate(chunks, start=1):
-                    st.sidebar.caption(f"Processing chunk {chunk_index}/{len(chunks)} ({len(chunk)} files).")
-                    chunk_results.append(app_service.process_batch_uploads(chunk))
+            enqueued = []
+            for chunk in chunks:
+                enqueued.append(app_service.enqueue_batch_uploads(chunk))
+            st.session_state[ENQUEUE_RESULT_FLAG] = enqueued
+            st.rerun()
 
-            completed_count = sum(result.completed_count for result in chunk_results)
-            failed_count = sum(result.failed_count for result in chunk_results)
-            batch_ids = ", ".join(result.batch_id[:8] for result in chunk_results)
-            summary_message = (
-                f"Processed {len(items)} files across {len(chunks)} chunk(s) [{batch_ids}] with "
-                f"{completed_count} completed and {failed_count} failed."
-            )
-            if failed_count == 0:
-                st.sidebar.success(summary_message)
-            elif completed_count == 0:
-                st.sidebar.error(summary_message)
-            else:
-                st.sidebar.warning(summary_message)
+    enqueue_result = st.session_state.pop(ENQUEUE_RESULT_FLAG, None)
+    if isinstance(enqueue_result, list) and enqueue_result:
+        batch_labels = ", ".join(str(item["batch_id"])[:8] for item in enqueue_result if isinstance(item, dict))
+        enqueued_count = sum(int(item.get("count", 0)) for item in enqueue_result if isinstance(item, dict))
+        st.sidebar.success(
+            f"Enqueued {enqueued_count} file(s) across {len(enqueue_result)} batch chunk(s): {batch_labels}."
+        )
 
-            failed_results = [
-                result
-                for chunk_result in chunk_results
-                for result in chunk_result.results
-                if result.status is ProcessingStatus.FAILED
-            ]
-            for failed_result in failed_results:
-                error_message = (
-                    failed_result.errors[0]
-                    if failed_result.errors
-                    else "Processing failed before transcription began."
-                )
-                st.sidebar.error(f"{failed_result.filename}: {error_message}")
-                if _is_payload_too_large_error(error_message):
-                    st.sidebar.warning(
-                        "HTTP 413 Payload Too Large: request body exceeded an upstream transport limit. "
-                        "Guidance: reduce batch size / split uploads, compress audio, or lower duration/bitrate."
-                    )
+    with st.sidebar.expander("Job actions", expanded=False):
+        if all_jobs:
+            job_lookup = {f"{job.filename} · {job.id[:8]} · {job.status}": job.id for job in all_jobs}
+            selected_job_label = st.selectbox("Select file job", options=list(job_lookup.keys()), key="job_action_selected")
+            selected_job_id = job_lookup[selected_job_label]
+            job_action_cols = st.columns(2, gap="small")
+            with job_action_cols[0]:
+                if st.button("Cancel file", use_container_width=True):
+                    updated_job = app_service.cancel_job(selected_job_id)
+                    st.session_state[JOB_ACTION_RESULT_FLAG] = f"Requested cancel for job {updated_job.id[:8]} ({updated_job.status})."
+                    st.rerun()
+            with job_action_cols[1]:
+                if st.button("Retry file", use_container_width=True):
+                    updated_job = app_service.retry_job(selected_job_id)
+                    st.session_state[JOB_ACTION_RESULT_FLAG] = f"Queued retry for job {updated_job.id[:8]} ({updated_job.status})."
+                    st.rerun()
+
+            batch_ids = sorted({job.batch_id for job in all_jobs}, reverse=True)
+            selected_batch_id = st.selectbox("Select batch", options=batch_ids, key="batch_action_selected")
+            batch_action_cols = st.columns(2, gap="small")
+            with batch_action_cols[0]:
+                if st.button("Cancel batch", use_container_width=True):
+                    updated_count = app_service.cancel_batch_jobs(selected_batch_id)
+                    st.session_state[JOB_ACTION_RESULT_FLAG] = f"Updated {updated_count} job(s) for cancel in batch {selected_batch_id[:8]}."
+                    st.rerun()
+            with batch_action_cols[1]:
+                if st.button("Retry batch", use_container_width=True):
+                    updated_count = app_service.retry_batch_jobs(selected_batch_id)
+                    st.session_state[JOB_ACTION_RESULT_FLAG] = f"Queued {updated_count} job(s) for retry in batch {selected_batch_id[:8]}."
+                    st.rerun()
+        else:
+            st.caption("No queued jobs yet.")
+
+    job_action_result = st.session_state.pop(JOB_ACTION_RESULT_FLAG, None)
+    if isinstance(job_action_result, str) and job_action_result.strip():
+        st.sidebar.success(job_action_result)
 
     if not settings.features.enable_analysis:
         st.warning(

@@ -16,6 +16,7 @@ from payday.schema_versions import ANALYSIS_SCHEMA_VERSION, PERSONA_RULESET_VERS
 
 _UNSET = object()
 _VALID_STATUS = {"pending", "processing", "completed", "failed"}
+_VALID_JOB_STATUS = {"pending", "processing", "completed", "failed", "cancelled"}
 _LEGACY_STATUS_MAP = {
     "uploaded": "pending",
     "upload": "pending",
@@ -147,6 +148,24 @@ class DashboardStatusOverview:
     status_counts: dict[str, int]
 
 
+@dataclass(frozen=True, slots=True)
+class JobRecord:
+    id: str
+    batch_id: str
+    interview_id: str
+    filename: str
+    content_type: str
+    status: str
+    attempts: int
+    max_attempts: int
+    error_message: str | None
+    cancel_requested: bool
+    created_at: str
+    updated_at: str
+    started_at: str | None
+    completed_at: str | None
+
+
 class PaydayRepository:
     """Persistence facade for analysis artifacts and dashboard reads."""
 
@@ -175,6 +194,7 @@ class PaydayRepository:
         with self._connect() as connection:
             connection.executescript(schema_sql)
             self._ensure_interview_columns(connection)
+            self._ensure_job_columns(connection)
             self._migrate_legacy_interview_data(connection)
             self._ensure_structured_response_columns(connection)
             self._ensure_insight_columns(connection)
@@ -275,6 +295,52 @@ class PaydayRepository:
             connection.execute("ALTER TABLE insights ADD COLUMN analysis_version TEXT")
         if "analyzed_at" not in insight_columns:
             connection.execute("ALTER TABLE insights ADD COLUMN analyzed_at TEXT")
+
+    def _ensure_job_columns(self, connection: sqlite3.Connection) -> None:
+        table_row = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'"
+        ).fetchone()
+        if table_row is None:
+            connection.execute(
+                """
+                CREATE TABLE jobs (
+                    id TEXT PRIMARY KEY,
+                    batch_id TEXT NOT NULL,
+                    interview_id TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    content_type TEXT NOT NULL,
+                    payload BLOB NOT NULL,
+                    status TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL DEFAULT 3,
+                    error_message TEXT,
+                    cancel_requested INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    FOREIGN KEY (interview_id) REFERENCES interviews (id) ON DELETE CASCADE
+                )
+                """
+            )
+            connection.execute("CREATE INDEX idx_jobs_status_created_at ON jobs (status, created_at ASC)")
+            connection.execute("CREATE INDEX idx_jobs_batch_id ON jobs (batch_id)")
+            return
+
+        job_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
+        }
+        if "cancel_requested" not in job_columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0")
+        if "attempts" not in job_columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+        if "max_attempts" not in job_columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3")
+        if "updated_at" not in job_columns:
+            now = datetime.now(timezone.utc).isoformat()
+            connection.execute("ALTER TABLE jobs ADD COLUMN updated_at TEXT")
+            connection.execute("UPDATE jobs SET updated_at = ? WHERE updated_at IS NULL", (now,))
 
     def create_interview(
         self,
@@ -1059,6 +1125,229 @@ class PaydayRepository:
             status_counts=status_counts,
         )
 
+    def create_job(
+        self,
+        *,
+        batch_id: str,
+        interview_id: str,
+        filename: str,
+        content_type: str,
+        payload: bytes,
+        max_attempts: int = 3,
+    ) -> JobRecord:
+        now = datetime.now(timezone.utc).isoformat()
+        job_id = uuid4().hex
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO jobs (
+                    id, batch_id, interview_id, filename, content_type, payload, status, attempts, max_attempts,
+                    error_message, cancel_requested, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, NULL, 0, ?, ?)
+                """,
+                (job_id, batch_id, interview_id, filename, content_type, payload, max_attempts, now, now),
+            )
+        return self.get_job(job_id)
+
+    def get_job(self, job_id: str) -> JobRecord:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, batch_id, interview_id, filename, content_type, status, attempts, max_attempts, error_message,
+                       cancel_requested, created_at, updated_at, started_at, completed_at
+                FROM jobs
+                WHERE id = ?
+                """,
+                (job_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"Job {job_id} was not found.")
+        return self._job_from_row(row)
+
+    def list_jobs(self, *, limit: int = 200, statuses: tuple[str, ...] | None = None) -> list[JobRecord]:
+        query = """
+            SELECT id, batch_id, interview_id, filename, content_type, status, attempts, max_attempts, error_message,
+                   cancel_requested, created_at, updated_at, started_at, completed_at
+            FROM jobs
+        """
+        params: list[object] = []
+        if statuses:
+            normalized_statuses = [self._normalize_job_status(status) for status in statuses]
+            placeholders = ",".join("?" for _ in normalized_statuses)
+            query += f" WHERE status IN ({placeholders})"
+            params.extend(normalized_statuses)
+        query += " ORDER BY created_at DESC, id DESC LIMIT ?"
+        params.append(limit)
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [self._job_from_row(row) for row in rows]
+
+    def get_next_pending_job(self) -> JobRecord | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, batch_id, interview_id, filename, content_type, status, attempts, max_attempts, error_message,
+                       cancel_requested, created_at, updated_at, started_at, completed_at
+                FROM jobs
+                WHERE status = 'pending'
+                ORDER BY created_at ASC, id ASC
+                LIMIT 1
+                """
+            ).fetchone()
+        return None if row is None else self._job_from_row(row)
+
+    def get_job_payload(self, job_id: str) -> bytes:
+        with self._connect() as connection:
+            row = connection.execute("SELECT payload FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"Job {job_id} was not found.")
+        return bytes(row["payload"])
+
+    def claim_job(self, job_id: str) -> JobRecord | None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT status, cancel_requested FROM jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            if self._normalize_job_status(row["status"]) != "pending":
+                return None
+            if bool(row["cancel_requested"]):
+                connection.execute(
+                    "UPDATE jobs SET status = 'cancelled', updated_at = ?, completed_at = ? WHERE id = ?",
+                    (now, now, job_id),
+                )
+                return self.get_job(job_id)
+            connection.execute(
+                """
+                UPDATE jobs
+                SET status = 'processing',
+                    attempts = attempts + 1,
+                    updated_at = ?,
+                    started_at = COALESCE(started_at, ?),
+                    error_message = NULL
+                WHERE id = ?
+                """,
+                (now, now, job_id),
+            )
+        return self.get_job(job_id)
+
+    def complete_job(self, job_id: str) -> JobRecord:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE jobs SET status = 'completed', updated_at = ?, completed_at = ?, error_message = NULL WHERE id = ?",
+                (now, now, job_id),
+            )
+        return self.get_job(job_id)
+
+    def fail_job(self, job_id: str, *, error_message: str) -> JobRecord:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as connection:
+            row = connection.execute("SELECT attempts, max_attempts FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(f"Job {job_id} was not found.")
+            attempts = int(row["attempts"])
+            max_attempts = int(row["max_attempts"])
+            next_status = "failed" if attempts >= max_attempts else "pending"
+            completed_at = now if next_status == "failed" else None
+            connection.execute(
+                """
+                UPDATE jobs
+                SET status = ?, error_message = ?, updated_at = ?, completed_at = ?
+                WHERE id = ?
+                """,
+                (next_status, error_message, now, completed_at, job_id),
+            )
+        return self.get_job(job_id)
+
+    def cancel_job(self, job_id: str) -> JobRecord:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as connection:
+            row = connection.execute("SELECT status FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(f"Job {job_id} was not found.")
+            status = self._normalize_job_status(row["status"])
+            if status == "pending":
+                connection.execute(
+                    """
+                    UPDATE jobs
+                    SET status = 'cancelled', cancel_requested = 1, updated_at = ?, completed_at = ?
+                    WHERE id = ?
+                    """,
+                    (now, now, job_id),
+                )
+            elif status == "processing":
+                connection.execute(
+                    "UPDATE jobs SET cancel_requested = 1, updated_at = ? WHERE id = ?",
+                    (now, job_id),
+                )
+            return self.get_job(job_id)
+
+    def retry_job(self, job_id: str) -> JobRecord:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE jobs
+                SET status = 'pending',
+                    error_message = NULL,
+                    cancel_requested = 0,
+                    updated_at = ?,
+                    started_at = NULL,
+                    completed_at = NULL
+                WHERE id = ?
+                """,
+                (now, job_id),
+            )
+        return self.get_job(job_id)
+
+    def cancel_batch(self, batch_id: str) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as connection:
+            pending_rows = connection.execute(
+                "SELECT id, status FROM jobs WHERE batch_id = ? AND status IN ('pending', 'processing')",
+                (batch_id,),
+            ).fetchall()
+            for row in pending_rows:
+                status = self._normalize_job_status(row["status"])
+                if status == "pending":
+                    connection.execute(
+                        """
+                        UPDATE jobs
+                        SET status = 'cancelled', cancel_requested = 1, updated_at = ?, completed_at = ?
+                        WHERE id = ?
+                        """,
+                        (now, now, row["id"]),
+                    )
+                else:
+                    connection.execute(
+                        "UPDATE jobs SET cancel_requested = 1, updated_at = ? WHERE id = ?",
+                        (now, row["id"]),
+                    )
+        return len(pending_rows)
+
+    def retry_batch(self, batch_id: str) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as connection:
+            updated = connection.execute(
+                """
+                UPDATE jobs
+                SET status = 'pending',
+                    error_message = NULL,
+                    cancel_requested = 0,
+                    updated_at = ?,
+                    started_at = NULL,
+                    completed_at = NULL
+                WHERE batch_id = ? AND status IN ('failed', 'cancelled')
+                """,
+                (now, batch_id),
+            )
+        return int(updated.rowcount)
+
     def save_result(self, result: PipelineResult) -> PipelineResult:
         self._items[result.file_id] = result
         return result
@@ -1088,6 +1377,13 @@ class PaydayRepository:
         if value is None:
             return None
         return bool(value)
+
+    @staticmethod
+    def _normalize_job_status(value: str) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized in _VALID_JOB_STATUS:
+            return normalized
+        raise ValueError(f"Unsupported job status '{value}'. Expected one of {sorted(_VALID_JOB_STATUS)}.")
 
     @staticmethod
     def _normalize_database_path(database_path: str) -> str:
@@ -1154,6 +1450,25 @@ class PaydayRepository:
             confidence_score=normalized_confidence,
             analysis_version=analysis.metrics.get("analysis_version") if isinstance(analysis.metrics.get("analysis_version"), str) else None,
             analyzed_at=analysis.metrics.get("analyzed_at") if isinstance(analysis.metrics.get("analyzed_at"), str) else None,
+        )
+
+    def _job_from_row(self, row: sqlite3.Row) -> JobRecord:
+        payload = dict(row)
+        return JobRecord(
+            id=str(payload["id"]),
+            batch_id=str(payload["batch_id"]),
+            interview_id=str(payload["interview_id"]),
+            filename=str(payload["filename"]),
+            content_type=str(payload["content_type"]),
+            status=self._normalize_job_status(payload["status"]),
+            attempts=int(payload["attempts"]),
+            max_attempts=int(payload["max_attempts"]),
+            error_message=payload.get("error_message"),
+            cancel_requested=bool(payload.get("cancel_requested")),
+            created_at=str(payload["created_at"]),
+            updated_at=str(payload["updated_at"]),
+            started_at=payload.get("started_at"),
+            completed_at=payload.get("completed_at"),
         )
 
     def _dashboard_record_from_row(self, row: sqlite3.Row) -> DashboardInterviewRecord:

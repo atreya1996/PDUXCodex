@@ -78,7 +78,7 @@ cp .env.example .env
 | `PAYDAY_SQLITE_PATH` | No | `data/payday.db` | Local SQLite path used for durable dashboard reads across app restarts. |
 | `PAYDAY_ENV_MAX_UPLOAD_FILE_MB` | No | `20` | UI preflight guardrail for max file size accepted by deployment/runtime path before processing. |
 | `PAYDAY_ENV_MAX_UPLOAD_BATCH_MB` | No | `45` | UI preflight guardrail for combined batch size accepted by deployment/runtime path before processing. |
-| `PAYDAY_UPLOAD_BATCH_CHUNK_SIZE` | No | `3` | Number of files processed per backend chunk (clamped to 1–3) to avoid one giant request. |
+| `PAYDAY_UPLOAD_BATCH_CHUNK_SIZE` | No | `3` | Number of files enqueued per queue chunk (clamped to 1–3) to avoid one giant request. |
 
 ### Supabase variables
 
@@ -197,13 +197,13 @@ Our deployed preview target should be configured with conservative request-size 
 
 - `PAYDAY_ENV_MAX_UPLOAD_FILE_MB=20`
 - `PAYDAY_ENV_MAX_UPLOAD_BATCH_MB=45`
-- `PAYDAY_UPLOAD_BATCH_CHUNK_SIZE=3` (the app processes selected files sequentially in chunks)
+- `PAYDAY_UPLOAD_BATCH_CHUNK_SIZE=3` (the app enqueues selected files in chunks; a background worker processes each file)
 
 UI behavior now includes:
 
 - explicit per-file and per-batch size validation before processing,
 - a warning when the selected total is near the runtime batch limit,
-- chunked batch processing (2–3 files is the recommended retry size), and
+- chunked batch enqueue (2–3 files is the recommended retry size), and
 - direct retry guidance when an upstream error includes HTTP 413.
 
 If preview uploads fail with 413, retry by selecting fewer files per run, compressing recordings, or reducing duration/bitrate before re-uploading.
