@@ -8,8 +8,9 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from payday.config import Settings, SettingsConfigurationError, get_settings
-from payday.dashboard.views import DashboardRenderer
+from payday.dashboard.views import DashboardRenderer, FILTER_SESSION_KEYS
 from payday.models import BatchUploadItem
+from payday.models import ProcessingStatus
 from payday.service import PaydayAppService
 from payday.transcription import describe_transcription_file_size_limit
 from payday.upload import SUPPORTED_UPLOAD_EXTENSIONS
@@ -92,6 +93,25 @@ def _render_live_failures_panel(
         if interview_id and target.button("Open detail", key=f"live_failure_open_{interview_id}_{index}"):
             _open_interview_detail(interview_id)
             st.rerun()
+
+
+def _render_live_processing_section(app_service: PaydayAppService, *, max_events: int = 10) -> None:
+    events = app_service.list_processing_events(limit=max_events) if hasattr(app_service, "list_processing_events") else []
+    target = st.sidebar.empty()
+    with target.container():
+        st.markdown("---")
+        st.markdown("### Live processing")
+        if not events:
+            st.caption("No recent processing events.")
+            return
+        for event in events:
+            status = getattr(event, "status", "pending")
+            stage = getattr(event, "stage", "upload")
+            file_id = getattr(event, "file_id", "unknown")
+            message = getattr(event, "message", "") or "No message captured."
+            created_at = getattr(event, "created_at", "")
+            st.caption(f"`{status}` · `{stage}` · {file_id[:8]} · {created_at}")
+            st.caption(message)
 
 
 def _upload_limit_violations(
