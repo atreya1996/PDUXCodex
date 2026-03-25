@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -60,6 +61,37 @@ def _format_exact_bytes(value_bytes: int) -> str:
 
 def _chunk_upload_items(items: list[BatchUploadItem], chunk_size: int) -> list[list[BatchUploadItem]]:
     return [items[index : index + chunk_size] for index in range(0, len(items), chunk_size)]
+
+
+def _open_interview_detail(interview_id: str) -> None:
+    st.session_state[FILTER_SESSION_KEYS["selected"]] = interview_id
+    st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = True
+
+
+def _render_live_failures_panel(
+    *,
+    failed_rows: list[dict[str, str]],
+    panel_title: str = "### Live failures",
+    max_rows: int = 8,
+    container: st.delta_generator.DeltaGenerator | None = None,
+) -> None:
+    target = container or st.sidebar
+    target.markdown("---")
+    target.markdown(panel_title)
+    if not failed_rows:
+        target.caption("No failures detected yet.")
+        return
+    for index, failure in enumerate(failed_rows[:max_rows], start=1):
+        filename = failure.get("filename", "unknown-file")
+        stage = failure.get("stage", "unknown-stage")
+        error_message = failure.get("error_message", "No error message captured.")
+        interview_id = failure.get("interview_id", "")
+        target.markdown(f"**{index}. {filename}**")
+        target.caption(f"stage: `{stage}`")
+        target.caption(f"error_message: {error_message}")
+        if interview_id and target.button("Open detail", key=f"live_failure_open_{interview_id}_{index}"):
+            _open_interview_detail(interview_id)
+            st.rerun()
 
 
 def _upload_limit_violations(
@@ -356,7 +388,19 @@ def main() -> None:
         )
 
     force_sqlite_reload = bool(st.session_state.pop(FORCE_SQLITE_RELOAD_FLAG, False))
+    _render_live_processing_section(app_service)
     dashboard_state = load_dashboard_state(app_service, force_sqlite_reload=force_sqlite_reload)
+    persisted_live_failures = [
+        {
+            "interview_id": record.id,
+            "filename": record.filename,
+            "stage": record.latest_stage,
+            "error_message": record.last_error or "No error message captured.",
+        }
+        for record in dashboard_state["recent_interviews"]
+        if record.status == ProcessingStatus.FAILED.value
+    ]
+    _render_live_failures_panel(failed_rows=persisted_live_failures, panel_title="### Live failures")
     dashboard.render(
         cached_results=dashboard_state["cached_results"],
         recent_interviews=dashboard_state["recent_interviews"],

@@ -198,6 +198,7 @@ class PaydayRepository:
             self._migrate_legacy_interview_data(connection)
             self._ensure_structured_response_columns(connection)
             self._ensure_insight_columns(connection)
+            self._ensure_processing_events_table(connection)
 
     def _ensure_interview_columns(self, connection: sqlite3.Connection) -> None:
         interview_columns = {
