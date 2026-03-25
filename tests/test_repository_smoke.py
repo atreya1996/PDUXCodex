@@ -40,3 +40,33 @@ def test_create_interview_persists_canonical_fields_to_sqlite() -> None:
     assert row["latest_stage"] == "transcription"
     assert row["last_error"] is None
     assert row["error_message"] is None
+
+
+def test_processing_events_round_trip_for_file() -> None:
+    repository = PaydayRepository(database_path=":memory:")
+    interview = repository.create_interview(
+        file_path="audio/interview-456/events.wav",
+        status="pending",
+    )
+
+    repository.add_processing_event(
+        file_id=interview.id,
+        stage="upload",
+        status="processing",
+        message="upload accepted",
+    )
+    repository.add_processing_event(
+        file_id=interview.id,
+        stage="analysis",
+        status="failed",
+        message="analysis failed",
+    )
+
+    events = repository.list_processing_events(file_ids=[interview.id], limit=10)
+
+    assert len(events) == 2
+    assert events[0].stage == "analysis"
+    assert events[0].status == "failed"
+    assert events[0].message == "analysis failed"
+    assert events[1].stage == "upload"
+    assert events[1].status == "processing"

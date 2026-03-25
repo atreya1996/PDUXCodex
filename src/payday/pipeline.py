@@ -118,10 +118,12 @@ class PaydayPipeline:
         except Exception as exc:
             self._record_failure(result, stage=PipelineStage.STORAGE, error=str(exc), message="storage failed")
             raise
-        result.status = ProcessingStatus.COMPLETED
-        result.last_error = None
-        self._log_stage("storage succeeded", result)
-        self._sync_result(result)
+        self._set_stage(
+            result,
+            stage=PipelineStage.STORAGE,
+            status=ProcessingStatus.COMPLETED,
+            message="storage succeeded",
+        )
         return result
 
     def process_upload(self, filename: str, content_type: str, data: bytes) -> PipelineResult:
@@ -566,6 +568,12 @@ class PaydayPipeline:
         if message:
             self._log_stage(message, result)
         self._sync_result(result)
+        self.repository.add_processing_event(
+            file_id=result.file_id,
+            stage=result.current_stage.value,
+            status=result.status.value,
+            message=message,
+        )
 
     def _record_failure(
         self,
@@ -583,6 +591,12 @@ class PaydayPipeline:
         if message:
             self._log_stage(message, result)
         self._sync_result(result)
+        self.repository.add_processing_event(
+            file_id=result.file_id,
+            stage=result.current_stage.value,
+            status=result.status.value,
+            message=message or error,
+        )
 
     def _log_stage(self, message: str, result: PipelineResult, *, attempts: int | None = None) -> None:
         stage_key = result.current_stage.value

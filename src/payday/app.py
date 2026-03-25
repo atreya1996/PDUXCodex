@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -16,6 +17,9 @@ from payday.upload import SUPPORTED_UPLOAD_EXTENSIONS
 REFRESH_STATUS_FLAG = "dashboard_status_reloaded"
 FORCE_SQLITE_RELOAD_FLAG = "dashboard_force_sqlite_reload"
 REPROCESS_STALE_FLAG = "dashboard_reprocess_stale_result"
+PROCESSING_QUEUE_STATE = "dashboard_processing_queue_state"
+PROCESSING_FINAL_MESSAGE = "dashboard_processing_final_message"
+PROCESSING_EVENTS_REFRESH_SECONDS = 3
 DEFAULT_ENV_MAX_BATCH_BYTES = 45_000_000
 DEFAULT_ENV_MAX_FILE_BYTES = 20_000_000
 DEFAULT_CHUNK_SIZE = 3
@@ -63,6 +67,58 @@ def _is_payload_too_large_error(message: str) -> bool:
 
 def _chunk_upload_items(items: list[BatchUploadItem], chunk_size: int) -> list[list[BatchUploadItem]]:
     return [items[index : index + chunk_size] for index in range(0, len(items), chunk_size)]
+
+
+def _latest_status_by_file(events: list[object]) -> dict[str, str]:
+    latest: dict[str, str] = {}
+    for event in events:
+        file_id = getattr(event, "file_id", "")
+        status = getattr(event, "status", "")
+        if file_id and file_id not in latest:
+            latest[file_id] = status
+    return latest
+
+
+def _render_live_processing_section(app_service: PaydayAppService) -> None:
+    processing_state = st.session_state.get(PROCESSING_QUEUE_STATE)
+    if not isinstance(processing_state, dict):
+        return
+
+    file_ids = list(processing_state.get("all_file_ids", []))
+    events = app_service.list_processing_events(file_ids=file_ids, limit=200) if file_ids else []
+    latest_status = _latest_status_by_file(events)
+    active_count = sum(1 for file_id in file_ids if latest_status.get(file_id) in {"pending", "processing"})
+    completed_count = sum(1 for file_id in file_ids if latest_status.get(file_id) == "completed")
+    failed_count = sum(1 for file_id in file_ids if latest_status.get(file_id) == "failed")
+
+    placeholder = st.empty()
+    with placeholder.container():
+        st.markdown("### Live processing events")
+        metrics = st.columns(3)
+        metrics[0].metric("Active", active_count)
+        metrics[1].metric("Completed", completed_count)
+        metrics[2].metric("Failed", failed_count)
+        if events:
+            st.dataframe(
+                [
+                    {
+                        "created_at": event.created_at,
+                        "file_id": event.file_id[:8],
+                        "stage": event.stage,
+                        "status": event.status,
+                        "message": event.message or "",
+                    }
+                    for event in events
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.caption("No processing events yet for this batch.")
+
+    if processing_state.get("active", False):
+        time.sleep(PROCESSING_EVENTS_REFRESH_SECONDS)
+        st.rerun()
 
 
 def _upload_limit_violations(
@@ -264,7 +320,12 @@ def main() -> None:
         else:
             st.sidebar.success(f"Reprocessed all {stale_count} stale interviews.")
 
-    process_disabled = not settings.features.enable_analysis or upload_count == 0
+    processing_state = st.session_state.get(PROCESSING_QUEUE_STATE)
+    process_disabled = (
+        not settings.features.enable_analysis
+        or upload_count == 0
+        or (isinstance(processing_state, dict) and bool(processing_state.get("active", False)))
+    )
     if st.sidebar.button("Process batch", type="primary", use_container_width=True, disabled=process_disabled):
         if upload_count < 1 or upload_count > 10:
             st.sidebar.warning("Please upload between 1 and 10 audio files.")
@@ -283,32 +344,58 @@ def main() -> None:
                 for file in uploaded_files
             ]
             chunks = _chunk_upload_items(items, upload_chunk_size)
-            chunk_results = []
-            with st.spinner("Processing uploaded interviews in smaller chunks..."):
-                for chunk_index, chunk in enumerate(chunks, start=1):
-                    st.sidebar.caption(f"Processing chunk {chunk_index}/{len(chunks)} ({len(chunk)} files).")
-                    chunk_results.append(app_service.process_batch_uploads(chunk))
+            st.session_state[PROCESSING_QUEUE_STATE] = {
+                "active": True,
+                "chunks": chunks,
+                "next_index": 0,
+                "chunk_results": [],
+                "total_files": len(items),
+                "all_file_ids": [item.file_id for item in items],
+            }
+            st.session_state[PROCESSING_FINAL_MESSAGE] = None
+            st.rerun()
 
+    processing_state = st.session_state.get(PROCESSING_QUEUE_STATE)
+    if isinstance(processing_state, dict) and processing_state.get("active", False):
+        chunks = processing_state.get("chunks", [])
+        next_index = int(processing_state.get("next_index", 0))
+        if next_index < len(chunks):
+            chunk = chunks[next_index]
+            st.sidebar.caption(f"Processing chunk {next_index + 1}/{len(chunks)} ({len(chunk)} files).")
+            chunk_result = app_service.process_batch_uploads(chunk)
+            processing_state.setdefault("chunk_results", []).append(chunk_result)
+            processing_state["next_index"] = next_index + 1
+            st.session_state[PROCESSING_QUEUE_STATE] = processing_state
+            st.rerun()
+        else:
+            chunk_results = processing_state.get("chunk_results", [])
             completed_count = sum(result.completed_count for result in chunk_results)
             failed_count = sum(result.failed_count for result in chunk_results)
             batch_ids = ", ".join(result.batch_id[:8] for result in chunk_results)
             summary_message = (
-                f"Processed {len(items)} files across {len(chunks)} chunk(s) [{batch_ids}] with "
+                f"Processed {processing_state.get('total_files', 0)} files across {len(chunks)} chunk(s) [{batch_ids}] with "
                 f"{completed_count} completed and {failed_count} failed."
             )
-            if failed_count == 0:
-                st.sidebar.success(summary_message)
-            elif completed_count == 0:
-                st.sidebar.error(summary_message)
-            else:
-                st.sidebar.warning(summary_message)
+            processing_state["active"] = False
+            processing_state["summary_message"] = summary_message
+            processing_state["summary_kind"] = (
+                "success" if failed_count == 0 else "error" if completed_count == 0 else "warning"
+            )
+            st.session_state[PROCESSING_QUEUE_STATE] = processing_state
+            st.session_state[PROCESSING_FINAL_MESSAGE] = summary_message
 
-            failed_results = [
-                result
-                for chunk_result in chunk_results
-                for result in chunk_result.results
-                if result.status is ProcessingStatus.FAILED
-            ]
+    processing_state = st.session_state.get(PROCESSING_QUEUE_STATE)
+    if isinstance(processing_state, dict) and processing_state.get("summary_message"):
+        kind = str(processing_state.get("summary_kind", "success"))
+        message = str(processing_state["summary_message"])
+        if kind == "success":
+            st.sidebar.success(message)
+        elif kind == "error":
+            st.sidebar.error(message)
+        else:
+            st.sidebar.warning(message)
+        for chunk_result in processing_state.get("chunk_results", []):
+            failed_results = [result for result in chunk_result.results if result.status is ProcessingStatus.FAILED]
             for failed_result in failed_results:
                 error_message = (
                     failed_result.errors[0]
@@ -328,6 +415,7 @@ def main() -> None:
         )
 
     force_sqlite_reload = bool(st.session_state.pop(FORCE_SQLITE_RELOAD_FLAG, False))
+    _render_live_processing_section(app_service)
     dashboard_state = load_dashboard_state(app_service, force_sqlite_reload=force_sqlite_reload)
     dashboard.render(
         cached_results=dashboard_state["cached_results"],
