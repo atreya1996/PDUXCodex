@@ -32,8 +32,8 @@ _LEGACY_STATUS_MAP = {
 @dataclass(frozen=True, slots=True)
 class InterviewRecord:
     id: str
-    filename: str
-    file_path: str
+    audio_url: str
+    transcript: str | None
     status: str
     transcript_text: str | None
     error_message: str | None
@@ -86,8 +86,7 @@ class InsightRecord:
 @dataclass(frozen=True, slots=True)
 class InterviewListItem:
     id: str
-    filename: str
-    file_path: str
+    audio_url: str
     status: str
     created_at: str
     persona: str | None
@@ -284,15 +283,15 @@ class PaydayRepository:
         interview_id: str | None = None,
         created_at: str | None = None,
     ) -> InterviewRecord:
-        canonical_file_path = (file_path or audio_url or "").strip()
-        if not canonical_file_path:
-            raise ValueError("create_interview requires file_path (or legacy audio_url).")
+        resolved_file_path = (file_path or audio_url or "").strip()
+        if not resolved_file_path:
+            raise ValueError("create_interview requires file_path or audio_url.")
         normalized_status = self._normalize_status(status)
-        filename = self._filename_from_audio_url(canonical_file_path)
+        filename = self._filename_from_audio_url(resolved_file_path)
         record = InterviewRecord(
             id=interview_id or str(uuid4()),
-            filename=filename,
-            file_path=canonical_file_path,
+            audio_url=resolved_file_path,
+            transcript=transcript,
             status=normalized_status,
             transcript_text=transcript,
             error_message=last_error,
@@ -300,20 +299,27 @@ class PaydayRepository:
             latest_stage=latest_stage,
             transcript=transcript,
             last_error=last_error,
+            created_at=created_at or datetime.now(timezone.utc).isoformat(),
+            filename=filename,
+            file_path=resolved_file_path,
+            transcript_text=transcript,
             insights_json=None,
         )
         with self._connect() as connection:
             connection.execute(
                 """
                 INSERT INTO interviews (
-                    id, filename, file_path, status, transcript_text, error_message, created_at, latest_stage, analysis_version
+                    id, audio_url, filename, file_path, transcript, transcript_text, status, latest_stage, last_error, error_message, created_at, analysis_version
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
+                    record.audio_url,
                     record.filename,
                     record.file_path,
+                    record.transcript,
+                    record.transcript,
                     record.status,
                     record.transcript_text,
                     record.error_message,
@@ -336,9 +342,7 @@ class PaydayRepository:
         last_error: str | object = _UNSET,
     ) -> InterviewRecord:
         existing = self.get_interview(interview_id)
-        next_file_path = file_path if file_path is not None else existing.file_path
-        next_transcript = transcript if transcript is not None else existing.transcript_text
-        next_error_message = existing.error_message if last_error is _UNSET else last_error
+        next_file_path = file_path if file_path is not None else audio_url if audio_url is not None else existing.file_path
         updated = InterviewRecord(
             id=existing.id,
             filename=self._filename_from_audio_url(next_file_path),
@@ -357,8 +361,11 @@ class PaydayRepository:
             connection.execute(
                 """
                 UPDATE interviews
-                SET filename = ?,
+                SET audio_url = ?,
+                    filename = ?,
                     file_path = ?,
+                    transcript = ?,
+                    transcript_text = ?,
                     status = ?,
                     transcript_text = ?,
                     error_message = ?,
@@ -367,8 +374,11 @@ class PaydayRepository:
                 WHERE id = ?
                 """,
                 (
+                    updated.audio_url,
                     updated.filename,
                     updated.file_path,
+                    updated.transcript,
+                    updated.transcript,
                     updated.status,
                     updated.transcript_text,
                     updated.error_message,
@@ -1159,7 +1169,7 @@ class PaydayRepository:
             transcript=normalization["transcript"],
             status=payload["status"],
             latest_stage=payload["latest_stage"],
-            last_error=payload["last_error"],
+            last_error=payload.get("error_message", payload.get("last_error")),
             created_at=payload["created_at"],
             smartphone_user=self._int_to_bool(payload["smartphone_user"]),
             has_bank_account=self._int_to_bool(payload["has_bank_account"]),
