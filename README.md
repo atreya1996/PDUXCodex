@@ -171,6 +171,16 @@ Open the local URL printed by Streamlit, then:
 - leave sample mode on for a demo without live providers, or
 - switch sample mode off and provide live Supabase/LLM/transcription credentials.
 
+## Local quality checks
+
+Run the same smoke gate as CI before unit tests:
+
+```bash
+python -m compileall -q src/payday
+python -c "import payday.repository"
+pytest
+```
+
 ## Release workflow and deployment checklist
 
 Deployment source-of-truth branch is **`main`**. Use `docs/release_workflow.md` for the required release process, CI gates, and deployment checklist, including SHA matching across:
