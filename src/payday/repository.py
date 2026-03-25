@@ -329,6 +329,7 @@ class PaydayRepository:
         interview_id: str,
         *,
         file_path: str | None = None,
+        audio_url: str | None = None,
         transcript: str | None = None,
         status: str | None = None,
         latest_stage: str | None = None,
@@ -1158,7 +1159,7 @@ class PaydayRepository:
             transcript=normalization["transcript"],
             status=payload["status"],
             latest_stage=payload["latest_stage"],
-            last_error=payload["error_message"],
+            last_error=payload["last_error"],
             created_at=payload["created_at"],
             smartphone_user=self._int_to_bool(payload["smartphone_user"]),
             has_bank_account=self._int_to_bool(payload["has_bank_account"]),
@@ -1448,10 +1449,14 @@ class PaydayRepository:
         return "pending"
 
     @staticmethod
-    def _filename_from_audio_url(audio_url: str) -> str:
-        parsed = urlparse(audio_url)
-        path = parsed.path or audio_url
+    def _filename_from_file_path(file_path: str) -> str:
+        parsed = urlparse(file_path)
+        path = parsed.path or file_path
         return Path(path).name
+
+    @staticmethod
+    def _filename_from_audio_url(audio_url: str) -> str:
+        return PaydayRepository._filename_from_file_path(audio_url)
 
     @staticmethod
     def _infer_transcript_quality(*, status: str, transcript: str | None, last_error: str | None) -> str:
