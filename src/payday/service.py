@@ -2,26 +2,36 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import threading
+import time
 from pathlib import Path
+from uuid import uuid4
 
 from payday.analysis import AnalysisService, build_analysis_adapter
 from payday.config import Settings, resolve_runtime_commit_sha, validate_runtime_settings
 from payday.models import BatchPipelineResult, BatchUploadItem, PipelineResult
 from payday.personas import PersonaService
 from payday.pipeline import PaydayPipeline
-from payday.repository import DashboardInterviewRecord, DashboardStatusOverview, PaydayRepository, ProcessingEventRecord
+from payday.repository import DashboardInterviewRecord, DashboardStatusOverview, JobRecord, PaydayRepository
 from payday.storage import StorageService
 from payday.transcription import build_transcription_service
 from payday.upload import UploadService
 
 logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parents[2]
+WORKER_POLL_INTERVAL_SECONDS = 1.0
 
 
 class PaydayAppService:
     """Thin backend facade used by the Streamlit UI."""
 
-    def __init__(self, settings: Settings, repository: PaydayRepository | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        repository: PaydayRepository | None = None,
+        *,
+        start_worker: bool = True,
+    ) -> None:
         validate_runtime_settings(settings)
         self.settings = settings
         self.repository = repository or PaydayRepository(database_path=settings.database.sqlite_path)
@@ -42,6 +52,11 @@ class PaydayAppService:
             repository=self.repository,
             sample_mode=settings.features.use_sample_mode,
         )
+        self._worker_stop_event = threading.Event()
+        self._worker_thread: threading.Thread | None = None
+        if start_worker:
+            self._worker_thread = threading.Thread(target=self._worker_loop, name="payday-job-worker", daemon=True)
+            self._worker_thread.start()
         logger.info("PayDay runtime diagnostics: %s", self.runtime_diagnostics())
         logger.info("PayDay runtime configuration loaded: %s", self.runtime_summary())
 
@@ -50,6 +65,74 @@ class PaydayAppService:
 
     def process_batch_uploads(self, items: list[BatchUploadItem]) -> BatchPipelineResult:
         return self.pipeline.process_batch_uploads(items)
+
+    def enqueue_batch_uploads(self, items: list[BatchUploadItem]) -> dict[str, object]:
+        if not 1 <= len(items) <= 10:
+            raise ValueError("Batch uploads must contain between 1 and 10 files.")
+        batch_id = uuid4().hex
+        job_ids: list[str] = []
+        for item in items:
+            self.repository.create_interview(
+                interview_id=item.file_id,
+                file_path=self.pipeline.storage_service.build_file_path(item.file_id, item.filename),
+                status="pending",
+                latest_stage="upload",
+            )
+            job = self.repository.create_job(
+                batch_id=batch_id,
+                interview_id=item.file_id,
+                filename=item.filename,
+                content_type=item.content_type,
+                payload=item.data,
+            )
+            job_ids.append(job.id)
+        return {"batch_id": batch_id, "job_ids": job_ids, "count": len(job_ids)}
+
+    def list_jobs(self, *, limit: int = 200) -> list[JobRecord]:
+        return self.repository.list_jobs(limit=limit)
+
+    def cancel_job(self, job_id: str) -> JobRecord:
+        return self.repository.cancel_job(job_id)
+
+    def retry_job(self, job_id: str) -> JobRecord:
+        return self.repository.retry_job(job_id)
+
+    def cancel_batch_jobs(self, batch_id: str) -> int:
+        return self.repository.cancel_batch(batch_id)
+
+    def retry_batch_jobs(self, batch_id: str) -> int:
+        return self.repository.retry_batch(batch_id)
+
+    def run_worker_cycle(self, *, max_jobs: int = 1) -> int:
+        processed = 0
+        for _ in range(max_jobs):
+            next_job = self.repository.get_next_pending_job()
+            if next_job is None:
+                break
+            claimed = self.repository.claim_job(next_job.id)
+            if claimed is None:
+                continue
+            if claimed.status == "cancelled":
+                processed += 1
+                continue
+            payload = self.repository.get_job_payload(claimed.id)
+            try:
+                result = self.pipeline.process_upload(
+                    filename=claimed.filename,
+                    content_type=claimed.content_type,
+                    data=payload,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.repository.fail_job(claimed.id, error_message=str(exc))
+                processed += 1
+                continue
+            if result.status.value == "completed":
+                self.repository.complete_job(claimed.id)
+            else:
+                error = result.last_error or "Pipeline failed without a detailed error."
+                self.repository.fail_job(claimed.id, error_message=error)
+            processed += 1
+        return processed
 
     def list_results(self) -> list[PipelineResult]:
         return self.repository.list_results()
@@ -192,6 +275,11 @@ class PaydayAppService:
             "runtime_commit_sha": resolve_runtime_commit_sha(),
         }
 
+    def shutdown(self) -> None:
+        self._worker_stop_event.set()
+        if self._worker_thread is not None and self._worker_thread.is_alive():
+            self._worker_thread.join(timeout=2.0)
+
     def runtime_diagnostics(self) -> dict[str, object]:
         git_branch, git_commit = self._resolve_git_metadata()
         return {
@@ -233,3 +321,9 @@ class PaydayAppService:
             logger.warning("Stored audio for interview %s was already missing at %s.", interview_id, file_path)
         except Exception:
             logger.exception("Failed to delete stored audio for interview %s at %s.", interview_id, file_path)
+
+    def _worker_loop(self) -> None:
+        while not self._worker_stop_event.is_set():
+            processed = self.run_worker_cycle(max_jobs=1)
+            if processed == 0:
+                time.sleep(WORKER_POLL_INTERVAL_SECONDS)
