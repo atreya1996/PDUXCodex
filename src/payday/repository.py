@@ -285,7 +285,6 @@ class PaydayRepository:
         created_at: str | None = None,
     ) -> InterviewRecord:
         normalized_status = self._normalize_status(status)
-        filename = self._filename_from_audio_url(audio_url)
         record = InterviewRecord(
             id=interview_id or str(uuid4()),
             file_path=file_path,
@@ -294,8 +293,8 @@ class PaydayRepository:
             latest_stage=latest_stage,
             last_error=last_error,
             created_at=created_at or datetime.now(timezone.utc).isoformat(),
-            filename=filename,
-            file_path=audio_url,
+            analysis_version=None,
+            filename=self._filename_from_audio_url(file_path),
             transcript_text=transcript,
             insights_json=None,
             error_message=last_error,
@@ -304,19 +303,21 @@ class PaydayRepository:
             connection.execute(
                 """
                 INSERT INTO interviews (
-                    id, audio_url, transcript, transcript_text, status, latest_stage, last_error, error_message, created_at, analysis_version
+                    id, audio_url, file_path, filename, transcript, transcript_text, status, latest_stage, last_error, error_message, created_at, analysis_version
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
-                    record.audio_url,
+                    record.file_path,
+                    record.file_path,
+                    record.filename,
                     record.transcript,
-                    record.transcript,
+                    record.transcript_text,
                     record.status,
                     record.latest_stage,
                     record.last_error,
-                    record.last_error,
+                    record.error_message,
                     record.created_at,
                     record.analysis_version,
                 ),
