@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -16,6 +17,9 @@ from payday.upload import SUPPORTED_UPLOAD_EXTENSIONS
 REFRESH_STATUS_FLAG = "dashboard_status_reloaded"
 FORCE_SQLITE_RELOAD_FLAG = "dashboard_force_sqlite_reload"
 REPROCESS_STALE_FLAG = "dashboard_reprocess_stale_result"
+PROCESSING_QUEUE_STATE = "dashboard_processing_queue_state"
+PROCESSING_FINAL_MESSAGE = "dashboard_processing_final_message"
+PROCESSING_EVENTS_REFRESH_SECONDS = 3
 DEFAULT_ENV_MAX_BATCH_BYTES = 45_000_000
 DEFAULT_ENV_MAX_FILE_BYTES = 20_000_000
 DEFAULT_CHUNK_SIZE = 3
@@ -295,7 +299,12 @@ def main() -> None:
         else:
             st.sidebar.success(f"Reprocessed all {stale_count} stale interviews.")
 
-    process_disabled = not settings.features.enable_analysis or upload_count == 0
+    processing_state = st.session_state.get(PROCESSING_QUEUE_STATE)
+    process_disabled = (
+        not settings.features.enable_analysis
+        or upload_count == 0
+        or (isinstance(processing_state, dict) and bool(processing_state.get("active", False)))
+    )
     if st.sidebar.button("Process batch", type="primary", use_container_width=True, disabled=process_disabled):
         if upload_count < 1 or upload_count > 10:
             st.sidebar.warning("Please upload between 1 and 10 audio files.")
@@ -402,6 +411,7 @@ def main() -> None:
         )
 
     force_sqlite_reload = bool(st.session_state.pop(FORCE_SQLITE_RELOAD_FLAG, False))
+    _render_live_processing_section(app_service)
     dashboard_state = load_dashboard_state(app_service, force_sqlite_reload=force_sqlite_reload)
     persisted_live_failures = [
         {

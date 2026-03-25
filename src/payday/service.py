@@ -9,7 +9,7 @@ from payday.config import Settings, resolve_runtime_commit_sha, validate_runtime
 from payday.models import BatchPipelineResult, BatchUploadItem, PipelineResult
 from payday.personas import PersonaService
 from payday.pipeline import PaydayPipeline
-from payday.repository import DashboardInterviewRecord, DashboardStatusOverview, PaydayRepository
+from payday.repository import DashboardInterviewRecord, DashboardStatusOverview, PaydayRepository, ProcessingEventRecord
 from payday.storage import StorageService
 from payday.transcription import build_transcription_service
 from payday.upload import UploadService
@@ -62,6 +62,14 @@ class PaydayAppService:
 
     def get_status_overview(self) -> DashboardStatusOverview:
         return self.repository.get_status_overview()
+
+    def list_processing_events(
+        self,
+        *,
+        file_ids: list[str] | None = None,
+        limit: int = 200,
+    ) -> list[ProcessingEventRecord]:
+        return self.repository.list_processing_events(file_ids=file_ids, limit=limit)
 
     def save_interview_edits(
         self,
