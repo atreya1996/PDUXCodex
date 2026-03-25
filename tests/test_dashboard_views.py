@@ -259,7 +259,7 @@ def test_dashboard_renderer_build_interviews_keeps_db_records_authoritative_and_
     )
     repository_record = DashboardInterviewRecord(
         id="repo-1",
-        audio_url="audio/repo-1/repo.wav",
+        file_path="audio/repo-1/repo.wav",
         filename="repo.wav",
         transcript="Repository transcript",
         status=ProcessingStatus.COMPLETED.value,
@@ -369,7 +369,7 @@ def test_dashboard_renderer_sanitizes_repository_html_fields_and_surfaces_malfor
     renderer = DashboardRenderer()
     repository_record = DashboardInterviewRecord(
         id="interview-malformed",
-        audio_url="audio/interview-malformed/file.wav",
+        file_path="audio/interview-malformed/file.wav",
         filename="file.wav",
         transcript="<div><strong>raw html transcript</strong></div>",
         status=ProcessingStatus.COMPLETED.value,
