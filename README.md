@@ -339,3 +339,53 @@ sample_data/
     ├── demo_09_fully_excluded.json
     └── demo_10_savings_first.json
 ```
+
+## Render deployment blueprint (`render.yaml`)
+
+The repository now includes `render.yaml` with two explicit services:
+
+- **Web** (`payday-web`): Streamlit UI/API gateway surface.
+  - Start command: `streamlit run app.py --server.port $PORT --server.address 0.0.0.0`
+  - Health check path: `/_stcore/health`
+- **Worker** (`payday-worker`): background queue processor.
+  - Start command: `python -m payday.worker`
+  - Health check path: **N/A** (Render worker service has no HTTP health endpoint)
+
+### Render env vars (set per service)
+
+Required secret/runtime vars for both services:
+
+- `PAYDAY_RELEASE_SHA`
+- `LLM_API_KEY`
+- `TRANSCRIPTION_API_KEY`
+- `SUPABASE_URL`
+- `SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
+
+Pinned non-secret runtime vars in `render.yaml`:
+
+- `PAYDAY_APP_ENV=production`
+- `PAYDAY_USE_SAMPLE_MODE=false`
+- `LLM_PROVIDER=openai`
+- `LLM_MODEL=gpt-4.1-mini`
+- `TRANSCRIPTION_PROVIDER=openai`
+- `TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe`
+- `SUPABASE_STORAGE_BUCKET=payday-assets`
+- Upload guardrails:
+  - `PAYDAY_ENV_MAX_UPLOAD_FILE_MB=20`
+  - `PAYDAY_ENV_MAX_UPLOAD_BATCH_MB=45`
+  - `PAYDAY_UPLOAD_BATCH_CHUNK_SIZE=3`
+
+Service-specific flags:
+
+- Web: `PAYDAY_ENABLE_UPLOADS=true`, `PAYDAY_ENABLE_DASHBOARD=true`, `PAYDAY_ENABLE_ANALYSIS=true`
+- Worker: `PAYDAY_ENABLE_UPLOADS=false`, `PAYDAY_ENABLE_DASHBOARD=false`, `PAYDAY_ENABLE_ANALYSIS=true`
+
+### Persistent disk strategy for local state
+
+PayDay still writes local state to SQLite and local uploads, so the blueprint binds explicit paths:
+
+- `PAYDAY_SQLITE_PATH=/var/data/payday.db`
+- `PAYDAY_UPLOADS_ROOT=/var/data/uploads`
+
+Each Render service in the blueprint mounts a persistent disk at `/var/data` to keep these paths durable across restarts. If you migrate queue/repository state fully to Supabase/Postgres plus Supabase Storage, you can remove local-state dependence by repointing `PAYDAY_SQLITE_PATH`/`PAYDAY_UPLOADS_ROOT` to non-durable temp paths and relying on managed storage only.
