@@ -12,8 +12,14 @@ from payday.config import Settings, resolve_runtime_commit_sha, validate_runtime
 from payday.models import BatchPipelineResult, BatchUploadItem, PipelineResult
 from payday.personas import PersonaService
 from payday.pipeline import PaydayPipeline
-from payday.repository import DashboardInterviewRecord, DashboardStatusOverview, JobRecord, PaydayRepository
-from payday.storage import StorageService
+from payday.repository import (
+    DashboardInterviewRecord,
+    DashboardStatusOverview,
+    JobRecord,
+    PaydayRepository,
+    SupabaseRepository,
+)
+from payday.storage import StorageService, SupabaseStorageService
 from payday.transcription import build_transcription_service
 from payday.upload import UploadService
 
@@ -28,13 +34,13 @@ class PaydayAppService:
     def __init__(
         self,
         settings: Settings,
-        repository: PaydayRepository | None = None,
+        repository: PaydayRepository | SupabaseRepository | None = None,
         *,
         start_worker: bool = True,
     ) -> None:
         validate_runtime_settings(settings)
         self.settings = settings
-        self.repository = repository or PaydayRepository(database_path=settings.database.sqlite_path)
+        self.repository = repository or self._build_repository(settings)
         persona_service = PersonaService()
         analysis_service = AnalysisService(
             adapter=build_analysis_adapter(settings.llm, sample_mode=settings.features.use_sample_mode),
@@ -48,7 +54,7 @@ class PaydayAppService:
             ),
             analysis_service=analysis_service,
             persona_service=persona_service,
-            storage_service=StorageService(settings.storage.uploads_root),
+            storage_service=self._build_storage_service(settings),
             repository=self.repository,
             sample_mode=settings.features.use_sample_mode,
         )
@@ -272,6 +278,7 @@ class PaydayAppService:
             "transcription_provider": self.pipeline.transcription_service.settings.provider,
             "transcription_model": self.pipeline.transcription_service.settings.model,
             "database_path": self.repository.database_path,
+            "database_backend": self.settings.database.backend,
             "runtime_commit_sha": resolve_runtime_commit_sha(),
         }
 
@@ -286,8 +293,31 @@ class PaydayAppService:
             "git_branch": git_branch,
             "git_commit": git_commit,
             "database_path": self.repository.database_path,
+            "database_backend": self.settings.database.backend,
             "sample_mode": self.settings.features.use_sample_mode,
         }
+
+    @staticmethod
+    def _build_repository(settings: Settings) -> PaydayRepository | SupabaseRepository:
+        backend = settings.database.backend
+        if backend == "supabase":
+            return SupabaseRepository(
+                database_path=settings.database.sqlite_path,
+                supabase_url=settings.supabase.url,
+                service_role_key=settings.supabase.service_role_key,
+            )
+        return PaydayRepository(database_path=settings.database.sqlite_path)
+
+    @staticmethod
+    def _build_storage_service(settings: Settings) -> StorageService | SupabaseStorageService:
+        if settings.database.backend == "supabase":
+            return SupabaseStorageService(
+                supabase_url=settings.supabase.url,
+                service_role_key=settings.supabase.service_role_key,
+                storage_bucket=settings.supabase.storage_bucket,
+                fallback_root_directory=settings.storage.uploads_root,
+            )
+        return StorageService(settings.storage.uploads_root)
 
     def _resolve_git_metadata(self) -> tuple[str, str]:
         branch = self._run_git_command(["rev-parse", "--abbrev-ref", "HEAD"])
