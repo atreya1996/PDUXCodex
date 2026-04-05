@@ -76,6 +76,7 @@ cp .env.example .env
 | `PAYDAY_ENABLE_DASHBOARD` | No | `true` | Toggles dashboard rendering. |
 | `PAYDAY_ENABLE_ANALYSIS` | No | `true` | Toggles the pipeline run button. |
 | `PAYDAY_SQLITE_PATH` | No | `data/payday.db` | Local SQLite path used for durable dashboard reads across app restarts. |
+| `PAYDAY_DB_BACKEND` | No | `sqlite` | Dependency selector for persistence/storage wiring (`sqlite` or `supabase`). |
 | `PAYDAY_ENV_MAX_UPLOAD_FILE_MB` | No | `20` | UI preflight guardrail for max file size accepted by deployment/runtime path before processing. |
 | `PAYDAY_ENV_MAX_UPLOAD_BATCH_MB` | No | `45` | UI preflight guardrail for combined batch size accepted by deployment/runtime path before processing. |
 | `PAYDAY_UPLOAD_BATCH_CHUNK_SIZE` | No | `3` | Number of files enqueued per queue chunk (clamped to 1–3) to avoid one giant request. |
@@ -86,7 +87,7 @@ cp .env.example .env
 | --- | --- | --- | --- |
 | `SUPABASE_URL` | Yes | `""` | Supabase project URL. |
 | `SUPABASE_ANON_KEY` | Usually yes | `""` | Client-facing key for standard Supabase access patterns. |
-| `SUPABASE_SERVICE_ROLE_KEY` | Optional but recommended for server-side jobs | `""` | Elevated key for backend-only storage/database operations. |
+| `SUPABASE_SERVICE_ROLE_KEY` | Yes when `PAYDAY_DB_BACKEND=supabase` in live mode | `""` | Elevated key for backend-only storage/database operations. |
 | `SUPABASE_STORAGE_BUCKET` | No | `payday-assets` | Bucket name used for uploaded artifacts. |
 
 ### LLM analysis variables
