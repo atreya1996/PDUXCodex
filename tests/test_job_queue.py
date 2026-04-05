@@ -18,7 +18,7 @@ def _settings() -> Settings:
 
 
 def test_enqueue_and_worker_cycle_processes_pending_job() -> None:
-    service = PaydayAppService(_settings(), start_worker=False)
+    service = PaydayAppService(_settings())
     item = BatchUploadItem(filename="demo.txt", content_type="text/plain", data=b"hello from queue")
 
     enqueue_result = service.enqueue_batch_uploads([item])
@@ -39,7 +39,7 @@ def test_enqueue_and_worker_cycle_processes_pending_job() -> None:
 
 
 def test_cancel_and_retry_batch_controls_job_state() -> None:
-    service = PaydayAppService(_settings(), start_worker=False)
+    service = PaydayAppService(_settings())
     item = BatchUploadItem(filename="cancel.txt", content_type="text/plain", data=b"queued")
 
     enqueue_result = service.enqueue_batch_uploads([item])

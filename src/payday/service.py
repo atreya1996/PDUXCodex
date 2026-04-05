@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import logging
 import subprocess
-import threading
-import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -25,7 +23,6 @@ from payday.upload import UploadService
 
 logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parents[2]
-WORKER_POLL_INTERVAL_SECONDS = 1.0
 
 
 class PaydayAppService:
@@ -34,9 +31,7 @@ class PaydayAppService:
     def __init__(
         self,
         settings: Settings,
-        repository: PaydayRepository | SupabaseRepository | None = None,
-        *,
-        start_worker: bool = True,
+        repository: PaydayRepository | None = None,
     ) -> None:
         validate_runtime_settings(settings)
         self.settings = settings
@@ -58,11 +53,6 @@ class PaydayAppService:
             repository=self.repository,
             sample_mode=settings.features.use_sample_mode,
         )
-        self._worker_stop_event = threading.Event()
-        self._worker_thread: threading.Thread | None = None
-        if start_worker:
-            self._worker_thread = threading.Thread(target=self._worker_loop, name="payday-job-worker", daemon=True)
-            self._worker_thread.start()
         logger.info("PayDay runtime diagnostics: %s", self.runtime_diagnostics())
         logger.info("PayDay runtime configuration loaded: %s", self.runtime_summary())
 
@@ -228,6 +218,9 @@ class PaydayAppService:
         interview_ids = [record.id for record in self.repository.list_recent_interviews(limit=10_000)]
         return self.reanalyze_interviews(interview_ids)
 
+    def list_stale_interview_ids(self, *, limit: int = 500) -> list[str]:
+        return self.repository.list_stale_interview_ids(limit=limit)
+
     def reprocess_stale_interviews(self, *, limit: int = 500) -> dict[str, object]:
         stale_ids = self.repository.list_stale_interview_ids(limit=limit)
         summary = self._reprocess_ids(stale_ids)
@@ -283,9 +276,7 @@ class PaydayAppService:
         }
 
     def shutdown(self) -> None:
-        self._worker_stop_event.set()
-        if self._worker_thread is not None and self._worker_thread.is_alive():
-            self._worker_thread.join(timeout=2.0)
+        return None
 
     def runtime_diagnostics(self) -> dict[str, object]:
         git_branch, git_commit = self._resolve_git_metadata()
@@ -352,8 +343,3 @@ class PaydayAppService:
         except Exception:
             logger.exception("Failed to delete stored audio for interview %s at %s.", interview_id, file_path)
 
-    def _worker_loop(self) -> None:
-        while not self._worker_stop_event.is_set():
-            processed = self.run_worker_cycle(max_jobs=1)
-            if processed == 0:
-                time.sleep(WORKER_POLL_INTERVAL_SECONDS)
