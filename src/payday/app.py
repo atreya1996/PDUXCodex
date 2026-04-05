@@ -69,6 +69,36 @@ def _open_interview_detail(interview_id: str) -> None:
     st.session_state[FILTER_SESSION_KEYS["overlay_open"]] = True
 
 
+def _missing_live_mode_keys(settings: Settings) -> list[str]:
+    if settings.features.use_sample_mode:
+        return []
+    missing_keys: list[str] = []
+    if not settings.llm.api_key.strip():
+        missing_keys.append("LLM_API_KEY")
+    if not settings.transcription.api_key.strip():
+        missing_keys.append("TRANSCRIPTION_API_KEY")
+    return missing_keys
+
+
+def _render_runtime_mode_banner(settings: Settings) -> None:
+    mode_label = "Sample mode" if settings.features.use_sample_mode else "Live mode"
+    missing_live_keys = _missing_live_mode_keys(settings)
+    mode_message = (
+        f"Active mode: **{mode_label}** "
+        f"(`PAYDAY_USE_SAMPLE_MODE={'true' if settings.features.use_sample_mode else 'false'}`)."
+    )
+    if settings.features.use_sample_mode:
+        st.warning(f"{mode_message} Live provider keys are optional in sample mode.")
+        return
+
+    if missing_live_keys:
+        missing_label = ", ".join(f"`{key}`" for key in missing_live_keys)
+        st.error(f"{mode_message} Missing required live-mode keys: {missing_label}.")
+        return
+
+    st.markdown(f"{mode_message} Required live-mode keys are present.")
+
+
 def _render_live_failures_panel(
     *,
     failed_rows: list[dict[str, str]],
@@ -176,6 +206,11 @@ def get_runtime_git_banner() -> str:
 
 def main() -> None:
     st.set_page_config(page_title="PayDay Interview Review", layout="wide")
+
+    load_dotenv()
+    get_settings.cache_clear()
+    startup_settings = get_settings()
+    _render_runtime_mode_banner(startup_settings)
 
     try:
         app_service, settings = build_app_service()
