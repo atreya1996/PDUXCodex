@@ -123,6 +123,82 @@ Supabase is optional in sample mode and recommended for live uploads.
 - Load the SQL schema before wiring dashboard reads
 - Use row-level security and storage policies appropriate for interview data
 
+### Supabase migration runbook (Postgres-first)
+
+Use this runbook when you want Supabase to be the source-of-truth database while keeping compatibility with the current SQLite-backed local workflow.
+
+1. **Apply baseline Postgres schema in Supabase**
+
+   In Supabase SQL editor (or `supabase db push`), run migrations in this order:
+
+   - `sql/migrations_postgres/001_initial_schema.sql`
+   - `sql/migrations_postgres/002_legacy_backfill_and_compat.sql`
+
+2. **Verify required tables exist**
+
+   ```sql
+   SELECT tablename
+   FROM pg_catalog.pg_tables
+   WHERE schemaname = 'public'
+     AND tablename IN ('interviews', 'structured_responses', 'insights', 'jobs', 'processing_events')
+   ORDER BY tablename;
+   ```
+
+3. **Verify indexes exist**
+
+   ```sql
+   SELECT indexname, tablename
+   FROM pg_indexes
+   WHERE schemaname = 'public'
+     AND indexname IN (
+       'idx_interviews_status_created_at',
+       'idx_jobs_status_created_at',
+       'idx_jobs_batch_id',
+       'idx_processing_events_file_created'
+     )
+   ORDER BY indexname;
+   ```
+
+4. **Backfill from local SQLite (optional)**
+
+   If you already have interview data in a local SQLite file (`PAYDAY_SQLITE_PATH`), export/import tables in dependency order:
+
+   - `interviews`
+   - `structured_responses`
+   - `insights`
+   - `jobs`
+   - `processing_events`
+
+   Recommended approach:
+
+   - export SQLite tables to CSV/JSON using `sqlite3` (or a script),
+   - import into temporary staging tables in Postgres,
+   - cast/normalize fields (`0/1` -> `boolean`, JSON text -> `jsonb`, timestamps -> `timestamptz`),
+   - `INSERT ... ON CONFLICT DO UPDATE` into canonical public tables.
+
+   The `002_legacy_backfill_and_compat.sql` migration intentionally normalizes legacy status values (`uploaded`, `in_progress`, `error`, etc.) and fills canonical `file_path`/`filename`/`transcript_text` fields after import.
+
+5. **Post-import sanity checks**
+
+   ```sql
+   SELECT status, COUNT(*)
+   FROM interviews
+   GROUP BY status
+   ORDER BY status;
+   ```
+
+   ```sql
+   SELECT
+     COUNT(*) FILTER (WHERE transcript_text IS NULL OR btrim(transcript_text) = '') AS missing_transcript_text,
+     COUNT(*) FILTER (WHERE file_path IS NULL OR btrim(file_path) = '') AS missing_file_path
+   FROM interviews;
+   ```
+
+6. **Repository query parity reference**
+
+   `src/payday/repository_postgres.py` documents SQLite-specific patterns in `src/payday/repository.py` and provides Postgres-equivalent query templates for Supabase migration work.
+
+
 ## How to choose LLM and transcription providers
 
 The code is provider-configured only through environment variables: `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`, `TRANSCRIPTION_PROVIDER`, `TRANSCRIPTION_MODEL`, and `TRANSCRIPTION_API_KEY`.
