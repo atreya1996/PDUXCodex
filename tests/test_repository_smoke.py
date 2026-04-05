@@ -70,3 +70,25 @@ def test_processing_events_round_trip_for_file() -> None:
     assert events[0].message == "analysis failed"
     assert events[1].stage == "upload"
     assert events[1].status == "processing"
+
+
+def test_create_job_returns_inserted_job_record() -> None:
+    repository = PaydayRepository(database_path=":memory:")
+    interview = repository.create_interview(
+        file_path="audio/interview-789/queue.wav",
+        status="pending",
+    )
+
+    job = repository.create_job(
+        batch_id="batch-123",
+        interview_id=interview.id,
+        filename="queue.wav",
+        content_type="audio/wav",
+        payload=b"payload",
+    )
+
+    assert job.id
+    assert job.batch_id == "batch-123"
+    assert job.interview_id == interview.id
+    assert job.filename == "queue.wav"
+    assert job.status == "pending"

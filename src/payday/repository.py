@@ -1180,7 +1180,18 @@ class PaydayRepository:
                 """,
                 (job_id, batch_id, interview_id, filename, content_type, payload, max_attempts, now, now),
             )
-        return self.get_job(job_id)
+            row = connection.execute(
+                """
+                SELECT id, batch_id, interview_id, filename, content_type, status, attempts, max_attempts, error_message,
+                       cancel_requested, created_at, updated_at, started_at, completed_at
+                FROM jobs
+                WHERE id = ?
+                """,
+                (job_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError(f"Failed to read back inserted job {job_id}.")
+        return self._job_from_row(row)
 
     def get_job(self, job_id: str) -> JobRecord:
         with self._connect() as connection:
