@@ -34,8 +34,8 @@ from payday.models import (
     UploadedAsset,
 )
 from payday.personas import PersonaService
-from payday.repository import DashboardInterviewRecord, PaydayRepository
-from payday.storage import StorageService
+from payday.repository import DashboardInterviewRecord, PaydayRepository, SupabaseRepository
+from payday.storage import StorageService, SupabaseStorageService
 from payday.transcription import TranscriptionService, detect_malformed_transcript_reason
 from payday.upload import UploadService
 
@@ -56,8 +56,8 @@ class PaydayPipeline:
         transcription_service: TranscriptionService,
         analysis_service: AnalysisService,
         persona_service: PersonaService,
-        storage_service: StorageService,
-        repository: PaydayRepository,
+        storage_service: StorageService | SupabaseStorageService,
+        repository: PaydayRepository | SupabaseRepository,
         sample_mode: bool = True,
         max_retries: int = 2,
     ) -> None:

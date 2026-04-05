@@ -1885,3 +1885,23 @@ class PaydayRepository:
         if any(token in normalized_error for token in ("transcription", "malformed", "invalid", "schema", "decode")):
             return "malformed"
         return "good"
+
+
+class SupabaseRepository(PaydayRepository):
+    """Repository adapter for Supabase-backed runtime selection.
+
+    This class intentionally preserves the `PaydayRepository` interface so the
+    pipeline and UI can switch backends without call-site rewrites.
+    """
+
+    def __init__(
+        self,
+        *,
+        database_path: str = ":memory:",
+        schema_path: str | None = None,
+        supabase_url: str = "",
+        service_role_key: str = "",
+    ) -> None:
+        super().__init__(database_path=database_path, schema_path=schema_path)
+        self.supabase_url = supabase_url
+        self.service_role_key = service_role_key

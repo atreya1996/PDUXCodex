@@ -23,7 +23,7 @@ from payday.models import AnalysisResult, BatchUploadItem, PipelineResult, Pipel
 from payday.personas import PersonaService
 from payday.repository import PaydayRepository
 from payday.service import PaydayAppService
-from payday.storage import StorageService
+from payday.storage import StorageService, SupabaseStorageService
 from payday.transcription import (
     OPENAI_TRANSCRIPTION_SAFE_FILE_LIMIT_BYTES,
     OpenAITranscriptionAdapter,
@@ -1349,6 +1349,39 @@ def test_storage_service_delete_asset_returns_false_for_directory(tmp_path) -> N
     interview_dir.mkdir(parents=True)
     storage = StorageService(root)
     assert storage.delete_asset(str(interview_dir), sample_mode=False) is False
+
+
+def test_supabase_storage_service_uses_audio_object_key_and_bucket() -> None:
+    client = RecordingSupabaseStorageClient()
+    storage = SupabaseStorageService(
+        supabase_url="https://example.supabase.co",
+        service_role_key="service-role-key",
+        storage_bucket="payday-assets",
+        client=client,
+    )
+    asset = UploadedAsset(
+        filename="../April interview.wav",
+        content_type="audio/wav",
+        size_bytes=4,
+        raw_bytes=b"demo",
+    )
+
+    object_key = storage.build_file_path("interview-123", asset.filename)
+    stored = storage.store_asset(asset, sample_mode=False, interview_id="interview-123")
+    deleted = storage.delete_asset(object_key, sample_mode=False)
+
+    assert object_key == "audio/interview-123/April_interview.wav"
+    assert stored is True
+    assert deleted is True
+    assert client.bucket_names == ["payday-assets", "payday-assets"]
+    assert client.bucket.upload_calls == [
+        {
+            "path": "audio/interview-123/April_interview.wav",
+            "payload": b"demo",
+            "file_options": {"content-type": "audio/wav", "upsert": "true"},
+        }
+    ]
+    assert client.bucket.remove_calls == [["audio/interview-123/April_interview.wav"]]
 
 
 def test_pipeline_marks_storage_persistence_completed_with_local_storage(tmp_path) -> None:
