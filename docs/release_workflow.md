@@ -56,3 +56,52 @@ In the Streamlit sidebar use **Refresh status + release metadata** to force:
 - durable status refresh from SQLite.
 
 Set `PAYDAY_RELEASE_SHA` in runtime environment to surface the deployed SHA.
+
+## Render service startup and health checks
+
+Source-of-truth blueprint: `render.yaml`.
+
+### Web service (`payday-web`)
+
+- Start command: `streamlit run app.py --server.port $PORT --server.address 0.0.0.0`
+- Health check path: `/_stcore/health`
+
+### Worker service (`payday-worker`)
+
+- Start command: `python -m payday.worker`
+- Health check path: N/A (background worker, no HTTP endpoint)
+
+## Render environment variable matrix
+
+Set these env vars in Render (secrets as secret env vars):
+
+- `PAYDAY_APP_ENV=production`
+- `PAYDAY_RELEASE_SHA=<deployed_commit_sha>`
+- `PAYDAY_USE_SAMPLE_MODE=false`
+- `PAYDAY_ENABLE_UPLOADS=true` (web), `false` (worker)
+- `PAYDAY_ENABLE_DASHBOARD=true` (web), `false` (worker)
+- `PAYDAY_ENABLE_ANALYSIS=true`
+- `PAYDAY_ENV_MAX_UPLOAD_FILE_MB=20`
+- `PAYDAY_ENV_MAX_UPLOAD_BATCH_MB=45`
+- `PAYDAY_UPLOAD_BATCH_CHUNK_SIZE=3`
+- `PAYDAY_SQLITE_PATH=/var/data/payday.db`
+- `PAYDAY_UPLOADS_ROOT=/var/data/uploads`
+- `LLM_PROVIDER=openai`
+- `LLM_MODEL=gpt-4.1-mini`
+- `LLM_API_KEY=<secret>`
+- `TRANSCRIPTION_PROVIDER=openai`
+- `TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe`
+- `TRANSCRIPTION_API_KEY=<secret>`
+- `SUPABASE_URL=<secret>`
+- `SUPABASE_ANON_KEY=<secret>`
+- `SUPABASE_SERVICE_ROLE_KEY=<secret>`
+- `SUPABASE_STORAGE_BUCKET=payday-assets`
+
+## Local-state persistence policy on Render
+
+Current architecture still relies on local SQLite + local upload path for queue/repository operations. Keep both paths on a persistent disk mounted at `/var/data`.
+
+- Durable DB path: `/var/data/payday.db`
+- Durable upload root: `/var/data/uploads`
+
+If/when repository and queue state are migrated fully to Supabase/Postgres and artifacts to Supabase Storage, this disk dependency can be removed.

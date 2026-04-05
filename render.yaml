@@ -1,0 +1,107 @@
+services:
+  - type: web
+    name: payday-web
+    runtime: python
+    plan: starter
+    buildCommand: pip install -e .
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: PAYDAY_APP_ENV
+        value: production
+      - key: PAYDAY_RELEASE_SHA
+        sync: false
+      - key: PAYDAY_USE_SAMPLE_MODE
+        value: "false"
+      - key: PAYDAY_ENABLE_UPLOADS
+        value: "true"
+      - key: PAYDAY_ENABLE_DASHBOARD
+        value: "true"
+      - key: PAYDAY_ENABLE_ANALYSIS
+        value: "true"
+      - key: PAYDAY_ENV_MAX_UPLOAD_FILE_MB
+        value: "20"
+      - key: PAYDAY_ENV_MAX_UPLOAD_BATCH_MB
+        value: "45"
+      - key: PAYDAY_UPLOAD_BATCH_CHUNK_SIZE
+        value: "3"
+      - key: PAYDAY_SQLITE_PATH
+        value: /var/data/payday.db
+      - key: PAYDAY_UPLOADS_ROOT
+        value: /var/data/uploads
+      - key: LLM_PROVIDER
+        value: openai
+      - key: LLM_MODEL
+        value: gpt-4.1-mini
+      - key: LLM_API_KEY
+        sync: false
+      - key: TRANSCRIPTION_PROVIDER
+        value: openai
+      - key: TRANSCRIPTION_MODEL
+        value: gpt-4o-mini-transcribe
+      - key: TRANSCRIPTION_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: payday-assets
+    disk:
+      name: payday-data
+      mountPath: /var/data
+      sizeGB: 5
+
+  - type: worker
+    name: payday-worker
+    runtime: python
+    plan: starter
+    buildCommand: pip install -e .
+    startCommand: python -m payday.worker
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: PAYDAY_APP_ENV
+        value: production
+      - key: PAYDAY_RELEASE_SHA
+        sync: false
+      - key: PAYDAY_USE_SAMPLE_MODE
+        value: "false"
+      - key: PAYDAY_ENABLE_UPLOADS
+        value: "false"
+      - key: PAYDAY_ENABLE_DASHBOARD
+        value: "false"
+      - key: PAYDAY_ENABLE_ANALYSIS
+        value: "true"
+      - key: PAYDAY_SQLITE_PATH
+        value: /var/data/payday.db
+      - key: PAYDAY_UPLOADS_ROOT
+        value: /var/data/uploads
+      - key: LLM_PROVIDER
+        value: openai
+      - key: LLM_MODEL
+        value: gpt-4.1-mini
+      - key: LLM_API_KEY
+        sync: false
+      - key: TRANSCRIPTION_PROVIDER
+        value: openai
+      - key: TRANSCRIPTION_MODEL
+        value: gpt-4o-mini-transcribe
+      - key: TRANSCRIPTION_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: payday-assets
+    disk:
+      name: payday-data
+      mountPath: /var/data
+      sizeGB: 5
