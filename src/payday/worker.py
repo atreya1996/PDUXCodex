@@ -20,7 +20,7 @@ def run() -> int:
     settings = get_settings()
 
     try:
-        app_service = PaydayAppService(settings, start_worker=False)
+        app_service = PaydayAppService(settings)
     except SettingsConfigurationError:
         logger.exception("Worker failed startup validation for runtime settings.")
         return 1
