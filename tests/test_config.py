@@ -16,6 +16,8 @@ from payday.config import (
     validate_runtime_settings,
 )
 from payday.service import PaydayAppService
+from payday.repository import PaydayRepository, SupabaseRepository
+from payday.storage import StorageService, SupabaseStorageService
 from payday.transcription import OpenAITranscriptionService, TranscriptionService, build_transcription_service
 
 
@@ -192,3 +194,38 @@ def test_resolve_runtime_commit_sha_returns_unknown_for_invalid_values(
     monkeypatch.delenv("COMMIT_SHA", raising=False)
 
     assert resolve_runtime_commit_sha() == "unknown"
+
+
+def test_app_service_uses_sqlite_dependencies_by_default() -> None:
+    settings = Settings(
+        app_env="test",
+        database=DatabaseSettings(sqlite_path=":memory:", backend="sqlite"),
+        supabase=SupabaseSettings(),
+        llm=LLMSettings(),
+        transcription=TranscriptionSettings(),
+        features=FeatureFlags(use_sample_mode=True),
+    )
+
+    service = PaydayAppService(settings, start_worker=False)
+
+    assert isinstance(service.repository, PaydayRepository)
+    assert isinstance(service.pipeline.storage_service, StorageService)
+    assert not isinstance(service.pipeline.storage_service, SupabaseStorageService)
+    service.shutdown()
+
+
+def test_app_service_uses_supabase_dependencies_when_backend_flag_is_set() -> None:
+    settings = Settings(
+        app_env="test",
+        database=DatabaseSettings(sqlite_path=":memory:", backend="supabase"),
+        supabase=SupabaseSettings(url="https://example.supabase.co", service_role_key="service-role-key"),
+        llm=LLMSettings(),
+        transcription=TranscriptionSettings(),
+        features=FeatureFlags(use_sample_mode=True),
+    )
+
+    service = PaydayAppService(settings, start_worker=False)
+
+    assert isinstance(service.repository, SupabaseRepository)
+    assert isinstance(service.pipeline.storage_service, SupabaseStorageService)
+    service.shutdown()

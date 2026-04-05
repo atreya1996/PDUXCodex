@@ -138,12 +138,7 @@ class _FakeStreamlit:
 
 
 class _FakeAppService:
-    class _FakeRepository:
-        def list_stale_interview_ids(self) -> list[str]:
-            return []
-
     def __init__(self) -> None:
-        self.repository = self._FakeRepository()
         self.enqueue_calls: list[list[object]] = []
 
     def list_results(self) -> list[object]:
@@ -171,6 +166,9 @@ class _FakeAppService:
 
     def reprocess_stale_interviews(self) -> dict[str, object]:
         return {"stale_count": 0, "reprocessed_ids": [], "failed": {}}
+
+    def list_stale_interview_ids(self) -> list[str]:
+        return []
 
     def reprocess_failed_or_malformed_interviews(self) -> dict[str, object]:
         return {"failed_or_malformed_count": 0, "reprocessed_ids": [], "failed": {}}

@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import os
 import subprocess
-import time
 
 import streamlit as st
 from dotenv import load_dotenv
 
+from payday.api import BackendApiClient, BackendApiSettings
 from payday.config import Settings, SettingsConfigurationError, get_settings
 from payday.dashboard.views import DashboardRenderer, FILTER_SESSION_KEYS
 from payday.models import BatchUploadItem
 from payday.models import ProcessingStatus
-from payday.service import PaydayAppService
 from payday.transcription import describe_transcription_file_size_limit
 from payday.upload import SUPPORTED_UPLOAD_EXTENSIONS
 
@@ -95,7 +94,7 @@ def _render_live_failures_panel(
             st.rerun()
 
 
-def _render_live_processing_section(app_service: PaydayAppService, *, max_events: int = 10) -> None:
+def _render_live_processing_section(app_service: BackendApiClient, *, max_events: int = 10) -> None:
     events = app_service.list_processing_events(limit=max_events) if hasattr(app_service, "list_processing_events") else []
     target = st.sidebar.empty()
     with target.container():
@@ -140,14 +139,15 @@ def _upload_limit_violations(
 
 
 @st.cache_resource
-def build_app_service() -> tuple[PaydayAppService, Settings]:
+def build_app_service() -> tuple[BackendApiClient, Settings]:
     load_dotenv()
     get_settings.cache_clear()
     settings = get_settings()
-    return PaydayAppService(settings), settings
+    base_url = os.getenv("PAYDAY_BACKEND_API_URL", "http://127.0.0.1:8000")
+    return BackendApiClient(BackendApiSettings(base_url=base_url)), settings
 
 
-def load_dashboard_state(app_service: PaydayAppService, *, force_sqlite_reload: bool = False) -> dict[str, object]:
+def load_dashboard_state(app_service: BackendApiClient, *, force_sqlite_reload: bool = False) -> dict[str, object]:
     return {
         "cached_results": [] if force_sqlite_reload else app_service.list_results(),
         "recent_interviews": app_service.list_recent_interviews(),
@@ -430,7 +430,7 @@ def main() -> None:
         reprocess_interview=getattr(app_service, "reprocess_interview", None),
         reanalyze_interviews=getattr(app_service, "reanalyze_interviews", None),
         reanalyze_stale_interviews=lambda: app_service.reprocess_stale_interviews(),
-        list_stale_interview_ids=lambda: app_service.repository.list_stale_interview_ids(),
+        list_stale_interview_ids=lambda: app_service.list_stale_interview_ids(),
         reprocess_failed_or_malformed=lambda: app_service.reprocess_failed_or_malformed_interviews(),
         list_failed_or_malformed_ids=lambda: app_service.list_failed_or_malformed_interview_ids(),
         delete_stale_corrupted=lambda: app_service.delete_stale_corrupted_interviews(),

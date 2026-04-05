@@ -72,6 +72,7 @@ class TranscriptionSettings:
 @dataclass(frozen=True)
 class DatabaseSettings:
     sqlite_path: str = str(DEFAULT_DATABASE_PATH)
+    backend: str = "sqlite"
 
 
 @dataclass(frozen=True)
@@ -101,9 +102,13 @@ class Settings:
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     sqlite_path = Path(os.getenv("PAYDAY_SQLITE_PATH", str(DEFAULT_DATABASE_PATH))).expanduser()
+    backend = (os.getenv("PAYDAY_DB_BACKEND", "sqlite") or "sqlite").strip().lower()
     return Settings(
         app_env=os.getenv("PAYDAY_APP_ENV", "development"),
-        database=DatabaseSettings(sqlite_path=str(sqlite_path)),
+        database=DatabaseSettings(
+            sqlite_path=str(sqlite_path),
+            backend=backend or "sqlite",
+        ),
         storage=StorageSettings(uploads_root=os.getenv("PAYDAY_UPLOADS_ROOT", "./data/uploads")),
         supabase=SupabaseSettings(
             url=os.getenv("SUPABASE_URL", ""),
@@ -150,6 +155,12 @@ def validate_runtime_settings(settings: Settings) -> None:
             f"Got '{settings.transcription.provider}'."
         )
 
+    if settings.database.backend not in {"sqlite", "supabase"}:
+        errors.append(
+            "PAYDAY_DB_BACKEND must be one of: sqlite, supabase. "
+            f"Got '{settings.database.backend}'."
+        )
+
     if settings.features.use_sample_mode:
         if errors:
             raise SettingsConfigurationError("Invalid provider configuration:\n- " + "\n- ".join(errors))
@@ -166,6 +177,12 @@ def validate_runtime_settings(settings: Settings) -> None:
             "TRANSCRIPTION_API_KEY is required when PAYDAY_USE_SAMPLE_MODE=false so transcription can use "
             f"the configured '{settings.transcription.provider}' provider."
         )
+
+    if settings.database.backend == "supabase":
+        if not settings.supabase.url.strip():
+            errors.append("SUPABASE_URL is required when PAYDAY_DB_BACKEND=supabase.")
+        if not settings.supabase.service_role_key.strip():
+            errors.append("SUPABASE_SERVICE_ROLE_KEY is required when PAYDAY_DB_BACKEND=supabase.")
 
     if errors:
         raise SettingsConfigurationError("Invalid provider configuration:\n- " + "\n- ".join(errors))

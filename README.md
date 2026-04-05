@@ -23,18 +23,23 @@ The current repository is a scaffold for that workflow. It already separates UI,
 ### High-level flow
 
 1. **Streamlit UI** accepts uploads and displays results.
-2. **Application service** wires configuration and dependencies together.
-3. **Pipeline orchestration** processes each file independently.
-4. **Transcription service** converts uploaded audio or text into a transcript.
-5. **Analysis service** converts the transcript into structured JSON-like evidence.
-6. **Persona service** applies deterministic persona rules, including the strict Persona 3 override.
-7. **Storage + repository layers** persist audio paths, structured responses, insights, and dashboard reads.
+2. **Backend API service** exposes queue, interview, and reprocess endpoints used by the UI.
+3. **Standalone worker process** polls pending jobs from SQLite and executes the pipeline.
+4. **Pipeline orchestration** processes each file independently.
+5. **Transcription service** converts uploaded audio or text into a transcript.
+6. **Analysis service** converts the transcript into structured JSON-like evidence.
+7. **Persona service** applies deterministic persona rules, including the strict Persona 3 override.
+8. **Storage + repository layers** persist audio paths, structured responses, insights, and dashboard reads.
 
 ### Repository structure
 
 ```text
 app.py                         # Streamlit entrypoint
 src/payday/app.py              # Streamlit app composition
+src/payday/api/server.py       # Backend HTTP endpoints for queue/interviews/health
+src/payday/api/client.py       # Streamlit HTTP client for backend API calls
+src/payday/backend.py          # Backend API entrypoint
+src/payday/worker.py           # Standalone queue worker entrypoint
 src/payday/service.py          # Backend facade used by the UI
 src/payday/pipeline.py         # Per-file and batch processing orchestration
 src/payday/transcription.py    # Transcription provider abstraction
@@ -76,9 +81,11 @@ cp .env.example .env
 | `PAYDAY_ENABLE_DASHBOARD` | No | `true` | Toggles dashboard rendering. |
 | `PAYDAY_ENABLE_ANALYSIS` | No | `true` | Toggles the pipeline run button. |
 | `PAYDAY_SQLITE_PATH` | No | `data/payday.db` | Local SQLite path used for durable dashboard reads across app restarts. |
+| `PAYDAY_DB_BACKEND` | No | `sqlite` | Dependency selector for persistence/storage wiring (`sqlite` or `supabase`). |
 | `PAYDAY_ENV_MAX_UPLOAD_FILE_MB` | No | `20` | UI preflight guardrail for max file size accepted by deployment/runtime path before processing. |
 | `PAYDAY_ENV_MAX_UPLOAD_BATCH_MB` | No | `45` | UI preflight guardrail for combined batch size accepted by deployment/runtime path before processing. |
 | `PAYDAY_UPLOAD_BATCH_CHUNK_SIZE` | No | `3` | Number of files enqueued per queue chunk (clamped to 1–3) to avoid one giant request. |
+| `PAYDAY_BACKEND_API_URL` | No | `http://127.0.0.1:8000` | Base URL used by Streamlit when calling backend endpoints. |
 
 ### Supabase variables
 
@@ -86,7 +93,7 @@ cp .env.example .env
 | --- | --- | --- | --- |
 | `SUPABASE_URL` | Yes | `""` | Supabase project URL. |
 | `SUPABASE_ANON_KEY` | Usually yes | `""` | Client-facing key for standard Supabase access patterns. |
-| `SUPABASE_SERVICE_ROLE_KEY` | Optional but recommended for server-side jobs | `""` | Elevated key for backend-only storage/database operations. |
+| `SUPABASE_SERVICE_ROLE_KEY` | Yes when `PAYDAY_DB_BACKEND=supabase` in live mode | `""` | Elevated key for backend-only storage/database operations. |
 | `SUPABASE_STORAGE_BUCKET` | No | `payday-assets` | Bucket name used for uploaded artifacts. |
 
 ### LLM analysis variables
@@ -156,13 +163,23 @@ When `PAYDAY_USE_SAMPLE_MODE=true`, the mock transcription flow reads uploaded f
 1. Create and activate a Python 3.11+ virtual environment.
 2. Install the package in editable mode.
 3. Copy `.env.example` to `.env` and adjust settings, including `PAYDAY_DATABASE_PATH` if you want a custom local SQLite location.
-4. Start Streamlit.
+4. Start the backend API process.
+5. Start the worker process.
+6. Start Streamlit.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
 cp .env.example .env
+streamlit run app.py
+```
+
+Run the three processes in separate terminals:
+
+```bash
+python -m payday.backend
+python -m payday.worker
 streamlit run app.py
 ```
 

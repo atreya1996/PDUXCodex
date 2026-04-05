@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import logging
 import subprocess
-import threading
-import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -12,14 +10,19 @@ from payday.config import Settings, resolve_runtime_commit_sha, validate_runtime
 from payday.models import BatchPipelineResult, BatchUploadItem, PipelineResult
 from payday.personas import PersonaService
 from payday.pipeline import PaydayPipeline
-from payday.repository import DashboardInterviewRecord, DashboardStatusOverview, JobRecord, PaydayRepository
-from payday.storage import StorageService
+from payday.repository import (
+    DashboardInterviewRecord,
+    DashboardStatusOverview,
+    JobRecord,
+    PaydayRepository,
+    SupabaseRepository,
+)
+from payday.storage import StorageService, SupabaseStorageService
 from payday.transcription import build_transcription_service
 from payday.upload import UploadService
 
 logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parents[2]
-WORKER_POLL_INTERVAL_SECONDS = 1.0
 
 
 class PaydayAppService:
@@ -29,12 +32,10 @@ class PaydayAppService:
         self,
         settings: Settings,
         repository: PaydayRepository | None = None,
-        *,
-        start_worker: bool = True,
     ) -> None:
         validate_runtime_settings(settings)
         self.settings = settings
-        self.repository = repository or PaydayRepository(database_path=settings.database.sqlite_path)
+        self.repository = repository or self._build_repository(settings)
         persona_service = PersonaService()
         analysis_service = AnalysisService(
             adapter=build_analysis_adapter(settings.llm, sample_mode=settings.features.use_sample_mode),
@@ -48,15 +49,10 @@ class PaydayAppService:
             ),
             analysis_service=analysis_service,
             persona_service=persona_service,
-            storage_service=StorageService(settings.storage.uploads_root),
+            storage_service=self._build_storage_service(settings),
             repository=self.repository,
             sample_mode=settings.features.use_sample_mode,
         )
-        self._worker_stop_event = threading.Event()
-        self._worker_thread: threading.Thread | None = None
-        if start_worker:
-            self._worker_thread = threading.Thread(target=self._worker_loop, name="payday-job-worker", daemon=True)
-            self._worker_thread.start()
         logger.info("PayDay runtime diagnostics: %s", self.runtime_diagnostics())
         logger.info("PayDay runtime configuration loaded: %s", self.runtime_summary())
 
@@ -222,6 +218,9 @@ class PaydayAppService:
         interview_ids = [record.id for record in self.repository.list_recent_interviews(limit=10_000)]
         return self.reanalyze_interviews(interview_ids)
 
+    def list_stale_interview_ids(self, *, limit: int = 500) -> list[str]:
+        return self.repository.list_stale_interview_ids(limit=limit)
+
     def reprocess_stale_interviews(self, *, limit: int = 500) -> dict[str, object]:
         stale_ids = self.repository.list_stale_interview_ids(limit=limit)
         summary = self._reprocess_ids(stale_ids)
@@ -272,13 +271,12 @@ class PaydayAppService:
             "transcription_provider": self.pipeline.transcription_service.settings.provider,
             "transcription_model": self.pipeline.transcription_service.settings.model,
             "database_path": self.repository.database_path,
+            "database_backend": self.settings.database.backend,
             "runtime_commit_sha": resolve_runtime_commit_sha(),
         }
 
     def shutdown(self) -> None:
-        self._worker_stop_event.set()
-        if self._worker_thread is not None and self._worker_thread.is_alive():
-            self._worker_thread.join(timeout=2.0)
+        return None
 
     def runtime_diagnostics(self) -> dict[str, object]:
         git_branch, git_commit = self._resolve_git_metadata()
@@ -286,8 +284,31 @@ class PaydayAppService:
             "git_branch": git_branch,
             "git_commit": git_commit,
             "database_path": self.repository.database_path,
+            "database_backend": self.settings.database.backend,
             "sample_mode": self.settings.features.use_sample_mode,
         }
+
+    @staticmethod
+    def _build_repository(settings: Settings) -> PaydayRepository | SupabaseRepository:
+        backend = settings.database.backend
+        if backend == "supabase":
+            return SupabaseRepository(
+                database_path=settings.database.sqlite_path,
+                supabase_url=settings.supabase.url,
+                service_role_key=settings.supabase.service_role_key,
+            )
+        return PaydayRepository(database_path=settings.database.sqlite_path)
+
+    @staticmethod
+    def _build_storage_service(settings: Settings) -> StorageService | SupabaseStorageService:
+        if settings.database.backend == "supabase":
+            return SupabaseStorageService(
+                supabase_url=settings.supabase.url,
+                service_role_key=settings.supabase.service_role_key,
+                storage_bucket=settings.supabase.storage_bucket,
+                fallback_root_directory=settings.storage.uploads_root,
+            )
+        return StorageService(settings.storage.uploads_root)
 
     def _resolve_git_metadata(self) -> tuple[str, str]:
         branch = self._run_git_command(["rev-parse", "--abbrev-ref", "HEAD"])
@@ -322,8 +343,3 @@ class PaydayAppService:
         except Exception:
             logger.exception("Failed to delete stored audio for interview %s at %s.", interview_id, file_path)
 
-    def _worker_loop(self) -> None:
-        while not self._worker_stop_event.is_set():
-            processed = self.run_worker_cycle(max_jobs=1)
-            if processed == 0:
-                time.sleep(WORKER_POLL_INTERVAL_SECONDS)
