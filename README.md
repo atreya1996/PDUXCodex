@@ -69,6 +69,8 @@ Copy `.env.example` to `.env` before running locally.
 cp .env.example .env
 ```
 
+If `PAYDAY_USE_SAMPLE_MODE` is **unset**, PayDay defaults to `true` (sample mode). Set `PAYDAY_USE_SAMPLE_MODE=false` to require live API credentials at startup.
+
 ### Core application flags
 
 | Variable | Required | Default | Purpose |

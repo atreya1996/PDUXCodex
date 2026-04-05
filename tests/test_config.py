@@ -91,12 +91,31 @@ def test_non_sample_mode_reports_missing_transcription_key_without_llm_key_error
     assert "LLM_API_KEY is required" not in message
 
 
-def test_get_settings_defaults_to_non_sample_mode_when_env_not_set(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_settings_defaults_to_sample_mode_when_env_not_set(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PAYDAY_USE_SAMPLE_MODE", raising=False)
     get_settings.cache_clear()
     settings = get_settings()
 
-    assert settings.features.use_sample_mode is False
+    assert settings.features.use_sample_mode is True
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected_sample_mode"),
+    [
+        ("false", False),
+        ("true", True),
+    ],
+)
+def test_get_settings_uses_payday_use_sample_mode_value(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_value: str,
+    expected_sample_mode: bool,
+) -> None:
+    monkeypatch.setenv("PAYDAY_USE_SAMPLE_MODE", raw_value)
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    assert settings.features.use_sample_mode is expected_sample_mode
 
 
 def test_validate_runtime_settings_reports_invalid_provider_names_clearly() -> None:
