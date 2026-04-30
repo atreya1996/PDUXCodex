@@ -13,6 +13,25 @@ Non-target override is strict:
 
 Do not infer unsupported facts from transcripts. Prefer direct quotes and structured JSON outputs.
 
+
+## Stack reality check
+
+Declare and preserve the actual implementation stack for this repo:
+
+- **Primary language/runtime:** Python
+- **UI:** Streamlit
+- **Backend module style:** FastAPI-style service module
+- **Worker:** standalone queue worker process
+- **Persistence/storage:** SQLite default with Supabase (Postgres + Storage) support
+
+Non-applicable-by-default instructions must be treated as out of scope unless explicitly planned and approved in architecture docs. Examples:
+
+- Next.js 16 app-router migration
+- TypeScript-first frontend rewrite
+- Replacing Streamlit with a JS SPA during normal feature work
+
+When such options are discussed, label them as migration candidates rather than current-state instructions.
+
 ## Project identity
 
 PayDay is an MVP for analyzing user interview recordings. The core workflow is:
