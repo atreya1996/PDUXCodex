@@ -2,6 +2,29 @@
 
 PayDay is an MVP for analyzing interview recordings from domestic workers in India. The product is designed to support a workflow of batch upload, transcription, structured LLM analysis, persona assignment, and dashboard review in Streamlit. The product and research rules are strict: participants without a smartphone or without a bank account are non-target and must be assigned Persona 3. The analysis flow should prefer direct quotes, avoid unsupported inference, and keep outputs machine-readable JSON.
 
+
+## Stack reality check
+
+PayDay is a **Python-first** application. To prevent agent drift, treat this as the canonical stack unless a documented architecture decision changes it.
+
+### Primary stack (current reality)
+
+- **Language/runtime:** Python 3.11+
+- **UI:** Streamlit (`app.py`, `src/payday/app.py`)
+- **Backend module:** FastAPI-style HTTP service module (`src/payday/api/server.py`, `src/payday/backend.py`)
+- **Background processing:** standalone worker process (`src/payday/worker.py`)
+- **Data layer:** SQLite by default, Supabase Postgres + Storage supported via configuration
+
+### Non-applicable defaults (explicitly out of scope for this repo)
+
+The following common defaults are **not** the primary implementation path in this repository:
+
+- Next.js 16 / React frontend as system of record
+- TypeScript-first full-stack app architecture
+- Next.js API routes as backend runtime
+
+If those are proposed, they should be treated as migration options and captured in architecture decisions first (not silently introduced in regular feature work).
+
 ## UI skill usage
 
 Before changing dashboard UI, read and follow `skills/streamlit_ui_system.md`.
