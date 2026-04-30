@@ -111,6 +111,29 @@ If a skill file conflicts with product targeting rules, the targeting rules win.
 Persona 3 override is strict for no smartphone or no bank account.
 Implementation should remain modular, queue-based, and non-blocking for batch uploads.
 
+
+## Documentation Hygiene (Mandatory)
+
+For every behavior, schema, or architecture change, you must update documentation in the same PR. This is mandatory and not optional.
+
+Required files to update:
+
+* `README.md`
+* `docs/TASKS.md`
+* `docs/DECISIONS.md`
+* relevant `context/*.md` files
+
+Checklist (run before merge):
+
+- [ ] `README.md` reflects current behavior, setup, and usage impacted by the change.
+- [ ] `docs/TASKS.md` is updated with task status, scope changes, and follow-ups.
+- [ ] `docs/DECISIONS.md` records any meaningful architecture/product decision and tradeoffs.
+- [ ] Relevant `context/*.md` files are updated so product/research guidance matches implementation.
+
+Stale-content cleanup rule:
+
+* Do not only append. Remove or rewrite outdated, conflicting, or superseded documentation so context stays accurate and concise.
+
 ## Developer workflow
 
 * Update `README.md` whenever setup steps change.
